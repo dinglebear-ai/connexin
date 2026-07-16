@@ -215,6 +215,69 @@ describe("createServer", () => {
     });
   });
 
+  it("reports unhealthy once the audit sink starts failing", async () => {
+    const runtimeConfig = testRuntimeConfig();
+    let failWrites = false;
+    const manager = new QuickShellSessionManager({
+      config: runtimeConfig,
+      allowedHosts: new Set(["test-device"]),
+      audit: {
+        record: () => {
+          if (failWrites) throw new Error("ENOSPC: no space left on device");
+        },
+      },
+      ptyFactory: () => new FakePty(),
+    });
+    const { client } = await connectClient(
+      createServer({
+        bridgeBaseUrl: "http://127.0.0.1:34567",
+        config: runtimeConfig,
+        manager,
+      }),
+    );
+
+    const healthy = await client.callTool({
+      name: "check_quick_shell",
+      arguments: {},
+    });
+    expect(healthy.structuredContent).toMatchObject({
+      ok: true,
+      auditHealthy: true,
+      droppedAuditRecords: 0,
+    });
+
+    // Sessions keep serving shells when auditing breaks, so the health check is
+    // the only thing that can tell an operator the log now has gaps.
+    failWrites = true;
+    await manager.createSession({ device: "test-device" });
+
+    const degraded = await client.callTool({
+      name: "check_quick_shell",
+      arguments: {},
+    });
+    expect(degraded.structuredContent).toMatchObject({
+      ok: false,
+      auditHealthy: false,
+    });
+    expect(
+      (degraded.structuredContent as { droppedAuditRecords: number })
+        .droppedAuditRecords,
+    ).toBeGreaterThan(0);
+    expect(JSON.stringify(degraded.content)).toContain("degraded");
+
+    failWrites = false;
+    manager.recordAuditEvent("session_closed", { sessionId: "s1" });
+    const recovered = await client.callTool({
+      name: "check_quick_shell",
+      arguments: {},
+    });
+    expect(recovered.structuredContent).toMatchObject({
+      ok: true,
+      auditHealthy: true,
+      droppedAuditRecords: 0,
+    });
+  });
+
   it("serves a side-effect-free health check and tool errors for invalid opens", async () => {
     const { client, server } = await connectTestClient();
     try {

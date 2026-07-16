@@ -329,19 +329,30 @@ describe("startBridgeServer", () => {
         await closed;
       }
 
-      const detailed = sink.records.filter(
+      const messageRejections = sink.records.filter(
         (record) => record.event === "bridge_message_rejected",
       );
+      const detailed = messageRejections.filter(
+        (record) => record.reason !== "audit_rate_limited",
+      );
       expect(detailed).toHaveLength(10);
+      // Message rejections carry their own budget, so a flood of them is
+      // reported under their own event rather than spending the connection
+      // rejection quota.
       expect(sink.records).toContainEqual(
         expect.objectContaining({
-          event: "bridge_connection_rejected",
+          event: "bridge_message_rejected",
           reason: "audit_rate_limited",
-          suppressedEvent: "unauthenticated_bridge_rejection",
+          suppressedEvent: "unauthenticated_bridge_message_rejection",
           detailLimit: 10,
           windowMs: 60_000,
         }),
       );
+      expect(
+        sink.records.filter(
+          (record) => record.event === "bridge_connection_rejected",
+        ),
+      ).toEqual([]);
     } finally {
       manager.closeAll();
       await bridge.close();
@@ -658,6 +669,91 @@ describe("startBridgeServer", () => {
     expect(ptys[0]?.killed).toBe(true);
     expect(manager.getSession(session.id)).toBeUndefined();
     await bridge.close();
+  });
+
+  it("rejects upgrades once too many connections sit unauthenticated", async () => {
+    const sink = createMemoryAuditSink();
+    const runtimeConfig = testRuntimeConfig();
+    const manager = new QuickShellSessionManager({
+      config: runtimeConfig,
+      allowedHosts: new Set(["test-device"]),
+      audit: createAuditLogger({ sink }),
+      ptyFactory: () => new FakePty(),
+    });
+    const session = await manager.createSession({ device: "test-device" });
+    const bridge = await startBridgeServer({ config: runtimeConfig, manager });
+    const sockets: WebSocket[] = [];
+
+    try {
+      // Open the cap's worth of sockets and never authenticate them, so every
+      // pending-auth slot stays occupied.
+      for (let index = 0; index < 32; index += 1) {
+        const ws = new WebSocket(wsUrl(bridge.baseUrl, session.id));
+        ws.once("error", () => {});
+        sockets.push(ws);
+        await waitForOpen(ws);
+      }
+
+      const rejected = new WebSocket(wsUrl(bridge.baseUrl, session.id));
+      const failure = new Promise<Error>((resolve) => {
+        rejected.once("error", resolve);
+      });
+      expect((await failure).message).toContain("503");
+      expect(sink.records).toContainEqual(
+        expect.objectContaining({
+          event: "bridge_connection_rejected",
+          reason: "too_many_pending_auth_connections",
+        }),
+      );
+    } finally {
+      for (const ws of sockets) ws.close();
+      manager.closeAll();
+      await bridge.close();
+    }
+  });
+
+  it("tears down the session when a PTY write fails", async () => {
+    const sink = createMemoryAuditSink();
+    const ptys: FakePty[] = [];
+    const runtimeConfig = testRuntimeConfig({ maxWsPayloadBytes: 256 });
+    const manager = new QuickShellSessionManager({
+      config: runtimeConfig,
+      allowedHosts: new Set(["test-device"]),
+      audit: createAuditLogger({ sink }),
+      ptyFactory: () => {
+        const pty = new FakePty();
+        ptys.push(pty);
+        return pty;
+      },
+    });
+    const session = await manager.createSession({ device: "test-device" });
+    manager.startSession(session.id);
+    const bridge = await startBridgeServer({ config: runtimeConfig, manager });
+
+    try {
+      const ws = await connectAndReadReady(
+        wsUrl(bridge.baseUrl, session.id),
+        session.wsToken,
+      );
+      // EPIPE against an ssh process that already died is routine, not exotic.
+      ptys[0]!.write = () => {
+        throw new Error("EPIPE: broken pipe");
+      };
+      const closed = waitForClose(ws);
+      ws.send(JSON.stringify({ type: "input", data: "whoami\n" }));
+      await closed;
+
+      expect(manager.getSession(session.id)).toBeUndefined();
+      expect(sink.records).toContainEqual(
+        expect.objectContaining({
+          event: "bridge_io_failed",
+          sessionId: session.id,
+        }),
+      );
+    } finally {
+      manager.closeAll();
+      await bridge.close();
+    }
   });
 
   it("ignores input and resize after PTY exit", async () => {

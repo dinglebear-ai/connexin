@@ -304,8 +304,18 @@ describe("QuickShellSessionManager", () => {
       expect(instance.getSession(session.id)).toBe(session);
       expect(session.pty).toBe(pty);
       expect(session.closing).toBe(true);
-      expect(instance.writeInput(session.id, "whoami\n")).toBe(false);
-      expect(instance.resizeSession(session.id, 80, 24)).toBe(false);
+      expect(instance.writeInput(session.id, "whoami\n")).toEqual({
+        written: false,
+        reason: "closing",
+      });
+      expect(instance.resizeSession(session.id, 80, 24)).toEqual({
+        resized: false,
+        reason: "closing",
+      });
+      // Restarting a closing session would spawn a second ssh PTY and orphan
+      // the one whose kill just failed.
+      expect(instance.startSession(session.id)).toBeUndefined();
+      expect(session.pty).toBe(pty);
       expect(pty.data.listenerCount("data")).toBe(0);
       expect(pty.exit.listenerCount("exit")).toBe(0);
       expect(session.disposables).toEqual([]);

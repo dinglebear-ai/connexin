@@ -69,6 +69,15 @@ export interface QuickShellSession {
   closing: boolean;
 }
 
+/** Why a PTY write or resize could not be delivered. */
+export type SessionDropReason = "missing" | "exited" | "closing";
+
+export type SessionWriteResult =
+  { written: true } | { written: false; reason: SessionDropReason };
+
+export type SessionResizeResult =
+  { resized: true } | { resized: false; reason: SessionDropReason };
+
 export interface QuickShellDeviceSummary {
   alias: string;
   label?: string;
@@ -134,6 +143,8 @@ export class QuickShellSessionManager {
   private readonly ptyFactory: PtyFactory;
   private readonly sessions = new Map<SessionId, QuickShellSession>();
   private readonly closedListeners = new Set<(sessionId: SessionId) => void>();
+  private droppedAuditRecords = 0;
+  private lastAuditError: unknown;
 
   constructor(options: QuickShellSessionManagerOptions) {
     this.config = options.config;
@@ -313,17 +324,6 @@ export class QuickShellSessionManager {
     return session;
   }
 
-  authenticateWs(
-    sessionId: SessionId,
-    wsToken: string,
-  ): StartedQuickShellSession | undefined {
-    const session = this.sessions.get(sessionId);
-    if (!session || !session.pty || session.wsToken !== wsToken)
-      return undefined;
-    this.recordActivity(sessionId);
-    return session as StartedQuickShellSession;
-  }
-
   recordActivity(sessionId: SessionId): boolean {
     const session = this.sessions.get(sessionId);
     if (!session) return false;
@@ -331,20 +331,39 @@ export class QuickShellSessionManager {
     return true;
   }
 
-  writeInput(sessionId: SessionId, data: string): boolean {
+  /**
+   * Reports *why* a write was dropped rather than collapsing three distinct
+   * states into `false`: the caller surfaces this to the model, which would
+   * otherwise treat a write against a dead PTY as delivered.
+   */
+  private deliverableSession(
+    sessionId: SessionId,
+  ): { session: QuickShellSession } | { reason: SessionDropReason } {
     const session = this.sessions.get(sessionId);
-    if (!session?.pty || session.exited || session.closing) return false;
-    session.pty.write(data);
-    this.recordActivity(sessionId);
-    return true;
+    if (!session?.pty) return { reason: "missing" };
+    if (session.exited) return { reason: "exited" };
+    if (session.closing) return { reason: "closing" };
+    return { session };
   }
 
-  resizeSession(sessionId: SessionId, cols: number, rows: number): boolean {
-    const session = this.sessions.get(sessionId);
-    if (!session?.pty || session.exited || session.closing) return false;
-    session.pty.resize(cols, rows);
+  writeInput(sessionId: SessionId, data: string): SessionWriteResult {
+    const target = this.deliverableSession(sessionId);
+    if ("reason" in target) return { written: false, reason: target.reason };
+    target.session.pty?.write(data);
     this.recordActivity(sessionId);
-    return true;
+    return { written: true };
+  }
+
+  resizeSession(
+    sessionId: SessionId,
+    cols: number,
+    rows: number,
+  ): SessionResizeResult {
+    const target = this.deliverableSession(sessionId);
+    if ("reason" in target) return { resized: false, reason: target.reason };
+    target.session.pty?.resize(cols, rows);
+    this.recordActivity(sessionId);
+    return { resized: true };
   }
 
   pollSession(
@@ -587,7 +606,10 @@ export class QuickShellSessionManager {
   ): void {
     try {
       this.audit.record(event, fields);
+      this.noteAuditWriteSucceeded();
     } catch (error) {
+      this.droppedAuditRecords += 1;
+      this.lastAuditError = error;
       const failure = {
         sessionId:
           typeof fields?.sessionId === "string" ? fields.sessionId : undefined,
@@ -600,6 +622,40 @@ export class QuickShellSessionManager {
         this.logLifecycleFailures("quick-shell audit record failed", [failure]);
       }
     }
+  }
+
+  /**
+   * A recovered sink still has a gap in it, so the count of records lost while
+   * it was down is written into the log itself rather than reset silently.
+   */
+  private noteAuditWriteSucceeded(): void {
+    if (this.droppedAuditRecords === 0) return;
+    const droppedRecords = this.droppedAuditRecords;
+    this.droppedAuditRecords = 0;
+    this.lastAuditError = undefined;
+    try {
+      this.audit.record("audit_sink_recovered", { droppedRecords });
+    } catch (error) {
+      this.droppedAuditRecords = droppedRecords;
+      this.lastAuditError = error;
+    }
+  }
+
+  /**
+   * Health of the audit sink itself. Sessions keep running when auditing fails,
+   * so this is the only signal that the log has gaps.
+   */
+  auditHealth(): { healthy: boolean; droppedRecords: number; error?: string } {
+    return {
+      healthy: this.droppedAuditRecords === 0,
+      droppedRecords: this.droppedAuditRecords,
+      error:
+        this.lastAuditError === undefined
+          ? undefined
+          : this.lastAuditError instanceof Error
+            ? this.lastAuditError.message
+            : String(this.lastAuditError),
+    };
   }
 
   private logLifecycleFailures(

@@ -53,9 +53,32 @@ function disposeAll(disposables: Disposable[]): void {
   }
 }
 
-function sendJson(ws: WebSocket, message: ServerTerminalMessage): void {
-  if (ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify(message));
+function sendJson(ws: WebSocket, message: ServerTerminalMessage): boolean {
+  if (ws.readyState !== WebSocket.OPEN) {
+    // The client never receives this; without a log the reason is lost entirely.
+    console.error("quick-shell bridge dropped message on non-open socket", {
+      type: message.type,
+      readyState: ws.readyState,
+    });
+    return false;
+  }
+  return sendRaw(ws, JSON.stringify(message));
+}
+
+/**
+ * `ws.send` throws on a socket that closed after the readyState check, so every
+ * send is guarded: an unguarded throw inside a PTY data listener would escape
+ * into node-pty's emitter and take down every other session with it.
+ */
+function sendRaw(ws: WebSocket, payload: string): boolean {
+  try {
+    ws.send(payload);
+    return true;
+  } catch (error) {
+    console.error("quick-shell bridge websocket send failed", {
+      message: error instanceof Error ? error.message : String(error),
+    });
+    return false;
   }
 }
 
@@ -75,8 +98,7 @@ function sendOutputWithBackpressure(
     closeSocket(ws, 1011, "terminal client is too slow");
     return false;
   }
-  ws.send(payload);
-  return true;
+  return sendRaw(ws, payload);
 }
 
 function closeWithPolicy(ws: WebSocket, reason: string): void {
@@ -180,22 +202,51 @@ export async function startBridgeServer(
   const activeConnections = new Map<SessionId, ActiveConnection>();
   let closePromise: Promise<void> | undefined;
   let pendingAuthConnections = 0;
-  const rejectionAuditLimiter = createAuditRateLimiter({
+  // Connection and message rejections get separate budgets: a flood of bad
+  // upgrades must not silently suppress unrelated message rejections.
+  const connectionRejectionAuditLimiter = createAuditRateLimiter({
     maxEvents: REJECTION_AUDIT_LIMIT,
     windowMs: REJECTION_AUDIT_WINDOW_MS,
-    onSuppressed: () =>
+    onSuppressionStarted: () =>
       manager.recordAuditEvent("bridge_connection_rejected", {
         reason: "audit_rate_limited",
         suppressedEvent: "unauthenticated_bridge_rejection",
         detailLimit: REJECTION_AUDIT_LIMIT,
         windowMs: REJECTION_AUDIT_WINDOW_MS,
       }),
+    onSuppressionSummary: (suppressedCount) =>
+      manager.recordAuditEvent("bridge_connection_rejected", {
+        reason: "audit_rate_limit_summary",
+        suppressedEvent: "unauthenticated_bridge_rejection",
+        suppressedCount,
+        windowMs: REJECTION_AUDIT_WINDOW_MS,
+      }),
   });
   const recordUnauthenticatedRejection = (fields: Record<string, unknown>) => {
-    rejectionAuditLimiter.record(() =>
+    connectionRejectionAuditLimiter.record(() =>
       manager.recordAuditEvent("bridge_connection_rejected", fields),
     );
   };
+  // Server-scoped rather than per-connection: a per-connection budget would let
+  // N sockets each emit a full quota, defeating the flood protection.
+  const messageRejectionAuditLimiter = createAuditRateLimiter({
+    maxEvents: REJECTION_AUDIT_LIMIT,
+    windowMs: REJECTION_AUDIT_WINDOW_MS,
+    onSuppressionStarted: () =>
+      manager.recordAuditEvent("bridge_message_rejected", {
+        reason: "audit_rate_limited",
+        suppressedEvent: "unauthenticated_bridge_message_rejection",
+        detailLimit: REJECTION_AUDIT_LIMIT,
+        windowMs: REJECTION_AUDIT_WINDOW_MS,
+      }),
+    onSuppressionSummary: (suppressedCount) =>
+      manager.recordAuditEvent("bridge_message_rejected", {
+        reason: "audit_rate_limit_summary",
+        suppressedEvent: "unauthenticated_bridge_message_rejection",
+        suppressedCount,
+        windowMs: REJECTION_AUDIT_WINDOW_MS,
+      }),
+  });
   const schema = clientTerminalMessageSchema({
     maxInputBytes: config.maxInputBytes,
     maxSubmitBytes: config.maxSubmitBytes,
@@ -292,7 +343,7 @@ export async function startBridgeServer(
         const write = () =>
           manager.recordAuditEvent("bridge_message_rejected", fields);
         if (authPending) {
-          rejectionAuditLimiter.record(write);
+          messageRejectionAuditLimiter.record(write);
           return;
         }
         write();
@@ -308,9 +359,15 @@ export async function startBridgeServer(
       authTimer.unref();
 
       ws.on("error", (error: Error) => {
+        const message = error instanceof Error ? error.message : String(error);
         console.error("quick-shell bridge websocket error", {
           sessionId: activeSessionId,
-          message: error instanceof Error ? error.message : String(error),
+          message,
+        });
+        manager.recordAuditEvent("bridge_io_failed", {
+          sessionId: activeSessionId,
+          step: "ws_error",
+          error: message,
         });
       });
 

@@ -154,19 +154,22 @@ const EXPECTED_GATEWAY_PROCESS = {
   command: EXPECTED_GATEWAY_COMMAND,
   args: EXPECTED_GATEWAY_ARGS,
 };
+// Tool ids are namespaced by the gateway upstream name, so they follow
+// QUICK_SHELL_VERIFY_UPSTREAM rather than hardcoding the default.
+const qualifiedTool = (name: string) => `${UPSTREAM}::${name}`;
 const REQUIRED_MODEL_TOOLS = [
-  "quick-shell::check_quick_shell",
-  "quick-shell::list_quick_shell_devices",
-  "quick-shell::open_quick_shell",
-];
+  "check_quick_shell",
+  "list_quick_shell_devices",
+  "open_quick_shell",
+].map(qualifiedTool);
 const APP_ONLY_TOOLS = [
-  "quick-shell::get_quick_shell_session",
-  "quick-shell::poll_quick_shell_session",
-  "quick-shell::write_quick_shell_input",
-  "quick-shell::resize_quick_shell_session",
-  "quick-shell::close_quick_shell_session",
-  "quick-shell::record_quick_shell_output_confirmed",
-];
+  "get_quick_shell_session",
+  "poll_quick_shell_session",
+  "write_quick_shell_input",
+  "resize_quick_shell_session",
+  "close_quick_shell_session",
+  "record_quick_shell_output_confirmed",
+].map(qualifiedTool);
 const REQUIRED_RUNTIME_TOOLS = [...REQUIRED_MODEL_TOOLS, ...APP_ONLY_TOOLS];
 const REQUIRED_RUNTIME_TOOL_NAMES = REQUIRED_RUNTIME_TOOLS.map((tool) =>
   tool.replace(/^quick-shell::/, ""),
@@ -619,7 +622,7 @@ export async function runVerifyDeployment(
     return Array.from(
       new Map(
         all
-          .filter(t => t.namespace === "quick-shell" || t.id?.startsWith("quick-shell::"))
+          .filter(t => t.namespace === ${JSON.stringify(UPSTREAM)} || t.id?.startsWith(${JSON.stringify(`${UPSTREAM}::`)}))
           .map(t => [t.id, { id: t.id }]),
       ).values(),
     );

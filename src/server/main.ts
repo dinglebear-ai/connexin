@@ -95,22 +95,32 @@ export async function prepareRuntime(
     ptyFactory: options.ptyFactory,
   });
   const bridge = await startBridgeServer({ config, manager });
-  audit.record("runtime_started", {
-    mode: options.mode ?? "stdio",
-    pid: process.pid,
-    auditLog: config.auditLogPath ? "file" : "stderr",
-    sshConfigPath: config.sshConfigPath,
-    quickShellConfigPath: config.quickShellConfigPath,
-    allowedHostCount: allowedHosts.size,
-    metadataDeviceCount: deviceMetadata.devices.size,
-    maxSessions: config.maxSessions,
-  });
-  audit.record("bridge_listening", {
-    baseUrl: bridge.baseUrl,
-    listenUrl: bridge.listenUrl,
-    maxPayloadBytes: config.maxWsPayloadBytes,
-    allowedOriginCount: config.allowedOrigins.length,
-  });
+  // Failing loudly on an unwritable audit sink is intended, but the bridge is
+  // already listening by this point and would otherwise keep its port bound for
+  // the life of the process.
+  try {
+    audit.record("runtime_started", {
+      mode: options.mode ?? "stdio",
+      pid: process.pid,
+      auditLog: config.auditLogPath ? "file" : "stderr",
+      sshConfigPath: config.sshConfigPath,
+      quickShellConfigPath: config.quickShellConfigPath,
+      allowedHostCount: allowedHosts.size,
+      metadataDeviceCount: deviceMetadata.devices.size,
+      maxSessions: config.maxSessions,
+    });
+    audit.record("bridge_listening", {
+      baseUrl: bridge.baseUrl,
+      listenUrl: bridge.listenUrl,
+      maxPayloadBytes: config.maxWsPayloadBytes,
+      allowedOriginCount: config.allowedOrigins.length,
+    });
+  } catch (error) {
+    await bridge.close().catch((closeError: unknown) => {
+      console.error("quick-shell bridge close failed", closeError);
+    });
+    throw error;
+  }
   const server = createServer({
     bridgeBaseUrl: bridge.baseUrl,
     config,
@@ -158,6 +168,15 @@ export async function prepareRuntime(
           mode: options.mode ?? "stdio",
           errorCount: errors.length,
         });
+        // Callers exit the process as soon as this resolves, and in stdio mode
+        // the audit sink writes to a pipe, so the closing records are only
+        // durable once the sink has drained.
+        try {
+          await audit.flush?.();
+        } catch (error) {
+          errors.push(error);
+          console.error("quick-shell audit flush failed", error);
+        }
         if (errors.length > 0) {
           throw new AggregateError(
             errors,

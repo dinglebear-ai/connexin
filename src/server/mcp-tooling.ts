@@ -149,18 +149,24 @@ export async function readBuiltAppHtml(): Promise<string> {
     resolve(moduleDir, "../../dist/app/mcp-app.html"),
   ];
 
-  let lastError: unknown;
+  // Every candidate's error is reported: surfacing only the last one sends the
+  // operator chasing a "file not found" when the real cause was a permission
+  // bit on a different path.
+  const errors: unknown[] = [];
   for (const candidate of candidates) {
     try {
       const html = await readFile(candidate, "utf8");
       if (process.env.NODE_ENV !== "test") appHtmlCache = html;
       return html;
     } catch (error) {
-      lastError = error;
+      errors.push(error);
     }
   }
 
-  throw new Error(`Unable to read built MCP app HTML: ${String(lastError)}`);
+  throw new AggregateError(
+    errors,
+    `Unable to read built MCP app HTML from: ${candidates.join(", ")}`,
+  );
 }
 
 export function resetAppHtmlCacheForTests(): void {

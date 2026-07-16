@@ -15,15 +15,18 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 
 describe("audit logging", () => {
-  it("bounds detailed audit records and emits one fixed-cardinality suppression marker", () => {
+  it("bounds detailed audit records and reports how many were suppressed", () => {
     let now = 1_000;
     const details: number[] = [];
-    const summaries: number[] = [];
+    const started: number[] = [];
+    const summaries: { at: number; suppressedCount: number }[] = [];
     const limiter = createAuditRateLimiter({
       maxEvents: 3,
       windowMs: 60_000,
       now: () => now,
-      onSuppressed: () => summaries.push(now),
+      onSuppressionStarted: () => started.push(now),
+      onSuppressionSummary: (suppressedCount) =>
+        summaries.push({ at: now, suppressedCount }),
     });
 
     for (let index = 0; index < 100; index += 1) {
@@ -31,11 +34,38 @@ describe("audit logging", () => {
     }
 
     expect(details).toEqual([0, 1, 2]);
-    expect(summaries).toEqual([1_000]);
+    // An in-progress flood is visible immediately, exactly once per window.
+    expect(started).toEqual([1_000]);
+    // The total is only knowable at window close, so it is not reported yet.
+    expect(summaries).toEqual([]);
 
     now += 60_000;
     limiter.record(() => details.push(100));
     expect(details).toEqual([0, 1, 2, 100]);
+    // 100 attempts, 3 recorded in detail, so 97 were suppressed.
+    expect(summaries).toEqual([{ at: 61_000, suppressedCount: 97 }]);
+    expect(started).toEqual([1_000]);
+  });
+
+  it("does not report suppression for a window that dropped nothing", () => {
+    let now = 1_000;
+    const started: number[] = [];
+    const summaries: number[] = [];
+    const limiter = createAuditRateLimiter({
+      maxEvents: 3,
+      windowMs: 60_000,
+      now: () => now,
+      onSuppressionStarted: () => started.push(now),
+      onSuppressionSummary: (suppressedCount) =>
+        summaries.push(suppressedCount),
+    });
+
+    limiter.record(() => {});
+    now += 60_000;
+    limiter.record(() => {});
+
+    expect(started).toEqual([]);
+    expect(summaries).toEqual([]);
   });
 
   it("redacts token-shaped and output-shaped fields", () => {
@@ -60,6 +90,25 @@ describe("audit logging", () => {
     expect(JSON.stringify(sink.records[0])).not.toMatch(
       /secret|terminal output|hostname|appToken|wsToken|output|suggestedCommand/,
     );
+  });
+
+  it("keeps the hasAppToken diagnostic, which carries no secret", () => {
+    const sink = createMemoryAuditSink();
+    const audit = createAuditLogger({ sink });
+
+    audit.record("app_session_requested", {
+      sessionId: "s1",
+      hasSessionId: true,
+      hasAppToken: false,
+    });
+
+    // Distinguishing "no token supplied" from "wrong token supplied" is the
+    // whole point of this field during incident review.
+    expect(sink.records[0]).toMatchObject({
+      sessionId: "s1",
+      hasSessionId: true,
+      hasAppToken: false,
+    });
   });
 
   it("redacts nested token-shaped and output-shaped fields", () => {

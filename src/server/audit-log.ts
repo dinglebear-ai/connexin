@@ -23,7 +23,8 @@ export type AuditEvent =
   | "app_session_rejected"
   | "app_session_close_requested"
   | "output_confirmed"
-  | "ssh_start_failed";
+  | "ssh_start_failed"
+  | "audit_sink_recovered";
 
 export type AuditFields = Record<string, unknown>;
 
@@ -46,34 +47,44 @@ export interface AuditRateLimiter {
   record(writeDetailedRecord: () => void): void;
 }
 
+/**
+ * Bounds detailed audit records to `maxEvents` per window while keeping the
+ * suppression itself auditable. Two markers per window at most, so cardinality
+ * stays fixed under a flood:
+ *
+ * - `onSuppressionStarted` fires as soon as records begin being dropped, so an
+ *   in-progress flood is visible without waiting for the window to close.
+ * - `onSuppressionSummary` fires at window close with the total dropped, which
+ *   is only knowable then and is the first thing asked after an incident.
+ */
 export function createAuditRateLimiter(options: {
   maxEvents: number;
   windowMs: number;
-  onSuppressed: () => void;
+  onSuppressionStarted: () => void;
+  onSuppressionSummary: (suppressedCount: number) => void;
   now?: () => number;
 }): AuditRateLimiter {
   const now = options.now ?? Date.now;
   let windowStartedAt = now();
   let eventCount = 0;
-  let suppressionRecorded = false;
+  let suppressedCount = 0;
 
   return {
     record(writeDetailedRecord) {
       const currentTime = now();
       if (currentTime - windowStartedAt >= options.windowMs) {
+        if (suppressedCount > 0) options.onSuppressionSummary(suppressedCount);
         windowStartedAt = currentTime;
         eventCount = 0;
-        suppressionRecorded = false;
+        suppressedCount = 0;
       }
       if (eventCount < options.maxEvents) {
         eventCount += 1;
         writeDetailedRecord();
         return;
       }
-      if (!suppressionRecorded) {
-        suppressionRecorded = true;
-        options.onSuppressed();
-      }
+      suppressedCount += 1;
+      if (suppressedCount === 1) options.onSuppressionStarted();
     },
   };
 }
@@ -81,10 +92,24 @@ export function createAuditRateLimiter(options: {
 const REDACTED_FIELD_PATTERN =
   /token|output|suggestedcommand|suggested_command/i;
 
+/**
+ * Keys that match REDACTED_FIELD_PATTERN by substring but carry no secret. The
+ * pattern stays deliberately broad so unforeseen secret-bearing fields are
+ * redacted by default; anything provably safe is named here instead of loosening
+ * it. `hasAppToken` is a boolean that distinguishes "no token supplied" from
+ * "wrong token supplied" during incident review.
+ */
+const SAFE_FIELD_ALLOWLIST = new Set(["hasAppToken"]);
+
+function isRedactedKey(key: string): boolean {
+  if (SAFE_FIELD_ALLOWLIST.has(key)) return false;
+  return REDACTED_FIELD_PATTERN.test(key);
+}
+
 function redact(fields: AuditFields): AuditFields {
   const safe: AuditFields = {};
   for (const [key, value] of Object.entries(fields)) {
-    if (REDACTED_FIELD_PATTERN.test(key)) continue;
+    if (isRedactedKey(key)) continue;
     safe[key] = redactValue(value);
   }
   return safe;
@@ -97,7 +122,7 @@ function redactValue(value: unknown): unknown {
 
   const safe: AuditFields = {};
   for (const [key, nested] of Object.entries(value as AuditFields)) {
-    if (REDACTED_FIELD_PATTERN.test(key)) continue;
+    if (isRedactedKey(key)) continue;
     safe[key] = redactValue(nested);
   }
   return safe;
@@ -119,12 +144,13 @@ function createFileSink(path: string): AuditSink {
   mkdirSync(dirname(path), { recursive: true });
   return {
     write(record) {
+      // appendFileSync returns only once the write(2) completes, so records are
+      // already durable by the time write() returns; flush has nothing to drain.
       appendFileSync(path, `${JSON.stringify(record)}\n`, {
         encoding: "utf8",
         mode: 0o600,
       });
     },
-    async flush() {},
   };
 }
 
@@ -133,6 +159,16 @@ function createStderrSink(): AuditSink {
     write(record) {
       process.stderr.write(`${JSON.stringify(record)}\n`);
     },
+    // In stdio mode stderr is a pipe, so writes queue asynchronously and are
+    // lost if the process exits before they drain.
+    flush: () =>
+      new Promise<void>((resolve) => {
+        if (process.stderr.write("")) {
+          resolve();
+          return;
+        }
+        process.stderr.once("drain", () => resolve());
+      }),
   };
 }
 
@@ -142,6 +178,7 @@ export function createAuditLogger(
   const sink =
     options.sink ??
     (options.path ? createFileSink(options.path) : createStderrSink());
+  const sinkFlush = sink.flush;
   return {
     record(event, fields = {}) {
       sink.write({
@@ -150,7 +187,7 @@ export function createAuditLogger(
         ...redact(fields),
       });
     },
-    flush: sink.flush,
+    flush: sinkFlush ? () => sinkFlush.call(sink) : undefined,
   };
 }
 

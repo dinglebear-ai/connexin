@@ -409,7 +409,19 @@ async function connectTerminal(
   let socket: WebSocket;
   try {
     socket = openTerminalSocket(details);
-  } catch {
+  } catch (error) {
+    // The polled fallback is legitimate, but hiding why it engaged is not: a
+    // bad bridge URL or a CSP connect-src block otherwise presents only as an
+    // unexplained slow terminal.
+    const detail = error instanceof Error ? error.message : String(error);
+    console.error(
+      "quick-shell websocket open failed; falling back to polling",
+      error,
+    );
+    sendHostLog(
+      "warning",
+      `Live terminal unavailable (${detail}); using polled transport`,
+    );
     await startAppToolTransport(details, generation);
     return;
   }
@@ -1452,8 +1464,16 @@ function updateModelContext(state: string): void {
 
 function sendHostLog(level: "warning" | "error", message: string): void {
   const capabilities: HostCapabilities | undefined = app.getHostCapabilities();
-  if (!capabilities?.logging) return;
-  void app.sendLog({ level, data: { message } }).catch(() => {});
+  if (!capabilities?.logging) {
+    console.error(`quick-shell [${level}] ${message}`);
+    return;
+  }
+  // This is the error-reporting channel itself, so a swallowed failure loses
+  // both the report and the reason it failed.
+  void app.sendLog({ level, data: { message } }).catch((error: unknown) => {
+    console.error(`quick-shell [${level}] ${message}`);
+    console.error("quick-shell sendLog failed", error);
+  });
 }
 
 function assertNever(value: never): never {

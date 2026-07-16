@@ -22,6 +22,8 @@ export function registerHealthTool(
         startedSessions: z.number().int().min(0),
         maxSessions: z.number().int().min(1),
         publicBridge: z.boolean(),
+        auditHealthy: z.boolean(),
+        droppedAuditRecords: z.number().int().min(0),
       },
       annotations: toolAnnotations("Check Quick Shell", {
         readOnlyHint: true,
@@ -35,19 +37,27 @@ export function registerHealthTool(
       const startedSessions = sessions.filter(
         (session) => session.pty !== undefined,
       ).length;
+      const audit = manager.auditHealth();
+      const summary = `${sessions.length}/${config.maxSessions} sessions active`;
       return {
         content: [
           {
             type: "text",
-            text: `quick-shell is available (${sessions.length}/${config.maxSessions} sessions active).`,
+            text: audit.healthy
+              ? `quick-shell is available (${summary}).`
+              : `quick-shell is degraded: audit log unwritable, ${audit.droppedRecords} record(s) dropped${
+                  audit.error ? ` (${audit.error})` : ""
+                } (${summary}).`,
           },
         ],
         structuredContent: {
-          ok: true,
+          ok: audit.healthy,
           activeSessions: sessions.length,
           startedSessions,
           maxSessions: config.maxSessions,
           publicBridge: config.bridgePublicUrl !== undefined,
+          auditHealthy: audit.healthy,
+          droppedAuditRecords: audit.droppedRecords,
         },
       };
     },

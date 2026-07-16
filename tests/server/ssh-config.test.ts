@@ -183,7 +183,21 @@ describe("parseSshConfigHosts", () => {
     }
   });
 
-  it("does not traverse Include directives under Host or Match blocks", async () => {
+  // Wildcard blocks contribute no aliases, so an unsafe directive under one is
+  // only caught because the check keys off the block's patterns rather than its
+  // aliases. Narrowing that check to aliases would silently accept a
+  // ProxyCommand that applies to every host.
+  it.each([
+    ["Host *", "Host *\n  ProxyCommand nc %h %p\n"],
+    ["Match all", "Match all\n  ProxyCommand nc %h %p\n"],
+  ])(
+    "rejects an unsafe directive under a wildcard %s block",
+    (_label, source) => {
+      expect(() => parseSshConfigHosts(source)).toThrow(/unsupported/i);
+    },
+  );
+
+  it("does not take aliases from Include directives under Host or Match blocks", async () => {
     const dir = await mkdtemp(join(tmpdir(), "quick-shell-ssh-"));
     await writeFile(
       join(dir, "conditional-host"),
@@ -206,6 +220,88 @@ describe("parseSshConfigHosts", () => {
 
     await expect(loadAllowedSshHosts(join(dir, "config"))).resolves.toEqual(
       new Set(["root"]),
+    );
+  });
+
+  // OpenSSH expands a Host-scoped Include when that alias is used, so its
+  // contents must face the same unsafe-directive scan as the top-level config.
+  // Skipping the scan would allowlist an alias that runs a local command on
+  // connect, defeating the point of the directive rules.
+  it.each([
+    ["ProxyCommand", 'ProxyCommand /bin/sh -c "touch /tmp/pwned"'],
+    ["LocalCommand", "LocalCommand /bin/sh -c id"],
+    ["KnownHostsCommand", "KnownHostsCommand /bin/sh -c id"],
+  ])(
+    "rejects a Host-scoped Include that smuggles in %s",
+    async (_directive, line) => {
+      const dir = await mkdtemp(join(tmpdir(), "quick-shell-ssh-"));
+      await writeFile(join(dir, "inner"), `  ${line}\n`);
+      await writeFile(
+        join(dir, "config"),
+        [
+          "Host evil",
+          "  HostName 127.0.0.1",
+          `  Include ${join(dir, "inner")}`,
+          "",
+        ].join("\n"),
+      );
+
+      await expect(loadAllowedSshHosts(join(dir, "config"))).rejects.toThrow(
+        /unsupported/i,
+      );
+    },
+  );
+
+  it("rejects an unsafe directive nested behind two Host-scoped Includes", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "quick-shell-ssh-"));
+    await writeFile(join(dir, "deep"), "  ProxyCommand /bin/sh -c id\n");
+    await writeFile(join(dir, "inner"), `Include ${join(dir, "deep")}\n`);
+    await writeFile(
+      join(dir, "config"),
+      ["Host evil", `  Include ${join(dir, "inner")}`, ""].join("\n"),
+    );
+
+    await expect(loadAllowedSshHosts(join(dir, "config"))).rejects.toThrow(
+      /unsupported/i,
+    );
+  });
+
+  it("still admits a Host-scoped Include that holds only safe directives", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "quick-shell-ssh-"));
+    await writeFile(join(dir, "inner"), "  User deploy\n  Port 2222\n");
+    await writeFile(
+      join(dir, "config"),
+      ["Host safe", `  Include ${join(dir, "inner")}`, ""].join("\n"),
+    );
+
+    await expect(loadAllowedSshHosts(join(dir, "config"))).resolves.toEqual(
+      new Set(["safe"]),
+    );
+  });
+
+  it("keeps aliases from a global Include already visited by a Host-scoped scan", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "quick-shell-ssh-"));
+    await writeFile(join(dir, "shared"), "Host shared-alias\n  User deploy\n");
+    // `nested` reaches `shared` from inside a Host block, so `shared` is
+    // scanned for unsafe directives before the top-level global Include gets to
+    // contribute its alias.
+    await writeFile(
+      join(dir, "nested"),
+      ["Host nested-alias", `  Include ${join(dir, "shared")}`, ""].join("\n"),
+    );
+    await writeFile(
+      join(dir, "config"),
+      [
+        `Include ${join(dir, "nested")}`,
+        `Include ${join(dir, "shared")}`,
+        "",
+      ].join("\n"),
+    );
+
+    // The scan must not mark `shared` as seen and starve the global Include
+    // that legitimately contributes the alias.
+    await expect(loadAllowedSshHosts(join(dir, "config"))).resolves.toEqual(
+      new Set(["nested-alias", "shared-alias"]),
     );
   });
 

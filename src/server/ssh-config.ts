@@ -164,8 +164,20 @@ function lineTokens(line: string): string[] | undefined {
   return tokenizeOpenSshLine(trimmed);
 }
 
-function globallyReachableIncludePatterns(source: string): string[] {
-  const patterns: string[] = [];
+interface IncludePattern {
+  pattern: string;
+  /**
+   * Only global-scope Includes contribute aliases, because a Host-scoped
+   * Include's contents apply solely to the enclosing block. Host-scoped
+   * Includes are still traversed for the unsafe-directive scan: OpenSSH expands
+   * them when the alias is used, so skipping them would let a Host block smuggle
+   * in a ProxyCommand that runs on connect while the alias stays allowlisted.
+   */
+  globalScope: boolean;
+}
+
+function includePatterns(source: string): IncludePattern[] {
+  const patterns: IncludePattern[] = [];
   let globalScope = true;
   for (const line of source.split(/\r?\n/)) {
     const [keyword, ...rest] = lineTokens(line) ?? [];
@@ -174,7 +186,9 @@ function globallyReachableIncludePatterns(source: string): string[] {
       globalScope = false;
       continue;
     }
-    if (globalScope && normalizedKeyword === "include") patterns.push(...rest);
+    if (normalizedKeyword === "include") {
+      for (const pattern of rest) patterns.push({ pattern, globalScope });
+    }
   }
   return patterns;
 }
@@ -238,10 +252,18 @@ async function expandIncludePath(pattern: string): Promise<string[]> {
       return;
     }
 
+    // A missing directory legitimately means "no matches", but EACCES and
+    // friends must not masquerade as one: that would quietly drop hosts from
+    // the allowlist and leave the user staring at a config that looks correct.
     const entries = await readdir(base, {
       withFileTypes: true,
       encoding: "utf8",
-    }).catch(() => undefined);
+    }).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT" || error.code === "ENOTDIR") return undefined;
+      throw new Error(
+        `Unable to expand SSH config Include ${base}: ${error.message}`,
+      );
+    });
     if (!entries) return;
 
     const pattern = globSegmentToRegExp(segment);
@@ -256,9 +278,78 @@ async function expandIncludePath(pattern: string): Promise<string[]> {
   return matches.sort();
 }
 
+interface IncludeTraversal {
+  /** Cycle guard for Includes that contribute aliases. */
+  seenFiles: Set<string>;
+  /**
+   * Cycle guard for the unsafe-directive scan. Kept separate from `seenFiles`
+   * so a Host-scoped Include cannot mark a file as visited and suppress the
+   * aliases a later global-scope Include of that same file would contribute.
+   */
+  scannedFiles: Set<string>;
+}
+
+async function readSshConfigSource(
+  path: string,
+  required: boolean,
+): Promise<string | undefined> {
+  try {
+    return await readFile(path, "utf8");
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    // OpenSSH ignores optional Includes that do not resolve, but an existing
+    // file we cannot read is a real error: swallowing it would silently drop
+    // hosts from the allowlist, or worse, skip an unsafe-directive scan.
+    if (!required && (code === "ENOENT" || code === "ENOTDIR"))
+      return undefined;
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Unable to read SSH config ${path}: ${message}`);
+  }
+}
+
+/**
+ * Parses an included file purely to enforce the unsafe-directive rules; any
+ * aliases it declares are discarded because a Host-scoped Include cannot
+ * contribute aliases of its own.
+ */
+async function scanSshConfigForUnsafeDirectives(
+  configPath: string,
+  traversal: IncludeTraversal,
+  depth: number,
+): Promise<void> {
+  if (depth > MAX_INCLUDE_DEPTH)
+    throw new Error("SSH config Include depth exceeded");
+
+  const path = resolve(configPath);
+  if (traversal.scannedFiles.has(path)) return;
+  traversal.scannedFiles.add(path);
+
+  const source = await readSshConfigSource(path, false);
+  if (source === undefined) return;
+
+  try {
+    parseSshConfigHosts(source);
+  } catch (error) {
+    // Name the file: the directive is nested inside an Include, so the bare
+    // message would send the reader looking through the wrong config.
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`${message} (in SSH config Include ${path})`);
+  }
+  for (const include of includePatterns(source)) {
+    const pattern = resolveIncludePattern(include.pattern);
+    for (const includedPath of await expandIncludePath(pattern)) {
+      await scanSshConfigForUnsafeDirectives(
+        includedPath,
+        traversal,
+        depth + 1,
+      );
+    }
+  }
+}
+
 async function collectSshConfigHosts(
   configPath: string,
-  seenFiles: Set<string>,
+  traversal: IncludeTraversal,
   depth: number,
   required: boolean,
 ): Promise<string[]> {
@@ -266,31 +357,31 @@ async function collectSshConfigHosts(
     throw new Error("SSH config Include depth exceeded");
 
   const path = resolve(configPath);
-  if (seenFiles.has(path)) return [];
-  seenFiles.add(path);
+  if (traversal.seenFiles.has(path)) return [];
+  traversal.seenFiles.add(path);
 
-  let source: string;
-  try {
-    source = await readFile(path, "utf8");
-  } catch (error) {
-    if (required) {
-      const message = error instanceof Error ? error.message : String(error);
-      throw new Error(`Unable to read SSH config ${path}: ${message}`);
-    }
-    return [];
-  }
+  const source = await readSshConfigSource(path, required);
+  if (source === undefined) return [];
 
   const hosts = parseSshConfigHosts(source);
-  for (const include of globallyReachableIncludePatterns(source)) {
-    const pattern = resolveIncludePattern(include);
+  for (const include of includePatterns(source)) {
+    const pattern = resolveIncludePattern(include.pattern);
     for (const includedPath of await expandIncludePath(pattern)) {
-      hosts.push(
-        ...(await collectSshConfigHosts(
-          includedPath,
-          seenFiles,
-          depth + 1,
-          false,
-        )),
+      if (include.globalScope) {
+        hosts.push(
+          ...(await collectSshConfigHosts(
+            includedPath,
+            traversal,
+            depth + 1,
+            false,
+          )),
+        );
+        continue;
+      }
+      await scanSshConfigForUnsafeDirectives(
+        includedPath,
+        traversal,
+        depth + 1,
       );
     }
   }
@@ -301,5 +392,9 @@ async function collectSshConfigHosts(
 export async function loadAllowedSshHosts(
   configPath: string,
 ): Promise<Set<string>> {
-  return new Set(await collectSshConfigHosts(configPath, new Set(), 0, true));
+  const traversal: IncludeTraversal = {
+    seenFiles: new Set(),
+    scannedFiles: new Set(),
+  };
+  return new Set(await collectSshConfigHosts(configPath, traversal, 0, true));
 }

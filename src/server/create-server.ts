@@ -510,17 +510,22 @@ export function createServer(options: CreateServerOptions): McpServer {
       );
       if ("error" in startup) return startup.error;
       const session = startup.session;
-      const written = manager.writeInput(session.id, args.data);
+      const result = manager.writeInput(session.id, args.data);
+      if (!result.written) {
+        // A dropped write is a failure, not a quiet success: without this the
+        // model proceeds as though the input reached the shell.
+        manager.recordAuditEvent("app_session_rejected", {
+          sessionId: session.id,
+          device: session.publicSummary.device,
+          reason: `write_ignored_${result.reason}`,
+        });
+        return toolError(
+          `Quick-shell input not delivered: session ${result.reason}.`,
+        );
+      }
       return {
-        content: [
-          {
-            type: "text",
-            text: written
-              ? "Quick-shell input written."
-              : "Quick-shell input ignored.",
-          },
-        ],
-        structuredContent: { written },
+        content: [{ type: "text", text: "Quick-shell input written." }],
+        structuredContent: { written: true },
       };
     },
   );
@@ -591,17 +596,20 @@ export function createServer(options: CreateServerOptions): McpServer {
       );
       if ("error" in startup) return startup.error;
       const session = startup.session;
-      const resized = manager.resizeSession(session.id, args.cols, args.rows);
+      const result = manager.resizeSession(session.id, args.cols, args.rows);
+      if (!result.resized) {
+        manager.recordAuditEvent("app_session_rejected", {
+          sessionId: session.id,
+          device: session.publicSummary.device,
+          reason: `resize_ignored_${result.reason}`,
+        });
+        return toolError(
+          `Quick-shell resize not applied: session ${result.reason}.`,
+        );
+      }
       return {
-        content: [
-          {
-            type: "text",
-            text: resized
-              ? "Quick-shell session resized."
-              : "Quick-shell resize ignored.",
-          },
-        ],
-        structuredContent: { resized },
+        content: [{ type: "text", text: "Quick-shell session resized." }],
+        structuredContent: { resized: true },
       };
     },
   );
@@ -638,15 +646,23 @@ export function createServer(options: CreateServerOptions): McpServer {
         hasAppToken:
           typeof args.appToken === "string" && args.appToken.length > 0,
       });
+      const closeCapability = {
+        missingReason: "missing_close_capability",
+        missingMessage: "Missing quick-shell close capability.",
+        invalidReason: "invalid_close_capability",
+      };
       if (!args.sessionId || !args.appToken) {
-        const capability = requireAppCapability(manager, args, {
-          missingReason: "missing_close_capability",
-          missingMessage: "Missing quick-shell close capability.",
-          invalidReason: "invalid_close_capability",
-        });
+        const capability = requireAppCapability(manager, args, closeCapability);
+        // requireAppCapability always errors on this same condition, so the
+        // narrowing below is for the type checker rather than a real branch.
         if ("error" in capability) return capability.error;
-        return toolError("Missing quick-shell close capability.");
+        return toolError(closeCapability.missingMessage);
       }
+      // Existence is checked before authentication so that closing an
+      // already-closed session stays idempotent: once a session is gone there is
+      // no token left to authenticate against. The cost is that an unknown id is
+      // distinguishable from a known one without a token, which is acceptable
+      // only because ids are unguessable randomUUID values.
       const existing = manager.getSession(args.sessionId);
       if (!existing) {
         return {
@@ -657,11 +673,7 @@ export function createServer(options: CreateServerOptions): McpServer {
         };
       }
 
-      const capability = requireAppCapability(manager, args, {
-        missingReason: "missing_close_capability",
-        missingMessage: "Missing quick-shell close capability.",
-        invalidReason: "invalid_close_capability",
-      });
+      const capability = requireAppCapability(manager, args, closeCapability);
       if ("error" in capability) return capability.error;
       const session = capability.session;
 

@@ -24,7 +24,13 @@ export function responseForInlineWasmDataUrl(url: string): Response {
 }
 
 export function loadGhosttyRuntime(): Promise<void> {
-  initPromise ??= withInlineWasmFetchShim(init);
+  // Only a fulfilled init is memoized: caching a rejection would make every
+  // later Reconnect replay the same failure, so one transient WASM init error
+  // would brick the terminal for the life of the app instance.
+  initPromise ??= withInlineWasmFetchShim(init).catch((error: unknown) => {
+    initPromise = undefined;
+    throw error;
+  });
   return initPromise;
 }
 
