@@ -85,6 +85,16 @@ describe("parseSshConfigHosts", () => {
         'Host safe\n  HostName 127.0.0.1\nMatch=exec "test -f ~/.flag"\n',
       ),
     ).toThrow("Match exec is unsupported");
+    expect(() =>
+      parseSshConfigHosts(
+        'Host safe\n  HostName 127.0.0.1\nMatch !exec "test -f ~/.flag"\n',
+      ),
+    ).toThrow("Match exec is unsupported");
+    expect(() =>
+      parseSshConfigHosts(
+        'Host safe\n  HostName 127.0.0.1\nMatch !exec="test -f ~/.flag"\n',
+      ),
+    ).toThrow("Match exec is unsupported");
   });
 
   it("rejects global local-exec directives before host blocks", () => {
@@ -98,7 +108,10 @@ describe("parseSshConfigHosts", () => {
   it("loads aliases from Include globs", async () => {
     const dir = await mkdtemp(join(tmpdir(), "quick-shell-ssh-"));
     await mkdir(join(dir, "config.d"));
-    await writeFile(join(dir, "config"), "Host root\nInclude config.d/*\n");
+    await writeFile(
+      join(dir, "config"),
+      `Host root\nInclude ${dir}/config.d/*\n`,
+    );
     await writeFile(
       join(dir, "config.d", "hosts"),
       "Host included\n  HostName 127.0.0.1\n",
@@ -112,7 +125,10 @@ describe("parseSshConfigHosts", () => {
   it("loads aliases from Include globs with keyword=value syntax", async () => {
     const dir = await mkdtemp(join(tmpdir(), "quick-shell-ssh-"));
     await mkdir(join(dir, "config.d"));
-    await writeFile(join(dir, "config"), "Host root\nInclude=config.d/*\n");
+    await writeFile(
+      join(dir, "config"),
+      `Host root\nInclude=${dir}/config.d/*\n`,
+    );
     await writeFile(
       join(dir, "config.d", "hosts"),
       "Host included\n  HostName 127.0.0.1\n",
@@ -120,6 +136,54 @@ describe("parseSshConfigHosts", () => {
 
     await expect(loadAllowedSshHosts(join(dir, "config"))).resolves.toEqual(
       new Set(["root", "included"]),
+    );
+  });
+
+  it("resolves relative Include paths under the user's .ssh directory", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "quick-shell-ssh-"));
+    const originalHome = process.env.HOME;
+    process.env.HOME = dir;
+    try {
+      await mkdir(join(dir, ".ssh", "config.d"), { recursive: true });
+      await writeFile(join(dir, "config"), "Host root\nInclude config.d/*\n");
+      await writeFile(
+        join(dir, ".ssh", "config.d", "hosts"),
+        "Host included\n  HostName 127.0.0.1\n",
+      );
+
+      await expect(loadAllowedSshHosts(join(dir, "config"))).resolves.toEqual(
+        new Set(["root", "included"]),
+      );
+    } finally {
+      process.env.HOME = originalHome;
+    }
+  });
+
+  it("rejects Include patterns with unsupported OpenSSH expansion", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "quick-shell-ssh-"));
+    await writeFile(
+      join(dir, "config"),
+      "Host root\nInclude %d/.ssh/config.d/*\n",
+    );
+
+    await expect(loadAllowedSshHosts(join(dir, "config"))).rejects.toThrow(
+      "OpenSSH tokens or environment variables",
+    );
+
+    await writeFile(
+      join(dir, "config"),
+      "Host root\nInclude ${HOME}/.ssh/config.d/*\n",
+    );
+    await expect(loadAllowedSshHosts(join(dir, "config"))).rejects.toThrow(
+      "OpenSSH tokens or environment variables",
+    );
+
+    await writeFile(
+      join(dir, "config"),
+      "Host root\nInclude ~root/.ssh/config\n",
+    );
+    await expect(loadAllowedSshHosts(join(dir, "config"))).rejects.toThrow(
+      "other-user home expansion",
     );
   });
 

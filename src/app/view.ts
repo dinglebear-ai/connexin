@@ -1,10 +1,12 @@
 export interface ShellElements {
   container: HTMLElement;
   status: HTMLParagraphElement;
+  sessionSummary: HTMLDivElement;
   commandStrip: HTMLFormElement;
   commandInput: HTMLInputElement;
   insertButton: HTMLButtonElement;
   terminalMount: HTMLDivElement;
+  transcript: HTMLPreElement;
   actions: HTMLDivElement;
   connectButton: HTMLButtonElement;
   displayModeButton: HTMLButtonElement;
@@ -38,6 +40,11 @@ export function buildShell(): ShellElements {
   status.textContent = "Waiting";
   header.append(title, status);
 
+  const sessionSummary = document.createElement("div");
+  sessionSummary.className = "shell__summary";
+  sessionSummary.hidden = true;
+  sessionSummary.setAttribute("aria-live", "polite");
+
   const commandStrip = document.createElement("form");
   commandStrip.className = "command-strip";
   const commandInput = document.createElement("input");
@@ -56,6 +63,10 @@ export function buildShell(): ShellElements {
   terminalMount.className = "terminal";
   terminalMount.setAttribute("role", "region");
   terminalMount.setAttribute("aria-label", "Terminal output");
+  const transcript = document.createElement("pre");
+  transcript.className = "terminal-transcript sr-only";
+  transcript.setAttribute("aria-label", "Terminal transcript");
+  transcript.setAttribute("aria-live", "polite");
 
   const actions = document.createElement("div");
   actions.className = "actions";
@@ -127,15 +138,25 @@ export function buildShell(): ShellElements {
   dialogActions.append(cancelButton, confirmButton);
   dialog.append(dialogTitle, textarea, meta, warnings, fallback, dialogActions);
 
-  container.append(header, commandStrip, terminalMount, actions, dialog);
+  container.append(
+    header,
+    sessionSummary,
+    commandStrip,
+    terminalMount,
+    transcript,
+    actions,
+    dialog,
+  );
 
   return {
     container,
     status,
+    sessionSummary,
     commandStrip,
     commandInput,
     insertButton,
     terminalMount,
+    transcript,
     actions,
     connectButton,
     displayModeButton,

@@ -22,11 +22,18 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Typecheck
-        run: npm run typecheck
+      - name: Build
+        run: npm run build
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Format
+        run: npm run format:check
 
       - name: Test
-        run: npm test
+        run: npm run test:coverage
 
       - name: Smoke stdio build
-        run: npm run smoke:stdio
+        timeout-minutes: 2
+        run: npm run smoke:stdio:built

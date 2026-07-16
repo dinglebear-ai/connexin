@@ -156,6 +156,7 @@ const EXPECTED_GATEWAY_PROCESS = {
 };
 const REQUIRED_MODEL_TOOLS = [
   "quick-shell::check_quick_shell",
+  "quick-shell::list_quick_shell_devices",
   "quick-shell::open_quick_shell",
 ];
 const APP_ONLY_TOOLS = [

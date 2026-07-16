@@ -1,5 +1,5 @@
 import { readdir, readFile } from "node:fs/promises";
-import { dirname, isAbsolute, parse, resolve, sep } from "node:path";
+import { isAbsolute, parse, resolve, sep } from "node:path";
 
 const MAX_INCLUDE_DEPTH = 16;
 
@@ -97,7 +97,7 @@ export function parseSshConfigHosts(source: string): string[] {
 
     if (normalizedKeyword === "match") {
       flushHostBlock();
-      if (args.some((arg) => arg.toLowerCase() === "exec")) {
+      if (args.some(isMatchExecCriterion)) {
         throw new Error(
           "SSH config Match exec is unsupported because it can execute local commands",
         );
@@ -116,6 +116,11 @@ export function parseSshConfigHosts(source: string): string[] {
 
   flushHostBlock();
   return hosts;
+}
+
+function isMatchExecCriterion(arg: string): boolean {
+  const criterion = arg.toLowerCase().split("=")[0]?.replace(/^!+/, "");
+  return criterion === "exec";
 }
 
 function unsafeExecutionDirective(
@@ -160,12 +165,28 @@ function expandHome(path: string): string {
   if (path === "~") return process.env.HOME ?? path;
   if (path.startsWith("~/"))
     return resolve(process.env.HOME ?? ".", path.slice(2));
+  if (path.startsWith("~")) {
+    throw new Error(
+      "SSH config Include entries with other-user home expansion are unsupported",
+    );
+  }
   return path;
 }
 
-function resolveIncludePattern(pattern: string, basePath: string): string {
-  const expanded = expandHome(pattern);
-  return isAbsolute(expanded) ? expanded : resolve(dirname(basePath), expanded);
+function expandSupportedIncludePattern(pattern: string): string {
+  if (/%(?!%)/.test(pattern) || /\$\{[^}]+}/.test(pattern)) {
+    throw new Error(
+      "SSH config Include entries with OpenSSH tokens or environment variables are unsupported",
+    );
+  }
+  return pattern.replace(/%%/g, "%");
+}
+
+function resolveIncludePattern(pattern: string): string {
+  const supported = expandSupportedIncludePattern(pattern);
+  const userSshDir = resolve(process.env.HOME ?? ".", ".ssh");
+  const expanded = expandHome(supported);
+  return isAbsolute(expanded) ? expanded : resolve(userSshDir, expanded);
 }
 
 function globSegmentToRegExp(segment: string): RegExp {
@@ -243,7 +264,7 @@ async function collectSshConfigHosts(
 
   const hosts = parseSshConfigHosts(source);
   for (const include of includePatterns(source)) {
-    const pattern = resolveIncludePattern(include, path);
+    const pattern = resolveIncludePattern(include);
     for (const includedPath of await expandIncludePath(pattern)) {
       hosts.push(
         ...(await collectSshConfigHosts(

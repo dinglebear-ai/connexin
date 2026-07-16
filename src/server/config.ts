@@ -97,6 +97,16 @@ function allowedOriginsFromEnv(env: NodeJS.ProcessEnv): string[] {
   ];
 }
 
+function isLoopbackHostname(hostname: string): boolean {
+  return (
+    hostname === "localhost" ||
+    hostname === "127.0.0.1" ||
+    hostname.startsWith("127.") ||
+    hostname === "[::1]" ||
+    hostname === "::1"
+  );
+}
+
 function optionalBaseUrl(
   env: NodeJS.ProcessEnv,
   key: string,
@@ -106,6 +116,15 @@ function optionalBaseUrl(
   const parsed = new URL(raw);
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
     throw new Error(`${key} must start with http:// or https://`);
+  }
+  if (
+    parsed.protocol === "http:" &&
+    !isLoopbackHostname(parsed.hostname) &&
+    env.QUICK_SHELL_ALLOW_INSECURE_PUBLIC_BRIDGE !== "1"
+  ) {
+    throw new Error(
+      `${key} must use https:// for non-loopback hosts; set QUICK_SHELL_ALLOW_INSECURE_PUBLIC_BRIDGE=1 only for local development`,
+    );
   }
   parsed.pathname = parsed.pathname.replace(/\/+$/, "");
   parsed.search = "";

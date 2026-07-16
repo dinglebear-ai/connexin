@@ -1,4 +1,5 @@
 import http from "node:http";
+import net from "node:net";
 import { describe, expect, it } from "vitest";
 import WebSocket from "ws";
 import type { RuntimeConfig } from "../../src/server/config.js";
@@ -84,6 +85,39 @@ function wsUrl(baseUrl: string, sessionId: string): string {
   return `${baseUrl.replace("http:", "ws:")}/terminal?session=${sessionId}`;
 }
 
+async function sendMalformedUpgrade(
+  baseUrl: string,
+  sessionId: string,
+): Promise<void> {
+  const parsed = new URL(baseUrl);
+  const socket = net.connect(Number(parsed.port), parsed.hostname);
+  await new Promise<void>((resolve, reject) => {
+    socket.once("connect", () => resolve());
+    socket.once("error", reject);
+  });
+  socket.end(
+    [
+      `GET /terminal?session=${sessionId} HTTP/1.1`,
+      `Host: ${parsed.host}`,
+      "Connection: Upgrade",
+      "Upgrade: websocket",
+      "",
+      "",
+    ].join("\r\n"),
+  );
+  await new Promise<void>((resolve) => {
+    const timer = setTimeout(() => {
+      socket.destroy();
+      resolve();
+    }, 25);
+    timer.unref?.();
+    socket.once("close", () => {
+      clearTimeout(timer);
+      resolve();
+    });
+  });
+}
+
 async function connectAndReadReady(
   url: string,
   token: string,
@@ -158,6 +192,23 @@ describe("startBridgeServer", () => {
     await expect(closed).resolves.toMatchObject({ code: 1008 });
     manager.closeAll();
     await bridge.close();
+  });
+
+  it("does not let malformed upgrades exhaust pending authentication slots", async () => {
+    const { bridge, manager, session } = await fixture();
+    const url = wsUrl(bridge.baseUrl, session.id);
+    try {
+      for (let index = 0; index < 40; index += 1) {
+        await sendMalformedUpgrade(bridge.baseUrl, session.id);
+      }
+
+      const ws = await connectAndReadReady(url, session.wsToken);
+      expect(ws.readyState).toBe(WebSocket.OPEN);
+      ws.close();
+    } finally {
+      manager.closeAll();
+      await bridge.close();
+    }
   });
 
   it("rejects missing session ids before WebSocket upgrade", async () => {

@@ -22,7 +22,11 @@ export function readTerminalTheme(
       "--qs-terminal-bg",
       FALLBACK_THEME.background,
     ),
-    foreground: readCssToken(styles, "--qs-text", FALLBACK_THEME.foreground),
+    foreground: readCssToken(
+      styles,
+      "--qs-terminal-text",
+      FALLBACK_THEME.foreground,
+    ),
     cursor: readCssToken(styles, "--qs-accent", FALLBACK_THEME.cursor),
     selectionBackground: readCssToken(
       styles,

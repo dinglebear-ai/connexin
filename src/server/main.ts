@@ -38,6 +38,10 @@ export interface HttpMcpServer {
   close(): Promise<void>;
 }
 
+interface CloseableService {
+  close(): Promise<void>;
+}
+
 function listenHttpServer(
   httpServer: http.Server,
   port: number,
@@ -261,12 +265,12 @@ export async function startHttpMcpServer(options: {
   };
 }
 
-function registerSignalCleanup(runtime: PreparedRuntime): void {
+function registerSignalCleanup(service: CloseableService): void {
   let closing = false;
   const cleanup = () => {
     if (closing) return;
     closing = true;
-    runtime
+    service
       .close()
       .catch((error) => console.error(error))
       .finally(() => process.exit(0));
@@ -323,7 +327,15 @@ export async function runHttp(
       );
     throw error;
   }
-  registerSignalCleanup(runtime);
+  registerSignalCleanup({
+    close: async () => {
+      const errors: unknown[] = [];
+      await httpServer.close().catch((error) => errors.push(error));
+      await runtime.close().catch((error) => errors.push(error));
+      if (errors.length > 0)
+        throw new AggregateError(errors, "quick-shell HTTP cleanup failed");
+    },
+  });
   console.error(`quick-shell HTTP MCP listening at ${httpServer.baseUrl}/mcp`);
   console.error(
     `quick-shell terminal bridge listening at ${runtime.bridge.listenUrl}`,

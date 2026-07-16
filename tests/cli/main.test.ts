@@ -38,6 +38,17 @@ class FakeCliPty implements CliPtyProcess {
   }
 }
 
+class FakeInput extends EventEmitter {
+  isTTY = true;
+  rawMode = false;
+
+  setRawMode(enabled: boolean): void {
+    this.rawMode = enabled;
+  }
+
+  resume(): void {}
+}
+
 describe("parseCliArgs", () => {
   it("parses device, suggested command, and prefill delay", () => {
     expect(
@@ -153,6 +164,33 @@ describe("runQuickShellCli", () => {
     await new Promise((resolve) => setTimeout(resolve, 20));
 
     expect(ptys[0]?.writes).toEqual([]);
+  });
+
+  it("cancels a delayed prefill after user input", async () => {
+    const ptys: FakeCliPty[] = [];
+    const stdin = new FakeInput();
+    const running = runQuickShellCli({
+      args: ["devbox", "--suggest", "hostname", "--prefill-delay-ms", "10"],
+      config: testRuntimeConfig(),
+      allowedHosts: new Set(["devbox"]),
+      deviceMetadata: { devices: new Map() },
+      stdin,
+      stdout: { write: () => undefined },
+      stderr: { write: () => undefined },
+      ptyFactory: () => {
+        const pty = new FakeCliPty();
+        ptys.push(pty);
+        return pty;
+      },
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    stdin.emit("data", "typed");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    ptys[0]?.exit(0);
+    await expect(running).resolves.toEqual({ exitCode: 0 });
+
+    expect(ptys[0]?.writes).toEqual(["typed"]);
   });
 
   it("reports unknown PTY termination as failure", async () => {

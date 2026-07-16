@@ -142,7 +142,7 @@ describe("QuickShellSessionManager", () => {
       snapshotSeq: 3,
       droppedBeforeSeq: 2,
     });
-    expect(poll?.chunks).toEqual([{ seq: 3, data: "ghijk", snapshot: true }]);
+    expect(poll?.chunks).toEqual([]);
   });
 
   it("retains oversized polling chunks as truncated tail output", async () => {

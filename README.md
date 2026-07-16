@@ -69,7 +69,8 @@ The local CLI does not accept `--reason`. Use the MCP API `reason` field when th
 | `QUICK_SHELL_ALLOWED_ORIGINS`                | empty                                        | Comma-separated exact WebSocket `Origin` allowlist for `/terminal`. Empty means no origin filter. |
 | `QUICK_SHELL_BRIDGE_HOST`                    | `127.0.0.1`                                  | Terminal bridge bind host. Use `0.0.0.0` only behind a trusted TLS reverse proxy.                 |
 | `QUICK_SHELL_BRIDGE_PORT`                    | `0`                                          | Terminal bridge bind port. `0` asks the OS for a free port.                                       |
-| `QUICK_SHELL_BRIDGE_PUBLIC_URL`              | bridge listen URL                            | Public HTTP(S) base URL advertised to the MCP App.                                                |
+| `QUICK_SHELL_BRIDGE_PUBLIC_URL`              | bridge listen URL                            | Public base URL advertised to the MCP App. Non-loopback URLs must use HTTPS by default.           |
+| `QUICK_SHELL_ALLOW_INSECURE_PUBLIC_BRIDGE`   | unset                                        | Set to `1` only for local development if a non-loopback public bridge URL must use HTTP.          |
 | `QUICK_SHELL_MAX_SESSIONS`                   | `4`                                          | Maximum live sessions in one server process.                                                      |
 | `QUICK_SHELL_MAX_DEVICE_LENGTH`              | `128`                                        | Maximum device alias length.                                                                      |
 | `QUICK_SHELL_MAX_REASON_LENGTH`              | `1000`                                       | Maximum MCP API reason length.                                                                    |
@@ -85,7 +86,7 @@ The local CLI does not accept `--reason`. Use the MCP API `reason` field when th
 
 ## Devices
 
-V1 accepts only explicit `Host` aliases from the configured SSH config. Wildcards such as `Host *`, `prod-*`, and negated aliases are ignored. `Include` files are followed recursively, including simple `*` and `?` path globs. The primary SSH config must be readable; optional included files that do not exist are skipped.
+V1 accepts only explicit `Host` aliases from the configured SSH config. Wildcards such as `Host *`, `prod-*`, and negated aliases are ignored. `Include` files are followed recursively, including simple `*` and `?` path globs. Relative include paths are resolved the same way OpenSSH resolves user config includes: under `$HOME/.ssh`. The primary SSH config must be readable; optional included files that do not exist are skipped. Include entries that require OpenSSH token expansion, environment expansion, or another user's `~user` home expansion are rejected because quick-shell cannot safely validate the same file OpenSSH would load.
 
 The parser rejects SSH config that can execute local commands before the user reaches the remote shell:
 
@@ -94,7 +95,7 @@ The parser rejects SSH config that can execute local commands before the user re
 - `LocalCommand`
 - `RemoteCommand`
 - `PermitLocalCommand yes`
-- `Match exec`
+- `Match exec` and negated forms such as `Match !exec`
 
 Add a device to the SSH config:
 
@@ -153,18 +154,19 @@ App resource:
 
 Tools:
 
-| Tool                                  | Visibility | Purpose                                                                                                                              |
-| ------------------------------------- | ---------- | ------------------------------------------------------------------------------------------------------------------------------------ |
-| `check_quick_shell`                   | model      | Side-effect-free health check with active session counts, started session counts, max sessions, and public-bridge status.            |
-| `open_quick_shell`                    | model      | Creates a session capability for an allowlisted SSH alias. Inputs are `device`, optional `reason`, and optional `suggested_command`. |
-| `get_quick_shell_session`             | app        | Exchanges hidden app capability for app session details when the initial tool result did not include them.                           |
-| `poll_quick_shell_session`            | app        | App-only output polling fallback when the browser cannot reach the direct bridge. Terminal output is returned in hidden `_meta`.     |
-| `write_quick_shell_input`             | app        | App-only input fallback.                                                                                                             |
-| `resize_quick_shell_session`          | app        | App-only terminal resize fallback.                                                                                                   |
-| `close_quick_shell_session`           | app        | App-owned session close.                                                                                                             |
-| `record_quick_shell_output_confirmed` | app        | Audit breadcrumb after the user confirms output return.                                                                              |
+| Tool                                  | Visibility | Purpose                                                                                                                               |
+| ------------------------------------- | ---------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| `check_quick_shell`                   | model      | Side-effect-free health check with active session counts, started session counts, max sessions, and public-bridge status.             |
+| `list_quick_shell_devices`            | model      | Lists allowlisted aliases and non-secret device metadata so agents do not have to guess target names.                                 |
+| `open_quick_shell`                    | model      | Prepares a session capability for an allowlisted SSH alias. Inputs are `device`, optional `reason`, and optional `suggested_command`. |
+| `get_quick_shell_session`             | app        | Exchanges hidden app capability for app session details when the initial tool result did not include them.                            |
+| `poll_quick_shell_session`            | app        | App-only output polling fallback when the browser cannot reach the direct bridge. Terminal output is returned in hidden `_meta`.      |
+| `write_quick_shell_input`             | app        | App-only input fallback.                                                                                                              |
+| `resize_quick_shell_session`          | app        | App-only terminal resize fallback.                                                                                                    |
+| `close_quick_shell_session`           | app        | App-owned session close.                                                                                                              |
+| `record_quick_shell_output_confirmed` | app        | Audit breadcrumb after the user confirms output return.                                                                               |
 
-`open_quick_shell` returns model-visible text plus structured public session fields: `sessionId`, `device`, optional `reason`, optional `suggestedCommand`, and optional device metadata. Hidden `_meta.quickShell` contains the app token. Hidden `_meta.quickShellSession` may also include bridge URL, WebSocket token, limits, and ping cadence so the app can attach immediately.
+`open_quick_shell` returns model-visible text plus structured public session fields: `sessionId`, `device`, optional `reason`, optional `suggestedCommand`, and optional device metadata. The model-visible text says the session is prepared, not opened: the SSH PTY starts only after a compatible MCP App host renders the app and attaches through the bridge or app-only fallback. Hidden `_meta.quickShell` contains the app token. Hidden `_meta.quickShellSession` may also include bridge URL, WebSocket token, limits, and ping cadence so the app can attach immediately.
 
 App-only tools require the hidden app token. Direct WebSocket sessions require the hidden WebSocket token. Tokens are never placed in model-visible `content` or `structuredContent`.
 

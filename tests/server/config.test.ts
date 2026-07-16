@@ -64,6 +64,28 @@ describe("loadRuntimeConfig", () => {
     ).toThrow("valid URL origins");
   });
 
+  it("requires TLS for non-loopback public bridge URLs", () => {
+    expect(() =>
+      loadRuntimeConfig({
+        QUICK_SHELL_BRIDGE_PUBLIC_URL: "http://quick-shell.example",
+        QUICK_SHELL_ALLOWED_ORIGINS: "https://chatgpt.com",
+      }),
+    ).toThrow("must use https://");
+    expect(
+      loadRuntimeConfig({
+        QUICK_SHELL_BRIDGE_PUBLIC_URL: "http://127.0.0.1:40123",
+        QUICK_SHELL_ALLOWED_ORIGINS: "https://chatgpt.com",
+      }).bridgePublicUrl,
+    ).toBe("http://127.0.0.1:40123");
+    expect(
+      loadRuntimeConfig({
+        QUICK_SHELL_BRIDGE_PUBLIC_URL: "http://quick-shell.example",
+        QUICK_SHELL_ALLOWED_ORIGINS: "https://chatgpt.com",
+        QUICK_SHELL_ALLOW_INSECURE_PUBLIC_BRIDGE: "1",
+      }).bridgePublicUrl,
+    ).toBe("http://quick-shell.example");
+  });
+
   it("requires explicit allowed origins when a public bridge URL is configured", () => {
     expect(() =>
       loadRuntimeConfig({

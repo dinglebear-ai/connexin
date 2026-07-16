@@ -15,6 +15,7 @@ import type { ServerTerminalMessage, SessionId } from "../shared/protocol.js";
 
 const AUTH_TIMEOUT_MS = 5_000;
 const MAX_PENDING_AUTH_CONNECTIONS = 32;
+const MAX_WS_CLOSE_REASON_BYTES = 123;
 
 export interface BridgeServer {
   baseUrl: string;
@@ -67,6 +68,12 @@ function sendOutputWithBackpressure(
 
 function closeWithPolicy(ws: WebSocket, reason: string): void {
   ws.close(1008, reason);
+}
+
+function closeReason(reason: string): string {
+  if (Buffer.byteLength(reason, "utf8") <= MAX_WS_CLOSE_REASON_BYTES)
+    return reason;
+  return reason.slice(0, MAX_WS_CLOSE_REASON_BYTES - 1);
 }
 
 function wsOrigin(baseUrl: string): string {
@@ -200,10 +207,19 @@ export async function startBridgeServer(
       return;
     }
 
-    pendingAuthConnections += 1;
-    wss.handleUpgrade(request, socket, head, (ws) => {
-      wss.emit("connection", ws, request, parsed.sessionId);
-    });
+    try {
+      wss.handleUpgrade(request, socket, head, (ws) => {
+        pendingAuthConnections += 1;
+        wss.emit("connection", ws, request, parsed.sessionId);
+      });
+    } catch (error) {
+      manager.recordAuditEvent("bridge_connection_rejected", {
+        sessionId: parsed.sessionId,
+        reason: "upgrade_failed",
+        error: error instanceof Error ? error.message : String(error),
+      });
+      socket.destroy();
+    }
   });
 
   wss.on(
@@ -305,6 +321,7 @@ export async function startBridgeServer(
           } catch (error) {
             const errorMessage =
               error instanceof Error ? error.message : String(error);
+            const message = `Unable to start quick-shell SSH session for ${pendingSession.publicSummary.device}${errorMessage ? `: ${errorMessage}` : "."}`;
             manager.recordAuditEvent("bridge_connection_rejected", {
               sessionId: pendingSession.id,
               device: pendingSession.publicSummary.device,
@@ -312,7 +329,8 @@ export async function startBridgeServer(
               error: errorMessage,
             });
             settleAuth();
-            ws.close(1011, "terminal process unavailable");
+            sendJson(ws, { type: "error", message });
+            ws.close(1011, closeReason(message));
             return;
           }
           if (!session) {
@@ -497,20 +515,26 @@ function attachSessionForwarding(
   manager: QuickShellSessionManager,
   isCurrent: () => boolean,
 ): Disposable[] {
+  let backpressureClosed = false;
+  let dataDisposable: Disposable;
+  dataDisposable = session.pty.onData((data) => {
+    if (!isCurrent()) return;
+    if (backpressureClosed) return;
+    if (
+      sendOutputWithBackpressure(ws, data, config.wsBufferedAmountLimitBytes)
+    ) {
+      manager.recordActivity(session.id);
+    } else {
+      backpressureClosed = true;
+      dataDisposable.dispose();
+      manager.recordAuditEvent("bridge_backpressure_closed", {
+        sessionId: session.id,
+        device: session.publicSummary.device,
+      });
+    }
+  });
   return [
-    session.pty.onData((data) => {
-      if (!isCurrent()) return;
-      if (
-        sendOutputWithBackpressure(ws, data, config.wsBufferedAmountLimitBytes)
-      ) {
-        manager.recordActivity(session.id);
-      } else {
-        manager.recordAuditEvent("bridge_backpressure_closed", {
-          sessionId: session.id,
-          device: session.publicSummary.device,
-        });
-      }
-    }),
+    dataDisposable,
     session.pty.onExit((event) => {
       if (!isCurrent()) return;
       sendJson(ws, { type: "exit", exitCode: event.exitCode });

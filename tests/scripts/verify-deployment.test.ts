@@ -13,6 +13,7 @@ function json(value: unknown): string {
 describe("runVerifyDeployment", () => {
   const runtimeToolNames = [
     "check_quick_shell",
+    "list_quick_shell_devices",
     "open_quick_shell",
     "get_quick_shell_session",
     "poll_quick_shell_session",
@@ -100,7 +101,10 @@ describe("runVerifyDeployment", () => {
                   "--stdio",
                 ],
               },
-              runtime: { exposed_tool_count: 8, last_error: null },
+              runtime: {
+                exposed_tool_count: runtimeToolNames.length,
+                last_error: null,
+              },
             }),
             stderr: "",
             exitCode: 0,
@@ -116,7 +120,7 @@ describe("runVerifyDeployment", () => {
                 name: "quick-shell",
                 enabled: true,
                 connected: true,
-                exposed_tool_count: 8,
+                exposed_tool_count: runtimeToolNames.length,
                 likely_stale_count: 0,
               },
             ]),
@@ -134,6 +138,7 @@ describe("runVerifyDeployment", () => {
               stdout: json({
                 result: [
                   { id: "quick-shell::check_quick_shell" },
+                  { id: "quick-shell::list_quick_shell_devices" },
                   { id: "quick-shell::open_quick_shell" },
                 ],
               }),
@@ -208,7 +213,7 @@ describe("runVerifyDeployment", () => {
               args: ["/opt/quick-shell/dist/server/server/main.js", "--stdio"],
             },
             runtime: {
-              exposed_tool_count: 8,
+              exposed_tool_count: runtimeToolNames.length,
               last_error: "upstream call failed: Transport closed",
             },
           }),
@@ -226,7 +231,7 @@ describe("runVerifyDeployment", () => {
               name: "quick-shell",
               enabled: true,
               connected: false,
-              exposed_tool_count: 8,
+              exposed_tool_count: runtimeToolNames.length,
             },
           ]),
           stderr: "",
@@ -373,7 +378,10 @@ describe("runVerifyDeployment", () => {
               command: "node",
               args: "/opt/quick-shell/dist/server/server/main.js --stdio",
             },
-            runtime: { exposed_tool_count: 8, last_error: null },
+            runtime: {
+              exposed_tool_count: runtimeToolNames.length,
+              last_error: null,
+            },
           }),
           stderr: "",
           exitCode: 0,

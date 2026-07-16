@@ -46,6 +46,34 @@ import "./styles.css";
 
 type HostCapabilities = NonNullable<ReturnType<App["getHostCapabilities"]>>;
 type HostContext = NonNullable<ReturnType<App["getHostContext"]>>;
+type ToolResultParams = {
+  structuredContent?: Record<string, unknown>;
+  _meta?: Record<string, unknown>;
+  isError?: boolean;
+  content?: Array<{ type?: string; text?: string }>;
+};
+
+interface QueuedFallbackInput {
+  data: string;
+  bytes: number;
+}
+
+interface FallbackInputQueue {
+  generation: number;
+  sessionId: string;
+  capability: QuickShellHiddenMeta["quickShell"];
+  chunks: QueuedFallbackInput[];
+  bytes: number;
+  draining: boolean;
+}
+
+interface FallbackResizeQueue {
+  generation: number;
+  sessionId: string;
+  capability: QuickShellHiddenMeta["quickShell"];
+  pending?: { cols: number; rows: number };
+  inFlight: boolean;
+}
 
 const DEFAULT_SUBMIT_BYTES = 64_000;
 const DEFAULT_INPUT_BYTES = 16_384;
@@ -53,6 +81,7 @@ const DEFAULT_PING_INTERVAL_MS = 30_000;
 const FALLBACK_POLL_INTERVAL_MS = 500;
 const FALLBACK_CONNECT_TIMEOUT_MS = 5_000;
 const MAX_PENDING_INPUT_BYTES = 16_384;
+const MAX_FALLBACK_INPUT_CHUNKS = 256;
 
 const app = new App(
   { name: "quick-shell", version: "0.1.0" },
@@ -75,11 +104,12 @@ let session: QuickShellAppSession | undefined;
 let sessionDetails: QuickShellAppSession | undefined;
 let sessionCapability: QuickShellHiddenMeta["quickShell"] | undefined;
 let appToolTransport = false;
-let polling = false;
+let pollingGeneration: number | undefined;
 let pollSeq = 0;
-let fallbackWriteQueue:
-  { generation: number; promise: Promise<void> } | undefined;
+let fallbackInputQueue: FallbackInputQueue | undefined;
+let fallbackResizeQueue: FallbackResizeQueue | undefined;
 let outputBuffer = new BoundedTextBuffer(DEFAULT_SUBMIT_BYTES);
+let accessibleOutputBuffer = new BoundedTextBuffer(DEFAULT_SUBMIT_BYTES);
 let pendingInput: string[] = [];
 let pendingInputBytes = 0;
 let connecting = false;
@@ -93,6 +123,7 @@ const elements = buildShell();
 root.replaceChildren(elements.container);
 wireShellEvents();
 let toolResultGeneration = 0;
+let toolResultQueue: Promise<void> = Promise.resolve();
 
 app.ontoolinputpartial = (params) => applyToolInput(params.arguments);
 app.ontoolinput = (params) => applyToolInput(params.arguments);
@@ -100,7 +131,11 @@ app.onhostcontextchanged = (ctx) => applyHostContext(ctx);
 app.ontoolcancelled = (params) =>
   setStatus(params.reason ? `Cancelled: ${params.reason}` : "Cancelled");
 app.ontoolresult = (params) => {
-  void handleToolResult(params).catch((error) => renderError(error));
+  const generation = ++toolResultGeneration;
+  toolResultQueue = toolResultQueue
+    .catch(() => {})
+    .then(() => handleToolResult(params, generation))
+    .catch((error) => renderError(error));
 };
 app.onteardown = async () => {
   await cleanup(true);
@@ -230,17 +265,15 @@ function readQuickShellPoll(value: unknown): QuickShellPoll | undefined {
   return parsed.success ? parsed.data : undefined;
 }
 
-async function handleToolResult(params: {
-  structuredContent?: Record<string, unknown>;
-  _meta?: Record<string, unknown>;
-  isError?: boolean;
-}): Promise<void> {
+async function handleToolResult(
+  params: ToolResultParams,
+  generation: number,
+): Promise<void> {
   if (params.isError) {
-    setStatus("Tool error");
+    setStatus(toolResultText(params, "Tool error"));
     return;
   }
 
-  const generation = ++toolResultGeneration;
   connecting = false;
   connectingGeneration = undefined;
   const nextPublicSession = readPublicSession(params.structuredContent);
@@ -260,13 +293,21 @@ async function handleToolResult(params: {
     throw new Error("Invalid quick-shell session capability");
   }
 
-  const previousClosed = await cleanup(true).catch((error) => {
-    console.error("quick-shell previous session close failed", error);
-    setStatus(
-      "Could not close previous session; it will expire automatically.",
-    );
-    return false;
-  });
+  if (generation !== toolResultGeneration) {
+    await closeUnusedSession(quickShell);
+    return;
+  }
+
+  const previousCapability = sessionCapability;
+  const previousClosed = await cleanup(true, previousCapability).catch(
+    (error) => {
+      console.error("quick-shell previous session close failed", error);
+      setStatus(
+        "Could not close previous session; it will expire automatically.",
+      );
+      return false;
+    },
+  );
   if (!previousClosed) {
     await closeUnusedSession(quickShell);
     return;
@@ -279,11 +320,10 @@ async function handleToolResult(params: {
   sessionCapability = quickShell;
   sessionDetails = quickShellSession;
   session = undefined;
-  outputBuffer = new BoundedTextBuffer(
-    quickShellSession?.maxSubmitBytes ?? DEFAULT_SUBMIT_BYTES,
-  );
+  resetOutputBuffers(quickShellSession?.maxSubmitBytes ?? DEFAULT_SUBMIT_BYTES);
   elements.commandInput.value = nextPublicSession.suggestedCommand ?? "";
-  setStatus(`Connecting ${nextPublicSession.device}`);
+  updateSessionSummary();
+  setStatus(`Connecting ${sessionDisplayName(nextPublicSession)}`);
   updateModelContext("connecting");
   updateControls();
   void connectPendingSession().catch((error) => handleConnectFailure(error));
@@ -304,7 +344,7 @@ async function connectPendingSession(): Promise<void> {
   connecting = true;
   connectingGeneration = generation;
   connectionFailed = false;
-  setStatus(`Connecting ${requested.device}`);
+  setStatus(`Connecting ${sessionDisplayName(requested)}`);
   updateControls();
 
   try {
@@ -333,7 +373,8 @@ async function connectPendingSession(): Promise<void> {
       throw new Error("Invalid quick-shell session details");
     }
     session = detailsSession;
-    outputBuffer = new BoundedTextBuffer(detailsSession.maxSubmitBytes);
+    resetOutputBuffers(detailsSession.maxSubmitBytes);
+    updateSessionSummary();
     updateModelContext("connecting");
     updateControls();
     try {
@@ -345,7 +386,7 @@ async function connectPendingSession(): Promise<void> {
       ) {
         disposeTerminal();
         session = undefined;
-        outputBuffer = new BoundedTextBuffer(detailsSession.maxSubmitBytes);
+        resetOutputBuffers(detailsSession.maxSubmitBytes);
       }
       throw error;
     }
@@ -363,28 +404,12 @@ async function connectTerminal(
 ): Promise<void> {
   disposeTerminal();
   outputBuffer.clear();
+  accessibleOutputBuffer.clear();
   await loadGhosttyRuntime();
   if (!isCurrentGeneration(generation, details.sessionId)) return;
 
-  const nextTerminal = new Terminal({
-    cols: DEFAULT_TERMINAL_COLS,
-    rows: DEFAULT_TERMINAL_ROWS,
-    fontFamily:
-      "JetBrains Mono, ui-monospace, SFMono-Regular, Menlo, monospace",
-    fontSize: 13,
-    theme: readTerminalTheme(),
-  });
-  const nextFitAddon = new FitAddon();
-  nextTerminal.loadAddon(nextFitAddon);
-  nextTerminal.open(elements.terminalMount);
-
-  const nextTerminalDataDisposable = nextTerminal.onData((data) => {
-    sendTerminalInput(data);
-  });
-
-  terminal = nextTerminal;
-  fitAddon = nextFitAddon;
-  terminalDataDisposable = nextTerminalDataDisposable;
+  createTerminal(DEFAULT_TERMINAL_COLS, DEFAULT_TERMINAL_ROWS);
+  observeTerminalResize();
   let socket: WebSocket;
   try {
     socket = openTerminalSocket(details);
@@ -398,10 +423,10 @@ async function connectTerminal(
     return;
   }
   ws = socket;
-  let socketOpened = false;
+  let socketReady = false;
   let fallbackStarted = false;
   const startFallback = () => {
-    if (fallbackStarted || socketOpened || ws !== socket) return;
+    if (fallbackStarted || socketReady || ws !== socket) return;
     fallbackStarted = true;
     window.clearTimeout(fallbackTimer);
     ws = undefined;
@@ -417,28 +442,28 @@ async function connectTerminal(
   );
   socket.addEventListener("open", () => {
     if (ws !== socket) return;
-    window.clearTimeout(fallbackTimer);
-    socketOpened = true;
-    connectionFailed = false;
     socket.send(
       JSON.stringify({ type: "authenticate", token: details.wsToken }),
     );
     updateControls();
   });
-  socket.addEventListener("message", (event) =>
-    handleTerminalMessage(socket, event.data),
-  );
-  socket.addEventListener("close", () => {
-    window.clearTimeout(fallbackTimer);
-    if (ws === socket && !socketOpened) {
+  socket.addEventListener("message", (event) => {
+    if (handleTerminalMessage(socket, event.data)) {
+      socketReady = true;
+      window.clearTimeout(fallbackTimer);
+    }
+  });
+  socket.addEventListener("close", (event) => {
+    if (ws === socket && !socketReady) {
       startFallback();
       return;
     }
+    window.clearTimeout(fallbackTimer);
     if (ws === socket) {
       disposeTerminal();
       session = undefined;
       connectionFailed = true;
-      setStatus("Disconnected");
+      setStatus(disconnectStatus(event));
       updateModelContext("disconnected");
       updateControls();
     }
@@ -446,41 +471,85 @@ async function connectTerminal(
   socket.addEventListener("error", () => {
     if (ws !== socket) return;
     setStatus("Connection error");
-    if (!socketOpened) startFallback();
+    if (!socketReady) startFallback();
   });
+}
 
+function observeTerminalResize(): void {
+  resizeObserver?.disconnect();
   resizeObserver = new ResizeObserver(() => {
     scheduleResize();
   });
   resizeObserver.observe(elements.terminalMount);
 }
 
-function handleTerminalMessage(socket: WebSocket, data: unknown): void {
-  if (ws !== socket) return;
+function createTerminal(cols: number, rows: number): Terminal {
+  const nextTerminal = new Terminal({
+    cols,
+    rows,
+    fontFamily:
+      "JetBrains Mono, ui-monospace, SFMono-Regular, Menlo, monospace",
+    fontSize: 13,
+    theme: readTerminalTheme(),
+  });
+  const nextFitAddon = new FitAddon();
+  nextTerminal.loadAddon(nextFitAddon);
+  nextTerminal.open(elements.terminalMount);
+  const nextTerminalDataDisposable = nextTerminal.onData((data) => {
+    sendTerminalInput(data);
+  });
+
+  terminal = nextTerminal;
+  fitAddon = nextFitAddon;
+  terminalDataDisposable = nextTerminalDataDisposable;
+  return nextTerminal;
+}
+
+function rebuildTerminalTheme(): void {
+  if (!terminal) return;
+  const cols = terminal.cols;
+  const rows = terminal.rows;
+  const snapshot = outputBuffer.toString();
+  terminalDataDisposable?.dispose();
+  fitAddon?.dispose();
+  terminal.dispose();
+  elements.terminalMount.replaceChildren();
+  terminal = undefined;
+  fitAddon = undefined;
+  terminalDataDisposable = undefined;
+  const rebuilt = createTerminal(cols, rows);
+  if (snapshot) rebuilt.write(snapshot);
+  scheduleResize();
+}
+
+function handleTerminalMessage(socket: WebSocket, data: unknown): boolean {
+  if (ws !== socket) return false;
 
   let message: ServerTerminalMessage;
   try {
     message = ServerTerminalMessageSchema.parse(JSON.parse(String(data)));
   } catch {
     setStatus("Bad bridge message");
-    return;
+    return false;
   }
 
   switch (message.type) {
     case "ready":
       outputBuffer.clear();
+      accessibleOutputBuffer.clear();
+      elements.transcript.textContent = "";
       appendTerminalOutput(message.scrollback);
       fitAddon?.fit();
       sendResize();
       flushPendingInputToWebSocket();
       startPing(session?.pingIntervalMs ?? DEFAULT_PING_INTERVAL_MS);
-      setStatus("Connected");
+      connectionFailed = false;
+      setConnectedStatus();
       updateModelContext("connected");
       updateControls();
-      break;
+      return true;
     case "output":
-      outputBuffer.append(message.data);
-      terminal?.write(message.data);
+      appendTerminalOutput(message.data);
       break;
     case "exit":
       setStatus(
@@ -493,6 +562,7 @@ function handleTerminalMessage(socket: WebSocket, data: unknown): void {
     default:
       assertNever(message);
   }
+  return false;
 }
 
 function sendResize(): void {
@@ -510,7 +580,7 @@ function sendResize(): void {
   );
   terminal.resize(cols, rows);
   if (appToolTransport) {
-    void resizeViaAppTool(cols, rows);
+    enqueueFallbackResize(cols, rows);
   } else if (ws?.readyState === WebSocket.OPEN) {
     sendTerminalMessage({ type: "resize", cols, rows });
   }
@@ -529,6 +599,14 @@ function sendTerminalMessage(message: ClientTerminalMessage): void {
   if (ws) sendTerminalTransportMessage(ws, message);
 }
 
+function utf8Bytes(data: string): number {
+  return new TextEncoder().encode(data).byteLength;
+}
+
+function terminalMessageBytes(message: ClientTerminalMessage): number {
+  return utf8Bytes(JSON.stringify(message));
+}
+
 function sendTerminalInput(data: string): void {
   const bytes = new TextEncoder().encode(data).byteLength;
   const maxInputBytes = session?.maxInputBytes ?? DEFAULT_INPUT_BYTES;
@@ -539,6 +617,15 @@ function sendTerminalInput(data: string): void {
 
   if (appToolTransport) {
     enqueueFallbackInput(data);
+    return;
+  }
+
+  const frameLimit = session?.maxWsPayloadBytes;
+  if (
+    frameLimit !== undefined &&
+    terminalMessageBytes({ type: "input", data }) > frameLimit
+  ) {
+    setStatus(`Input frame is larger than ${frameLimit} bytes.`);
     return;
   }
 
@@ -565,8 +652,10 @@ async function startAppToolTransport(
     return;
   stopPing();
   appToolTransport = true;
-  polling = false;
+  pollingGeneration = undefined;
   pollSeq = 0;
+  fallbackInputQueue = undefined;
+  fallbackResizeQueue = undefined;
 
   const attached = await app.callServerTool({
     name: "get_quick_shell_session",
@@ -586,7 +675,7 @@ async function startAppToolTransport(
     return;
   session = attachedSession;
   connectionFailed = false;
-  setStatus("Connected");
+  setConnectedStatus();
   updateModelContext("connected");
   updateControls();
   flushPendingInputToAppTool();
@@ -603,14 +692,15 @@ async function startAppToolTransport(
 
 async function pollAppToolTransport(generation: number): Promise<void> {
   if (
-    polling ||
+    pollingGeneration === generation ||
     !session ||
     !sessionCapability ||
     !appToolTransport ||
     !isCurrentGeneration(generation, session.sessionId)
   )
     return;
-  polling = true;
+  pollingGeneration = generation;
+  const sessionId = session.sessionId;
   try {
     const result = await app.callServerTool({
       name: "poll_quick_shell_session",
@@ -642,12 +732,14 @@ async function pollAppToolTransport(generation: number): Promise<void> {
       setStatus(poll.exitCode === null ? "Exited" : `Exited ${poll.exitCode}`);
       stopPolling();
     } else if (poll.reset && truncated) {
-      setStatus("Connected, earlier output was truncated");
+      setStatus(`${connectedLabel()}, earlier output was truncated`);
     } else {
-      setStatus("Connected");
+      setConnectedStatus();
     }
   } finally {
-    polling = false;
+    if (pollingGeneration === generation && session?.sessionId === sessionId) {
+      pollingGeneration = undefined;
+    }
   }
 }
 
@@ -656,60 +748,151 @@ function enqueueFallbackInput(data: string): void {
   const sessionId = session?.sessionId;
   if (!sessionCapability || !sessionId) return;
   const capability = sessionCapability;
-  const previous =
-    fallbackWriteQueue?.generation === generation
-      ? fallbackWriteQueue.promise
-      : Promise.resolve();
-  const promise = previous
-    .catch(() => {})
-    .then(async () => {
-      if (
-        !isCurrentGeneration(generation, sessionId) ||
-        sessionCapability !== capability ||
-        !appToolTransport
-      )
-        return;
+  const bytes = utf8Bytes(data);
+  const existing =
+    fallbackInputQueue?.generation === generation &&
+    fallbackInputQueue.sessionId === sessionId &&
+    fallbackInputQueue.capability === capability
+      ? fallbackInputQueue
+      : undefined;
+  const queue =
+    existing ??
+    ({
+      generation,
+      sessionId,
+      capability,
+      chunks: [],
+      bytes: 0,
+      draining: false,
+    } satisfies FallbackInputQueue);
+  if (
+    queue.bytes + bytes > MAX_PENDING_INPUT_BYTES ||
+    queue.chunks.length >= MAX_FALLBACK_INPUT_CHUNKS
+  ) {
+    setStatus("Fallback input buffer full.");
+    return;
+  }
+  queue.chunks.push({ data, bytes });
+  queue.bytes += bytes;
+  fallbackInputQueue = queue;
+  if (!queue.draining) void drainFallbackInputQueue(queue);
+}
+
+async function drainFallbackInputQueue(
+  queue: FallbackInputQueue,
+): Promise<void> {
+  queue.draining = true;
+  try {
+    while (
+      queue.chunks.length > 0 &&
+      fallbackInputQueue === queue &&
+      isCurrentGeneration(queue.generation, queue.sessionId) &&
+      sessionCapability === queue.capability &&
+      appToolTransport
+    ) {
+      const first = queue.chunks.shift()!;
+      queue.bytes -= first.bytes;
+      let data = first.data;
+      let bytes = first.bytes;
+      while (queue.chunks.length > 0) {
+        const next = queue.chunks[0]!;
+        if (
+          bytes + next.bytes >
+          (session?.maxInputBytes ?? DEFAULT_INPUT_BYTES)
+        )
+          break;
+        queue.chunks.shift();
+        queue.bytes -= next.bytes;
+        data += next.data;
+        bytes += next.bytes;
+      }
       const result = await app.callServerTool({
         name: "write_quick_shell_input",
         arguments: {
-          ...capability,
+          ...queue.capability,
           data,
         },
       });
       if (
-        !isCurrentGeneration(generation, sessionId) ||
-        sessionCapability !== capability ||
+        !isCurrentGeneration(queue.generation, queue.sessionId) ||
+        sessionCapability !== queue.capability ||
         !appToolTransport
       )
         return;
       if (result.isError)
         throw new Error(toolResultText(result, "Quick-shell input failed"));
-    })
-    .catch((error) => {
-      if (
-        !isCurrentGeneration(generation, sessionId) ||
-        sessionCapability !== capability
-      )
-        return;
+    }
+  } catch (error) {
+    if (
+      isCurrentGeneration(queue.generation, queue.sessionId) &&
+      sessionCapability === queue.capability
+    ) {
       setStatus(
         `Input failed: ${error instanceof Error ? error.message : String(error)}`,
       );
-    });
-  fallbackWriteQueue = { generation, promise };
+    }
+  } finally {
+    if (fallbackInputQueue === queue) {
+      queue.draining = false;
+      if (queue.chunks.length === 0) fallbackInputQueue = undefined;
+      else void drainFallbackInputQueue(queue);
+    }
+  }
 }
 
-async function resizeViaAppTool(cols: number, rows: number): Promise<void> {
-  if (!sessionCapability) return;
-  await app
-    .callServerTool({
-      name: "resize_quick_shell_session",
-      arguments: {
-        ...sessionCapability,
-        cols,
-        rows,
-      },
-    })
-    .catch((error) => console.error("quick-shell resize failed", error));
+function enqueueFallbackResize(cols: number, rows: number): void {
+  const generation = toolResultGeneration;
+  const sessionId = session?.sessionId;
+  if (!sessionCapability || !sessionId) return;
+  const capability = sessionCapability;
+  const queue =
+    fallbackResizeQueue?.generation === generation &&
+    fallbackResizeQueue.sessionId === sessionId &&
+    fallbackResizeQueue.capability === capability
+      ? fallbackResizeQueue
+      : ({
+          generation,
+          sessionId,
+          capability,
+          inFlight: false,
+        } satisfies FallbackResizeQueue);
+  if (queue.pending?.cols === cols && queue.pending.rows === rows) return;
+  queue.pending = { cols, rows };
+  fallbackResizeQueue = queue;
+  if (!queue.inFlight) void drainFallbackResizeQueue(queue);
+}
+
+async function drainFallbackResizeQueue(
+  queue: FallbackResizeQueue,
+): Promise<void> {
+  queue.inFlight = true;
+  try {
+    while (
+      queue.pending &&
+      fallbackResizeQueue === queue &&
+      isCurrentGeneration(queue.generation, queue.sessionId) &&
+      sessionCapability === queue.capability &&
+      appToolTransport
+    ) {
+      const next = queue.pending;
+      queue.pending = undefined;
+      await app.callServerTool({
+        name: "resize_quick_shell_session",
+        arguments: {
+          ...queue.capability,
+          cols: next.cols,
+          rows: next.rows,
+        },
+      });
+    }
+  } catch (error) {
+    console.error("quick-shell resize failed", error);
+  } finally {
+    if (fallbackResizeQueue === queue) {
+      queue.inFlight = false;
+      if (queue.pending) void drainFallbackResizeQueue(queue);
+    }
+  }
 }
 
 function drainPendingInput(send: (data: string) => void): void {
@@ -733,11 +916,23 @@ function appendTerminalOutput(data: string): void {
   if (data.length === 0) return;
   terminal?.write(data);
   outputBuffer.append(data);
+  accessibleOutputBuffer.append(data);
+  elements.transcript.textContent = normalizeTerminalOutput(
+    accessibleOutputBuffer.toString(),
+  );
 }
 
 function resetTerminalOutput(): void {
   outputBuffer.clear();
+  accessibleOutputBuffer.clear();
   terminal?.reset();
+  elements.transcript.textContent = "";
+}
+
+function resetOutputBuffers(maxBytes = DEFAULT_SUBMIT_BYTES): void {
+  outputBuffer = new BoundedTextBuffer(maxBytes);
+  accessibleOutputBuffer = new BoundedTextBuffer(maxBytes);
+  elements.transcript.textContent = "";
 }
 
 async function confirmSend(
@@ -822,6 +1017,8 @@ function disposeTerminal(): void {
   terminal?.dispose();
   pendingInput = [];
   pendingInputBytes = 0;
+  fallbackInputQueue = undefined;
+  fallbackResizeQueue = undefined;
   resizeObserver = undefined;
   terminalDataDisposable = undefined;
   fitAddon = undefined;
@@ -835,12 +1032,17 @@ function stopPolling(): void {
     window.clearInterval(pollTimer);
     pollTimer = undefined;
   }
+  pollingGeneration = undefined;
 }
 
-async function cleanup(closeSession: boolean): Promise<boolean> {
-  const capability = sessionCapability;
+async function cleanup(
+  closeSession: boolean,
+  expectedCapability = sessionCapability,
+): Promise<boolean> {
+  const capability = expectedCapability;
+  const ownsCurrentSession = () => sessionCapability === expectedCapability;
   const closeViaBridge = closeSession && ws?.readyState === WebSocket.OPEN;
-  if (closeViaBridge) {
+  if (closeViaBridge && ownsCurrentSession()) {
     sendTerminalMessage({ type: "close" });
   } else if (closeSession && capability) {
     let closed;
@@ -868,12 +1070,15 @@ async function cleanup(closeSession: boolean): Promise<boolean> {
     }
   }
 
+  if (!ownsCurrentSession()) return true;
   disposeTerminal();
   publicSession = undefined;
   session = undefined;
   sessionDetails = undefined;
   sessionCapability = undefined;
   connectionFailed = false;
+  updateSessionSummary();
+  resetOutputBuffers();
   updateModelContext(closeSession ? "closed" : "idle");
   updateControls();
   return true;
@@ -896,6 +1101,56 @@ async function closeUnusedSession(
 
 function setStatus(message: string): void {
   elements.status.textContent = message;
+}
+
+function sessionDisplayName(value: QuickShellPublicSession): string {
+  return value.deviceLabel
+    ? `${value.deviceLabel} (${value.device})`
+    : value.device;
+}
+
+function connectedLabel(): string {
+  const current = session ?? publicSession;
+  return current ? `Connected to ${sessionDisplayName(current)}` : "Connected";
+}
+
+function setConnectedStatus(): void {
+  setStatus(connectedLabel());
+}
+
+function disconnectStatus(event: Event): string {
+  const close = event as CloseEvent;
+  const suffix = close.reason ? `: ${close.reason}` : "";
+  return `Disconnected${suffix}`;
+}
+
+function updateSessionSummary(): void {
+  const current = session ?? publicSession;
+  if (!current) {
+    elements.sessionSummary.hidden = true;
+    elements.sessionSummary.replaceChildren();
+    return;
+  }
+  const items: HTMLElement[] = [];
+  const add = (
+    label: string,
+    value: string | undefined,
+    options: { danger?: QuickShellPublicSession["deviceDanger"] } = {},
+  ) => {
+    if (!value) return;
+    const item = document.createElement("span");
+    const strong = document.createElement("strong");
+    strong.textContent = `${label}: `;
+    item.append(strong, document.createTextNode(value));
+    if (options.danger) item.dataset.danger = options.danger;
+    items.push(item);
+  };
+  add("Device", sessionDisplayName(current), { danger: current.deviceDanger });
+  add("Group", current.deviceGroup);
+  add("Shell", current.deviceDefaultShell);
+  add("Reason", current.reason);
+  elements.sessionSummary.hidden = false;
+  elements.sessionSummary.replaceChildren(...items);
 }
 
 function renderError(error: unknown): void {
@@ -980,6 +1235,8 @@ function applyToolInput(args: Record<string, unknown> | undefined): void {
 
 function applyHostContext(ctx: HostContext | undefined): void {
   if (!ctx) return;
+  const shouldRefreshTerminalTheme =
+    Boolean(ctx.theme) || Boolean(ctx.styles?.variables);
   hostContext = { ...hostContext, ...ctx };
   if (ctx.theme) applyDocumentTheme(ctx.theme);
   if (ctx.styles?.variables) applyHostStyleVariables(ctx.styles.variables);
@@ -996,6 +1253,7 @@ function applyHostContext(ctx: HostContext | undefined): void {
   if (hostContext.platform) {
     document.documentElement.dataset.platform = hostContext.platform;
   }
+  if (shouldRefreshTerminalTheme) rebuildTerminalTheme();
   updateControls();
 }
 

@@ -61,6 +61,19 @@ function createTestServer(
   const manager = new QuickShellSessionManager({
     config: runtimeConfig,
     allowedHosts: new Set(["test-device"]),
+    deviceMetadata: {
+      devices: new Map([
+        [
+          "test-device",
+          {
+            label: "Test Device",
+            group: "lab",
+            danger: "caution",
+            defaultShell: "zsh",
+          },
+        ],
+      ]),
+    },
     ptyFactory: () => {
       const pty = new FakePty();
       ptys.push(pty);
@@ -116,12 +129,14 @@ describe("createServer", () => {
         wsUrl: string;
         wsToken: string;
         maxInputBytes: number;
+        maxWsPayloadBytes: number;
       };
       expect(appSession).toMatchObject({
         sessionId: quickShell.sessionId,
         wsUrl: expect.stringContaining("/terminal?session="),
         wsToken: expect.any(String),
         maxInputBytes: 16_384,
+        maxWsPayloadBytes: 16_384,
       });
       expect(appSession.wsUrl).not.toContain("token=");
 
@@ -183,6 +198,22 @@ describe("createServer", () => {
       });
       expect(health.structuredContent).toMatchObject({ ok: true });
 
+      const devices = await client.callTool({
+        name: "list_quick_shell_devices",
+        arguments: {},
+      });
+      expect(devices.structuredContent).toMatchObject({
+        devices: [
+          {
+            alias: "test-device",
+            label: "Test Device",
+            group: "lab",
+            danger: "caution",
+            defaultShell: "zsh",
+          },
+        ],
+      });
+
       const invalid = await client.callTool({
         name: "open_quick_shell",
         arguments: { device: "unknown" },
@@ -223,6 +254,9 @@ describe("createServer", () => {
       const openTool = listed.tools.find(
         (tool) => tool.name === "open_quick_shell",
       );
+      const listTool = listed.tools.find(
+        (tool) => tool.name === "list_quick_shell_devices",
+      );
       const appOnly = listed.tools.find(
         (tool) => tool.name === "get_quick_shell_session",
       );
@@ -246,6 +280,20 @@ describe("createServer", () => {
         },
         "openai/outputTemplate": APP_RESOURCE_URI,
         "openai/widgetAccessible": false,
+        "openai/visibility": "public",
+      });
+
+      expect(listTool?.annotations).toMatchObject({
+        readOnlyHint: true,
+        destructiveHint: false,
+        openWorldHint: false,
+        idempotentHint: true,
+      });
+      expect(listTool?._meta).toMatchObject({
+        ui: {
+          resourceUri: APP_RESOURCE_URI,
+          visibility: ["model"],
+        },
         "openai/visibility": "public",
       });
 

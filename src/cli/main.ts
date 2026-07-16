@@ -228,9 +228,19 @@ export async function runQuickShellCli(
     );
 
     const stdin = options.stdin ?? process.stdin;
-    const onInput = (chunk: Buffer | string) => pty.write(String(chunk));
-    const dataDisposable = pty.onData((data) => stdout.write(data));
     let prefillTimer: NodeJS.Timeout | undefined;
+    let userInputSeen = false;
+    const cancelPrefill = () => {
+      if (!prefillTimer) return;
+      clearTimeout(prefillTimer);
+      prefillTimer = undefined;
+    };
+    const onInput = (chunk: Buffer | string) => {
+      userInputSeen = true;
+      cancelPrefill();
+      pty.write(String(chunk));
+    };
+    const dataDisposable = pty.onData((data) => stdout.write(data));
     let cleanedUp = false;
     const cleanup = () => {
       if (cleanedUp) return;
@@ -256,7 +266,7 @@ export async function runQuickShellCli(
       else {
         prefillTimer = setTimeout(() => {
           prefillTimer = undefined;
-          if (!cleanedUp) pty.write(suggested);
+          if (!cleanedUp && !userInputSeen) pty.write(suggested);
         }, parsed.prefillDelayMs);
         prefillTimer.unref?.();
       }

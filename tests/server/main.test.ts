@@ -196,46 +196,48 @@ describe("main transports", () => {
         stdio: ["pipe", "pipe", "pipe"],
       },
     );
-    const stderr: Buffer[] = [];
-    child.stderr.on("data", (chunk: Buffer) => stderr.push(chunk));
-
-    await Promise.race([
-      new Promise<void>((resolveReady) => {
-        child.stderr.on("data", () => {
-          if (
-            Buffer.concat(stderr).toString("utf8").includes("bridge_listening")
-          )
-            resolveReady();
-        });
-      }),
-      new Promise<"timeout">((resolveTimeout) =>
-        setTimeout(() => resolveTimeout("timeout"), 10_000),
-      ),
-    ]).then((ready) => {
-      if (ready === "timeout")
-        throw new Error(
-          `stdio child did not start: ${Buffer.concat(stderr).toString("utf8")}`,
-        );
+    let stderrText = "";
+    child.stderr.on("data", (chunk: Buffer) => {
+      stderrText += chunk.toString("utf8");
     });
-    child.stdin.end();
-    const exit = await Promise.race([
-      new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(
-        (resolveExit) => {
-          child.once("exit", (code, signal) => resolveExit({ code, signal }));
-        },
-      ),
-      new Promise<"timeout">((resolveTimeout) =>
-        setTimeout(() => resolveTimeout("timeout"), 5_000),
-      ),
-    ]);
 
-    if (exit === "timeout") {
+    try {
+      await Promise.race([
+        new Promise<void>((resolveReady) => {
+          child.stderr.on("data", () => {
+            if (stderrText.includes("bridge_listening")) resolveReady();
+          });
+        }),
+        new Promise<"timeout">((resolveTimeout) =>
+          setTimeout(() => resolveTimeout("timeout"), 10_000),
+        ),
+      ]).then((ready) => {
+        if (ready === "timeout")
+          throw new Error(`stdio child did not start: ${stderrText}`);
+      });
+      child.stdin.end();
+      const exit = await Promise.race([
+        new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(
+          (resolveExit) => {
+            child.once("exit", (code, signal) => resolveExit({ code, signal }));
+          },
+        ),
+        new Promise<"timeout">((resolveTimeout) =>
+          setTimeout(() => resolveTimeout("timeout"), 5_000),
+        ),
+      ]);
+
+      if (exit === "timeout") {
+        child.kill("SIGTERM");
+        throw new Error(
+          `stdio child did not exit after stdin closed: ${stderrText}`,
+        );
+      }
+      expect(exit).toMatchObject({ code: 0, signal: null });
+    } catch (error) {
       child.kill("SIGTERM");
-      throw new Error(
-        `stdio child did not exit after stdin closed: ${Buffer.concat(stderr).toString("utf8")}`,
-      );
+      throw error;
     }
-    expect(exit).toMatchObject({ code: 0, signal: null });
   }, 20_000);
 
   it("schedules cleanup for sessions past max age", async () => {

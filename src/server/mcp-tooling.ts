@@ -116,6 +116,7 @@ export function appSessionFor(
     wsToken: session.wsToken,
     maxInputBytes: config.maxInputBytes,
     maxSubmitBytes: config.maxSubmitBytes,
+    maxWsPayloadBytes: config.maxWsPayloadBytes,
     pingIntervalMs: pingIntervalMs(config),
   };
 }

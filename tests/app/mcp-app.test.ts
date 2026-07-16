@@ -120,12 +120,14 @@ class MockFitAddon {
 class MockTerminal {
   cols = 100;
   rows = 30;
+  options: unknown;
   writes: string[] = [];
   disposed = false;
   resets = 0;
   private dataListener?: (data: string) => void;
 
-  constructor() {
+  constructor(options?: unknown) {
+    this.options = options;
     harness.terminals.push(this);
   }
 
@@ -261,6 +263,7 @@ function detailsResult(sessionId: string, device = sessionId): MockToolResult {
         wsToken: `ws-${sessionId}`,
         maxInputBytes: 16_384,
         maxSubmitBytes: 64,
+        maxWsPayloadBytes: 16_384,
         pingIntervalMs: 1000,
       },
     },
@@ -396,6 +399,11 @@ describe("quick-shell MCP app", () => {
       document.querySelector(".terminal")?.getAttribute("aria-label"),
     ).toBe("Terminal output");
     expect(
+      document
+        .querySelector(".terminal-transcript")
+        ?.getAttribute("aria-label"),
+    ).toBe("Terminal transcript");
+    expect(
       document.querySelector(".send-dialog")?.getAttribute("aria-labelledby"),
     ).toBe("quick-shell-send-title");
     expect(
@@ -434,6 +442,44 @@ describe("quick-shell MCP app", () => {
     expect(app.serverToolCalls).toEqual([]);
     expect(harness.sockets[0]?.url).toContain("session=s1");
     expect(statusText()).toBe("Connecting fileserver");
+  });
+
+  it("renders device metadata and request reason above the terminal", async () => {
+    const app = await loadApp();
+    app.callServerToolImpl = async (call) => {
+      if (call.name === "get_quick_shell_session") {
+        const result = detailsResult("s1", "fileserver");
+        const quickShellSession = result._meta?.quickShellSession as Record<
+          string,
+          unknown
+        >;
+        quickShellSession.deviceLabel = "File Server";
+        quickShellSession.deviceGroup = "lab";
+        quickShellSession.deviceDanger = "caution";
+        quickShellSession.deviceDefaultShell = "zsh";
+        quickShellSession.reason = "Need disk status";
+        return result;
+      }
+      return { structuredContent: { closed: true } };
+    };
+
+    const result = openedResult("s1", "fileserver", "df -h");
+    result.structuredContent.deviceLabel = "File Server";
+    result.structuredContent.deviceGroup = "lab";
+    result.structuredContent.deviceDanger = "caution";
+    result.structuredContent.deviceDefaultShell = "zsh";
+    result.structuredContent.reason = "Need disk status";
+    app.ontoolresult?.(result);
+
+    await waitForCondition(() => harness.sockets.length === 1);
+
+    const summary = document.querySelector(".shell__summary");
+    expect(summary?.textContent).toContain("File Server (fileserver)");
+    expect(summary?.textContent).toContain("Need disk status");
+    expect(
+      document.querySelector('.shell__summary [data-danger="caution"]')
+        ?.textContent,
+    ).toContain("File Server");
   });
 
   it("falls back to app-only terminal tools when the WebSocket is unreachable", async () => {
@@ -482,7 +528,7 @@ describe("quick-shell MCP app", () => {
     expect(app.serverToolCalls.map((call) => call.name)).toContain(
       "poll_quick_shell_session",
     );
-    expect(statusText()).toBe("Connected");
+    expect(statusText()).toBe("Connected to fileserver");
 
     harness.terminals[0]?.emitData("whoami");
     await waitForCondition(
@@ -509,6 +555,54 @@ describe("quick-shell MCP app", () => {
         arguments: { sessionId: "s1", appToken: "app-s1", data: "whoami" },
       },
     ]);
+  });
+
+  it("falls back when WebSocket opens but never authenticates", async () => {
+    const app = await loadApp();
+    vi.useFakeTimers();
+    try {
+      app.callServerToolImpl = async (call) => {
+        if (call.name === "get_quick_shell_session")
+          return detailsResult("s1", "fileserver");
+        if (call.name === "poll_quick_shell_session") {
+          return {
+            structuredContent: {
+              sessionId: "s1",
+              device: "fileserver",
+              exited: false,
+              exitCode: null,
+            },
+            _meta: {
+              quickShellPoll: {
+                sessionId: "s1",
+                chunks: [],
+                nextSeq: 0,
+                reset: false,
+                exited: false,
+                exitCode: null,
+              },
+            },
+          };
+        }
+        return { structuredContent: { closed: true } };
+      };
+
+      app.ontoolresult?.(openedResultWithSession("s1", "fileserver"));
+      await flush();
+      await flush();
+      expect(harness.sockets).toHaveLength(1);
+      harness.sockets[0]?.open();
+
+      await vi.advanceTimersByTimeAsync(5_100);
+      await flush();
+
+      expect(app.serverToolCalls.map((call) => call.name)).toContain(
+        "poll_quick_shell_session",
+      );
+      expect(statusText()).toBe("Connected to fileserver");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("falls back to app-only terminal tools when WebSocket construction fails", async () => {
@@ -548,7 +642,7 @@ describe("quick-shell MCP app", () => {
       ),
     );
     expect(harness.sockets).toHaveLength(0);
-    expect(statusText()).toBe("Connected");
+    expect(statusText()).toBe("Connected to fileserver");
   });
 
   it("applies fallback poll reset snapshots without duplicating snapshot chunks", async () => {
@@ -620,7 +714,9 @@ describe("quick-shell MCP app", () => {
     );
     expect(harness.terminals[0]?.resets).toBeGreaterThan(0);
     expect(harness.terminals[0]?.writes).toEqual(["snapshot", "delta"]);
-    expect(statusText()).toBe("Connected, earlier output was truncated");
+    expect(statusText()).toBe(
+      "Connected to fileserver, earlier output was truncated",
+    );
   });
 
   it("does not let stale fallback writes block a newer session", async () => {
@@ -748,6 +844,39 @@ describe("quick-shell MCP app", () => {
     });
   });
 
+  it("rejects terminal input that would exceed the WebSocket JSON frame limit", async () => {
+    const app = await loadApp();
+    app.callServerToolImpl = async (call) => {
+      if (call.name === "get_quick_shell_session") {
+        const result = detailsResult("s1", "fileserver");
+        const quickShellSession = result._meta?.quickShellSession as Record<
+          string,
+          unknown
+        >;
+        quickShellSession.maxInputBytes = 100;
+        quickShellSession.maxWsPayloadBytes = 35;
+        return result;
+      }
+      return { structuredContent: { closed: true } };
+    };
+
+    app.ontoolresult?.(openedResult("s1", "fileserver"));
+    await waitForCondition(
+      () => harness.sockets.length === 1 && harness.terminals.length === 1,
+    );
+    openSocketWithReady(harness.sockets[0]);
+
+    harness.terminals[0]?.emitData("x".repeat(20));
+
+    expect(statusText()).toBe("Input frame is larger than 35 bytes.");
+    expect(
+      harness.sockets[0]?.sent.map((message) => JSON.parse(message)),
+    ).not.toContainEqual({
+      type: "input",
+      data: "x".repeat(20),
+    });
+  });
+
   it("adopts host context and requests fullscreen only when the host offers it", async () => {
     const app = await loadApp();
     app.hostContext = {
@@ -783,6 +912,28 @@ describe("quick-shell MCP app", () => {
     expect(app.hostContext.displayMode).toBe("fullscreen");
     expect(document.documentElement.dataset.displayMode).toBe("fullscreen");
     expect(button("Inline").hidden).toBe(false);
+  });
+
+  it("keeps terminal colors in sync with host theme changes", async () => {
+    const app = await loadApp();
+    app.callServerToolImpl = async (call) => {
+      if (call.name === "get_quick_shell_session")
+        return detailsResult("s1", "fileserver");
+      return { structuredContent: { closed: true } };
+    };
+
+    app.ontoolresult?.(openedResult("s1", "fileserver"));
+    await waitForCondition(() => harness.sockets.length === 1);
+    openSocketWithReady(harness.sockets[0]);
+    harness.sockets[0]?.message({ type: "output", data: "hello" });
+    const first = harness.terminals[0];
+
+    app.onhostcontextchanged?.({ theme: "light" });
+    await flush();
+
+    expect(first?.disposed).toBe(true);
+    expect(harness.terminals).toHaveLength(2);
+    expect(harness.terminals[1]?.writes).toContain("hello");
   });
 
   it("keeps a stale slow init from taking over a newer session", async () => {
@@ -975,6 +1126,9 @@ describe("quick-shell MCP app", () => {
       type: "output",
       data: "visible\u001b]52;c;secret\u0007",
     });
+    expect(document.querySelector(".terminal-transcript")?.textContent).toBe(
+      "visible",
+    );
 
     expect(button("Download output").hidden).toBe(false);
     button("Download output").click();

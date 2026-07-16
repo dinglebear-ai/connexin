@@ -51,6 +51,53 @@ export function createServer(options: CreateServerOptions): McpServer {
 
   registerAppTool(
     server,
+    "list_quick_shell_devices",
+    {
+      title: "List Quick Shell Devices",
+      description:
+        "List SSH-configured quick-shell device aliases and non-secret metadata.",
+      inputSchema: {},
+      outputSchema: {
+        devices: z.array(
+          z.object({
+            alias: z.string(),
+            label: z.string().optional(),
+            group: z.string().optional(),
+            danger: z.enum(["normal", "caution", "danger"]).optional(),
+            defaultShell: z.string().optional(),
+          }),
+        ),
+      },
+      annotations: toolAnnotations("List Quick Shell Devices", {
+        readOnlyHint: true,
+        destructiveHint: false,
+        openWorldHint: false,
+        idempotentHint: true,
+      }),
+      _meta: toolMeta(["model"], {
+        invoking: "Listing devices",
+        invoked: "Devices listed",
+      }),
+    },
+    async () => {
+      const devices = manager.listDevices();
+      return {
+        content: [
+          {
+            type: "text",
+            text:
+              devices.length === 0
+                ? "No quick-shell devices are currently listed in SSH config."
+                : `Found ${devices.length} quick-shell device${devices.length === 1 ? "" : "s"}.`,
+          },
+        ],
+        structuredContent: { devices },
+      };
+    },
+  );
+
+  registerAppTool(
+    server,
     "open_quick_shell",
     {
       title: "Open Quick Shell",
@@ -111,7 +158,7 @@ export function createServer(options: CreateServerOptions): McpServer {
         content: [
           {
             type: "text",
-            text: `Opened quick-shell session for ${session.publicSummary.device}. The terminal is controlled by the user.`,
+            text: `Prepared quick-shell session for ${session.publicSummary.device}. The SSH terminal starts only when a compatible MCP App host renders the quick-shell UI; the user controls the terminal and must explicitly send output back. If no app appears, run quick-shell ${session.publicSummary.device} locally or retry from a host with MCP Apps support.`,
           },
         ],
         structuredContent: asStructuredContent(
@@ -483,10 +530,20 @@ export function createServer(options: CreateServerOptions): McpServer {
         manager.startSession(session.id);
       } catch (error) {
         manager.closeSession(session.id);
+        const cause = safeErrorMessage(error);
+        manager.recordAuditEvent("app_session_rejected", {
+          sessionId: session.id,
+          device: session.publicSummary.device,
+          reason: "write_ssh_start_failed",
+          error: cause,
+        });
         return {
           isError: true,
           content: [
-            { type: "text", text: "Unable to start quick-shell SSH session." },
+            {
+              type: "text",
+              text: `Unable to start quick-shell SSH session for ${session.publicSummary.device}${cause ? `: ${cause}` : "."}`,
+            },
           ],
         };
       }
@@ -567,10 +624,20 @@ export function createServer(options: CreateServerOptions): McpServer {
         manager.startSession(session.id);
       } catch (error) {
         manager.closeSession(session.id);
+        const cause = safeErrorMessage(error);
+        manager.recordAuditEvent("app_session_rejected", {
+          sessionId: session.id,
+          device: session.publicSummary.device,
+          reason: "resize_ssh_start_failed",
+          error: cause,
+        });
         return {
           isError: true,
           content: [
-            { type: "text", text: "Unable to start quick-shell SSH session." },
+            {
+              type: "text",
+              text: `Unable to start quick-shell SSH session for ${session.publicSummary.device}${cause ? `: ${cause}` : "."}`,
+            },
           ],
         };
       }

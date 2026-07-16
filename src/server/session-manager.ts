@@ -68,6 +68,14 @@ export interface QuickShellSession {
   disposables: Disposable[];
 }
 
+export interface QuickShellDeviceSummary {
+  alias: string;
+  label?: string;
+  group?: string;
+  danger?: "normal" | "caution" | "danger";
+  defaultShell?: string;
+}
+
 export interface StartedQuickShellSession extends QuickShellSession {
   pty: PtyProcess;
 }
@@ -422,6 +430,18 @@ export class QuickShellSessionManager {
     return [...this.sessions.values()];
   }
 
+  listDevices(): QuickShellDeviceSummary[] {
+    return [...this.allowedHosts].sort().map((alias) => {
+      const metadata = this.deviceMetadata.devices.get(alias);
+      const device: QuickShellDeviceSummary = { alias };
+      if (metadata?.label) device.label = metadata.label;
+      if (metadata?.group) device.group = metadata.group;
+      if (metadata?.danger) device.danger = metadata.danger;
+      if (metadata?.defaultShell) device.defaultShell = metadata.defaultShell;
+      return device;
+    });
+  }
+
   recordOutputConfirmed(sessionId: SessionId, byteCount: number): boolean {
     const session = this.sessions.get(sessionId);
     if (!session) return false;
@@ -474,13 +494,9 @@ export class QuickShellSessionManager {
   ): QuickShellPoll {
     const snapshot = session.scrollback.toString();
     const snapshotSeq = session.nextOutputSeq - 1;
-    const chunks: QuickShellOutputChunk[] =
-      snapshot.length > 0
-        ? [{ seq: Math.max(1, snapshotSeq), data: snapshot, snapshot: true }]
-        : [];
     return {
       sessionId,
-      chunks,
+      chunks: [],
       nextSeq: snapshotSeq,
       reset: true,
       resetReason,

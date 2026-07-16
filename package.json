@@ -25,7 +25,8 @@
     "test:coverage": "vitest run --coverage",
     "typecheck": "tsc -p tsconfig.app.json --noEmit && tsc -p tsconfig.server.json --noEmit && tsc -p tsconfig.scripts.json --noEmit && tsc -p tsconfig.test.json --noEmit",
     "check": "npm run build && npm run lint && npm run format:check && npm run test:coverage",
-    "smoke:stdio": "npm run build && tsx scripts/smoke-build-and-stdio.ts",
+    "smoke:stdio": "npm run build && npm run smoke:stdio:built",
+    "smoke:stdio:built": "tsx scripts/smoke-build-and-stdio.ts",
     "verify:deployment": "tsx scripts/verify-deployment.ts"
   },
   "dependencies": {

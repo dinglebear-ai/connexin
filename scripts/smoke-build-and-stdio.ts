@@ -6,6 +6,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import WebSocket from "ws";
 
 const APP_RESOURCE_URI = "ui://quick-shell/mcp-app.v2.html";
+const OPERATION_TIMEOUT_MS = 10_000;
 
 const tempDir = await mkdtemp(join(tmpdir(), "quick-shell-smoke-"));
 const sshConfigPath = join(tempDir, "config");
@@ -38,6 +39,26 @@ function requireString(value: unknown, name: string): string {
   return value;
 }
 
+function withTimeout<T>(
+  operation: Promise<T>,
+  label: string,
+  timeoutMs = OPERATION_TIMEOUT_MS,
+): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  return Promise.race([
+    operation,
+    new Promise<T>((_resolve, reject) => {
+      timer = setTimeout(
+        () => reject(new Error(`${label} timed out after ${timeoutMs}ms`)),
+        timeoutMs,
+      );
+      timer.unref?.();
+    }),
+  ]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
+}
+
 function waitForOpen(ws: WebSocket): Promise<void> {
   return new Promise((resolve, reject) => {
     ws.once("open", () => resolve());
@@ -56,10 +77,13 @@ function nextMessage(ws: WebSocket): Promise<unknown> {
 }
 
 try {
-  await client.connect(transport);
-  const tools = (await client.listTools()).tools;
+  await withTimeout(client.connect(transport), "MCP client connect");
+  const tools = (await withTimeout(client.listTools(), "tools/list")).tools;
   if (!tools.some((tool) => tool.name === "open_quick_shell")) {
     throw new Error("open_quick_shell not found in tools/list");
+  }
+  if (!tools.some((tool) => tool.name === "list_quick_shell_devices")) {
+    throw new Error("list_quick_shell_devices not found in tools/list");
   }
   if (!tools.some((tool) => tool.name === "get_quick_shell_session")) {
     throw new Error("get_quick_shell_session not found in tools/list");
@@ -68,7 +92,10 @@ try {
     throw new Error("close_quick_shell_session not found in tools/list");
   }
 
-  const resource = await client.readResource({ uri: APP_RESOURCE_URI });
+  const resource = await withTimeout(
+    client.readResource({ uri: APP_RESOURCE_URI }),
+    "app resource read",
+  );
   if (
     !resource.contents.some(
       (content) =>
@@ -92,10 +119,13 @@ try {
     throw new Error("quick-shell app emitted a sidecar WASM file");
   }
 
-  const opened = await client.callTool({
-    name: "open_quick_shell",
-    arguments: { device: "test-device" },
-  });
+  const opened = await withTimeout(
+    client.callTool({
+      name: "open_quick_shell",
+      arguments: { device: "test-device" },
+    }),
+    "open_quick_shell",
+  );
   const quickShell = (opened._meta as Record<string, unknown> | undefined)
     ?.quickShell as Record<string, unknown> | undefined;
   const sessionId = requireString(quickShell?.sessionId, "sessionId");
@@ -114,10 +144,13 @@ try {
     );
   }
 
-  const details = await client.callTool({
-    name: "get_quick_shell_session",
-    arguments: { sessionId, appToken },
-  });
+  const details = await withTimeout(
+    client.callTool({
+      name: "get_quick_shell_session",
+      arguments: { sessionId, appToken },
+    }),
+    "get_quick_shell_session",
+  );
   if (JSON.stringify(details.structuredContent).includes("wsUrl")) {
     throw new Error(
       "get_quick_shell_session leaked WebSocket details into structured content",
@@ -141,9 +174,9 @@ try {
 
   const ws = new WebSocket(wsUrl);
   const ready = nextMessage(ws);
-  await waitForOpen(ws);
+  await withTimeout(waitForOpen(ws), "terminal WebSocket open");
   ws.send(JSON.stringify({ type: "authenticate", token: wsToken }));
-  const readyMessage = await ready;
+  const readyMessage = await withTimeout(ready, "terminal ready message");
   if (
     !readyMessage ||
     typeof readyMessage !== "object" ||
@@ -153,17 +186,20 @@ try {
   }
 
   const closed = waitForClose(ws);
-  const closeResult = await client.callTool({
-    name: "close_quick_shell_session",
-    arguments: { sessionId, appToken },
-  });
+  const closeResult = await withTimeout(
+    client.callTool({
+      name: "close_quick_shell_session",
+      arguments: { sessionId, appToken },
+    }),
+    "close_quick_shell_session",
+  );
   if (
     (closeResult.structuredContent as Record<string, unknown> | undefined)
       ?.closed !== true
   ) {
     throw new Error("close_quick_shell_session did not close session");
   }
-  await closed;
+  await withTimeout(closed, "terminal WebSocket close");
 
   if (
     stderr.includes(appToken) ||
