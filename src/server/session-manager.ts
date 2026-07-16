@@ -66,6 +66,7 @@ export interface QuickShellSession {
   outputChunkBytes: number;
   nextOutputSeq: number;
   disposables: Disposable[];
+  closing: boolean;
 }
 
 export interface QuickShellDeviceSummary {
@@ -186,6 +187,7 @@ export class QuickShellSessionManager {
       outputChunkBytes: 0,
       nextOutputSeq: 1,
       disposables: [],
+      closing: false,
     };
 
     this.sessions.set(id, session);
@@ -201,6 +203,7 @@ export class QuickShellSessionManager {
   startSession(sessionId: SessionId): StartedQuickShellSession | undefined {
     const session = this.sessions.get(sessionId);
     if (!session) return undefined;
+    if (session.closing) return undefined;
     if (session.pty) return session as StartedQuickShellSession;
 
     const cwd = process.env.HOME;
@@ -229,15 +232,16 @@ export class QuickShellSessionManager {
       throw error;
     }
 
-    const disposables: Disposable[] = [];
     session.pty = pty;
     try {
-      disposables.push(
+      session.disposables.push(
         pty.onData((data) => {
           this.recordActivity(session.id);
           session.scrollback.append(data);
           this.appendOutputChunk(session, data);
         }),
+      );
+      session.disposables.push(
         pty.onExit((event) => {
           session.exited = true;
           session.exitCode = event.exitCode;
@@ -251,9 +255,14 @@ export class QuickShellSessionManager {
       );
     } catch (error) {
       const failures: LifecycleFailure[] = [];
-      this.disposeRegisteredListeners(session.id, disposables, failures);
-      this.killPty(session, failures);
-      session.pty = undefined;
+      this.disposeRegisteredListeners(
+        session.id,
+        session.disposables.splice(0),
+        failures,
+      );
+      const terminated = this.killPty(session, failures);
+      session.closing = !terminated;
+      if (terminated) session.pty = undefined;
       this.logLifecycleFailures(
         "quick-shell session start cleanup failed",
         failures,
@@ -266,7 +275,6 @@ export class QuickShellSessionManager {
       throw error;
     }
 
-    session.disposables.push(...disposables);
     this.recordAuditEventSafe("session_started", {
       sessionId: session.id,
       device: session.publicSummary.device,
@@ -325,7 +333,7 @@ export class QuickShellSessionManager {
 
   writeInput(sessionId: SessionId, data: string): boolean {
     const session = this.sessions.get(sessionId);
-    if (!session?.pty || session.exited) return false;
+    if (!session?.pty || session.exited || session.closing) return false;
     session.pty.write(data);
     this.recordActivity(sessionId);
     return true;
@@ -333,7 +341,7 @@ export class QuickShellSessionManager {
 
   resizeSession(sessionId: SessionId, cols: number, rows: number): boolean {
     const session = this.sessions.get(sessionId);
-    if (!session?.pty || session.exited) return false;
+    if (!session?.pty || session.exited || session.closing) return false;
     session.pty.resize(cols, rows);
     this.recordActivity(sessionId);
     return true;
@@ -348,8 +356,7 @@ export class QuickShellSessionManager {
     this.recordActivity(sessionId);
     const firstSeq = session.outputChunks[0]?.seq;
     const lastSeq = session.nextOutputSeq - 1;
-    const staleCursor =
-      firstSeq !== undefined && afterSeq > 0 && afterSeq < firstSeq - 1;
+    const staleCursor = firstSeq !== undefined && afterSeq < firstSeq - 1;
     const cursorAhead = afterSeq > lastSeq;
     if (staleCursor || cursorAhead) {
       const resetReason: QuickShellPollResetReason = staleCursor
@@ -382,9 +389,12 @@ export class QuickShellSessionManager {
     const session = this.sessions.get(sessionId);
     if (!session) return false;
 
-    const failures = this.closeSessionWithDiagnostics(session);
-    this.logLifecycleFailures("quick-shell session cleanup failed", failures);
-    return true;
+    const result = this.closeSessionWithDiagnostics(session);
+    this.logLifecycleFailures(
+      "quick-shell session cleanup failed",
+      result.failures,
+    );
+    return result.closed;
   }
 
   cleanupExpiredSessions(now = Date.now()): number {
@@ -405,8 +415,9 @@ export class QuickShellSessionManager {
           },
           failures,
         );
-        failures.push(...this.closeSessionWithDiagnostics(session));
-        closed += 1;
+        const result = this.closeSessionWithDiagnostics(session);
+        failures.push(...result.failures);
+        if (result.closed) closed += 1;
       }
     }
     this.logLifecycleFailures(
@@ -421,7 +432,7 @@ export class QuickShellSessionManager {
     for (const sessionId of [...this.sessions.keys()]) {
       const session = this.sessions.get(sessionId);
       if (!session) continue;
-      failures.push(...this.closeSessionWithDiagnostics(session));
+      failures.push(...this.closeSessionWithDiagnostics(session).failures);
     }
     this.logLifecycleFailures("quick-shell closeAll cleanup failed", failures);
   }
@@ -510,17 +521,22 @@ export class QuickShellSessionManager {
     };
   }
 
-  private closeSessionWithDiagnostics(
-    session: QuickShellSession,
-  ): LifecycleFailure[] {
+  private closeSessionWithDiagnostics(session: QuickShellSession): {
+    closed: boolean;
+    failures: LifecycleFailure[];
+  } {
     const failures: LifecycleFailure[] = [];
-    this.sessions.delete(session.id);
+    session.closing = true;
     this.disposeRegisteredListeners(
       session.id,
       session.disposables.splice(0),
       failures,
     );
-    this.killPty(session, failures);
+    if (!this.killPty(session, failures)) {
+      return { closed: false, failures };
+    }
+
+    this.sessions.delete(session.id);
     this.recordAuditEventSafe(
       "session_closed",
       { sessionId: session.id, device: session.publicSummary.device },
@@ -534,7 +550,7 @@ export class QuickShellSessionManager {
       }
     }
     session.pty = undefined;
-    return failures;
+    return { closed: true, failures };
   }
 
   private disposeRegisteredListeners(
@@ -554,11 +570,13 @@ export class QuickShellSessionManager {
   private killPty(
     session: QuickShellSession,
     failures: LifecycleFailure[],
-  ): void {
+  ): boolean {
     try {
       session.pty?.kill();
+      return true;
     } catch (error) {
       failures.push({ sessionId: session.id, step: "pty_kill", error });
+      return false;
     }
   }
 

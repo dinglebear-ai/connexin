@@ -145,6 +145,28 @@ describe("QuickShellSessionManager", () => {
     expect(poll?.chunks).toEqual([]);
   });
 
+  it("snapshot-resets an initial poll after older chunks were evicted", async () => {
+    const { instance, ptys } = manager({ maxScrollbackBytes: 5 });
+    const session = await instance.createSession({ device: "fileserver" });
+    instance.startSession(session.id);
+
+    ptys[0]?.emitData("abcde");
+    ptys[0]?.emitData("fghij");
+
+    const poll = instance.pollSession(session.id, 0);
+
+    expect(poll).toMatchObject({
+      reset: true,
+      resetReason: "stale_cursor",
+      nextSeq: 2,
+      snapshot: "fghij",
+      snapshotBytes: 5,
+      snapshotSeq: 2,
+      droppedBeforeSeq: 1,
+    });
+    expect(poll?.chunks).toEqual([]);
+  });
+
   it("retains oversized polling chunks as truncated tail output", async () => {
     const { instance, ptys } = manager({ maxScrollbackBytes: 5 });
     const session = await instance.createSession({ device: "fileserver" });
@@ -201,6 +223,22 @@ describe("QuickShellSessionManager", () => {
     expect(session.lastActivityAt).toBeGreaterThan(1);
   });
 
+  it("disposes the data listener when exit listener registration fails", async () => {
+    const pty = new FakePty();
+    vi.spyOn(pty, "onExit").mockImplementation(() => {
+      throw new Error("exit registration failed");
+    });
+    const { instance } = manager({}, { ptyFactory: () => pty });
+    const session = await instance.createSession({ device: "fileserver" });
+
+    expect(() => instance.startSession(session.id)).toThrow(
+      "exit registration failed",
+    );
+    expect(pty.data.listenerCount("data")).toBe(0);
+    expect(pty.killed).toBe(true);
+    expect(session.disposables).toEqual([]);
+  });
+
   it("kills PTY and disposes listeners on close", async () => {
     const { instance, ptys } = manager();
     const session = await instance.createSession({ device: "fileserver" });
@@ -243,32 +281,51 @@ describe("QuickShellSessionManager", () => {
     }
   });
 
-  it("removes sessions, continues cleanup, and logs when disposables or kill throw", async () => {
+  it("retains non-writable PTY ownership and retries after kill throws", async () => {
     const consoleError = vi
       .spyOn(console, "error")
       .mockImplementation(() => {});
     try {
-      const { instance, ptys } = manager();
+      const record = vi.fn();
+      const { instance, ptys } = manager({}, { audit: { record } });
       const session = await instance.createSession({ device: "fileserver" });
       instance.startSession(session.id);
       const pty = ptys[0]!;
-      session.disposables.unshift({
-        dispose() {
-          throw new Error("dispose failed");
-        },
-      });
+      const closed = vi.fn();
+      instance.onSessionClosed(closed);
+      let killAttempts = 0;
       pty.kill = () => {
+        killAttempts += 1;
+        if (killAttempts === 1) throw new Error("kill failed");
         pty.killed = true;
-        throw new Error("kill failed");
       };
 
-      expect(instance.closeSession(session.id)).toBe(true);
-
-      expect(pty.killed).toBe(true);
+      expect(instance.closeSession(session.id)).toBe(false);
+      expect(instance.getSession(session.id)).toBe(session);
+      expect(session.pty).toBe(pty);
+      expect(session.closing).toBe(true);
+      expect(instance.writeInput(session.id, "whoami\n")).toBe(false);
+      expect(instance.resizeSession(session.id, 80, 24)).toBe(false);
       expect(pty.data.listenerCount("data")).toBe(0);
       expect(pty.exit.listenerCount("exit")).toBe(0);
       expect(session.disposables).toEqual([]);
+      expect(closed).not.toHaveBeenCalled();
+      expect(record).not.toHaveBeenCalledWith(
+        "session_closed",
+        expect.anything(),
+      );
+
+      expect(instance.closeSession(session.id)).toBe(true);
+
+      expect(killAttempts).toBe(2);
+      expect(pty.killed).toBe(true);
       expect(instance.getSession(session.id)).toBeUndefined();
+      expect(session.pty).toBeUndefined();
+      expect(closed).toHaveBeenCalledOnce();
+      expect(record).toHaveBeenCalledWith(
+        "session_closed",
+        expect.objectContaining({ sessionId: session.id }),
+      );
       expect(consoleError).toHaveBeenCalled();
     } finally {
       consoleError.mockRestore();
@@ -356,9 +413,9 @@ describe("QuickShellSessionManager", () => {
 
       const closed = instance.cleanupExpiredSessions(2_000);
 
-      expect(closed).toBe(2);
+      expect(closed).toBe(1);
       expect(ptys.every((pty) => pty.killed)).toBe(true);
-      expect(instance.getSession(first.id)).toBeUndefined();
+      expect(instance.getSession(first.id)).toBe(first);
       expect(instance.getSession(second.id)).toBeUndefined();
       expect(consoleError).toHaveBeenCalled();
     } finally {
@@ -396,7 +453,7 @@ describe("QuickShellSessionManager", () => {
       instance.closeAll();
 
       expect(ptys.every((pty) => pty.killed)).toBe(true);
-      expect(instance.getSession(first.id)).toBeUndefined();
+      expect(instance.getSession(first.id)).toBe(first);
       expect(instance.getSession(second.id)).toBeUndefined();
       expect(consoleError).toHaveBeenCalled();
     } finally {

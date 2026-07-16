@@ -2,13 +2,18 @@ import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { RuntimeConfig } from "../../src/server/config.js";
 import {
   createServer,
   resetAppHtmlCacheForTests,
 } from "../../src/server/create-server.js";
+import {
+  publicStructuredContent,
+  quickShellPublicOutputSchema,
+} from "../../src/server/mcp-tooling.js";
 import { QuickShellSessionManager } from "../../src/server/session-manager.js";
+import { QuickShellPublicSessionSchema } from "../../src/shared/protocol.js";
 import { FakePty } from "./helpers/fake-pty.js";
 import { testRuntimeConfig } from "./helpers/runtime-config.js";
 
@@ -96,6 +101,27 @@ async function connectTestClient(fixture = createTestServer()) {
 }
 
 describe("createServer", () => {
+  it("derives and validates the public MCP session projection from one schema", () => {
+    expect(Object.keys(quickShellPublicOutputSchema)).toEqual(
+      Object.keys(QuickShellPublicSessionSchema.shape),
+    );
+    expect(
+      publicStructuredContent({
+        sessionId: "session-1",
+        device: "test-device",
+        reason: "debug",
+        leaked: "not public",
+      } as never),
+    ).toEqual({
+      sessionId: "session-1",
+      device: "test-device",
+      reason: "debug",
+    });
+    expect(() =>
+      publicStructuredContent({ sessionId: "session-1", device: "" }),
+    ).toThrow();
+  });
+
   it("returns hidden app metadata without exposing tokens in model-visible fields", async () => {
     const { client, server, manager, ptys } = await connectTestClient();
     try {
@@ -290,12 +316,10 @@ describe("createServer", () => {
         idempotentHint: true,
       });
       expect(listTool?._meta).toMatchObject({
-        ui: {
-          resourceUri: APP_RESOURCE_URI,
-          visibility: ["model"],
-        },
         "openai/visibility": "public",
       });
+      expect(listTool?._meta?.ui).toBeUndefined();
+      expect(listTool?._meta?.["openai/outputTemplate"]).toBeUndefined();
 
       expect(appOnly?._meta).toMatchObject({
         ui: {
@@ -494,6 +518,92 @@ describe("createServer", () => {
         arguments: quickShell,
       });
       expect(details.isError).toBe(true);
+    } finally {
+      await server.close();
+      await client.close();
+    }
+  });
+
+  it("reports retained PTY termination failures as not closed and retries", async () => {
+    const { client, server, manager, ptys } = await connectTestClient();
+    try {
+      const opened = await client.callTool({
+        name: "open_quick_shell",
+        arguments: { device: "test-device" },
+      });
+      const quickShell = opened._meta?.quickShell as {
+        sessionId: string;
+        appToken: string;
+      };
+      await client.callTool({
+        name: "get_quick_shell_session",
+        arguments: quickShell,
+      });
+      const pty = ptys[0]!;
+      let attempts = 0;
+      pty.kill = () => {
+        attempts += 1;
+        if (attempts === 1) throw new Error("kill failed");
+        pty.killed = true;
+      };
+      const consoleError = vi
+        .spyOn(console, "error")
+        .mockImplementation(() => {});
+
+      const failed = await client.callTool({
+        name: "close_quick_shell_session",
+        arguments: quickShell,
+      });
+      expect(failed.isError).not.toBe(true);
+      expect(failed.structuredContent).toEqual({ closed: false });
+      expect(failed.structuredContent).not.toHaveProperty("alreadyClosed");
+      expect(manager.getSession(quickShell.sessionId)?.pty).toBe(pty);
+
+      const retried = await client.callTool({
+        name: "close_quick_shell_session",
+        arguments: quickShell,
+      });
+      expect(retried.structuredContent).toEqual({ closed: true });
+      expect(attempts).toBe(2);
+      expect(manager.getSession(quickShell.sessionId)).toBeUndefined();
+      consoleError.mockRestore();
+    } finally {
+      vi.restoreAllMocks();
+      await server.close();
+      await client.close();
+    }
+  });
+
+  it("audits invalid write and resize capabilities consistently", async () => {
+    const fixture = createTestServer();
+    const audit = vi.spyOn(fixture.manager, "recordAuditEvent");
+    const { client, server } = await connectTestClient(fixture);
+    try {
+      const opened = await client.callTool({
+        name: "open_quick_shell",
+        arguments: { device: "test-device" },
+      });
+      const quickShell = opened._meta?.quickShell as { sessionId: string };
+
+      const write = await client.callTool({
+        name: "write_quick_shell_input",
+        arguments: { ...quickShell, appToken: "bad", data: "x" },
+      });
+      const resize = await client.callTool({
+        name: "resize_quick_shell_session",
+        arguments: { ...quickShell, appToken: "bad", cols: 80, rows: 24 },
+      });
+
+      expect(write.isError).toBe(true);
+      expect(resize.isError).toBe(true);
+      expect(audit).toHaveBeenCalledWith(
+        "app_session_rejected",
+        expect.objectContaining({ reason: "invalid_write_capability" }),
+      );
+      expect(audit).toHaveBeenCalledWith(
+        "app_session_rejected",
+        expect.objectContaining({ reason: "invalid_resize_capability" }),
+      );
     } finally {
       await server.close();
       await client.close();

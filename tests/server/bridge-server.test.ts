@@ -1,7 +1,11 @@
 import http from "node:http";
 import net from "node:net";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
+import {
+  createAuditLogger,
+  createMemoryAuditSink,
+} from "../../src/server/audit-log.js";
 import type { RuntimeConfig } from "../../src/server/config.js";
 import { startBridgeServer } from "../../src/server/bridge-server.js";
 import { QuickShellSessionManager } from "../../src/server/session-manager.js";
@@ -252,6 +256,98 @@ describe("startBridgeServer", () => {
     await bridge.close();
   });
 
+  it("bounds audit writes for a burst of unauthenticated rejections", async () => {
+    const sink = createMemoryAuditSink();
+    const runtimeConfig = testRuntimeConfig({
+      allowedOrigins: ["https://allowed.example"],
+    });
+    const manager = new QuickShellSessionManager({
+      config: runtimeConfig,
+      allowedHosts: new Set(["test-device"]),
+      audit: createAuditLogger({ sink }),
+      ptyFactory: () => new FakePty(),
+    });
+    const session = await manager.createSession({ device: "test-device" });
+    const bridge = await startBridgeServer({ config: runtimeConfig, manager });
+
+    try {
+      for (let index = 0; index < 50; index += 1) {
+        const ws = new WebSocket(wsUrl(bridge.baseUrl, session.id), {
+          headers: { Origin: `https://blocked-${index}.example` },
+        });
+        ws.once("error", () => {});
+        await waitForClose(ws);
+      }
+
+      const rejections = sink.records.filter(
+        (record) => record.event === "bridge_connection_rejected",
+      );
+      expect(rejections.length).toBeLessThan(50);
+      expect(rejections).toContainEqual(
+        expect.objectContaining({
+          event: "bridge_connection_rejected",
+          reason: "audit_rate_limited",
+          suppressedEvent: "unauthenticated_bridge_rejection",
+          detailLimit: 10,
+          windowMs: 60_000,
+        }),
+      );
+      const summary = rejections.find(
+        (record) => record.reason === "audit_rate_limited",
+      );
+      expect(summary).not.toHaveProperty("origin");
+      expect(summary).not.toHaveProperty("sessionId");
+    } finally {
+      manager.closeAll();
+      await bridge.close();
+    }
+  });
+
+  it("bounds audit writes for malformed pre-authentication messages", async () => {
+    const sink = createMemoryAuditSink();
+    const runtimeConfig = testRuntimeConfig();
+    const manager = new QuickShellSessionManager({
+      config: runtimeConfig,
+      allowedHosts: new Set(["test-device"]),
+      audit: createAuditLogger({ sink }),
+      ptyFactory: () => new FakePty(),
+    });
+    const session = await manager.createSession({ device: "test-device" });
+    const bridge = await startBridgeServer({ config: runtimeConfig, manager });
+    const messages = [
+      "not json",
+      JSON.stringify({ type: "resize", cols: 0, rows: 0 }),
+      JSON.stringify({ type: "input", data: "whoami" }),
+    ];
+
+    try {
+      for (let index = 0; index < 45; index += 1) {
+        const ws = new WebSocket(wsUrl(bridge.baseUrl, session.id));
+        await waitForOpen(ws);
+        const closed = waitForClose(ws);
+        ws.send(messages[index % messages.length]);
+        await closed;
+      }
+
+      const detailed = sink.records.filter(
+        (record) => record.event === "bridge_message_rejected",
+      );
+      expect(detailed).toHaveLength(10);
+      expect(sink.records).toContainEqual(
+        expect.objectContaining({
+          event: "bridge_connection_rejected",
+          reason: "audit_rate_limited",
+          suppressedEvent: "unauthenticated_bridge_rejection",
+          detailLimit: 10,
+          windowMs: 60_000,
+        }),
+      );
+    } finally {
+      manager.closeAll();
+      await bridge.close();
+    }
+  });
+
   it("uses maxPayload", async () => {
     const { bridge, manager } = await fixture({ maxWsPayloadBytes: 1234 });
     try {
@@ -290,20 +386,42 @@ describe("startBridgeServer", () => {
     await bridge.close();
   });
 
-  it("rejects invalid JSON messages with an error response", async () => {
+  it("sends an error before policy-closing invalid JSON messages", async () => {
     const { bridge, manager, session } = await fixture();
     const ws = await connectAndReadReady(
       wsUrl(bridge.baseUrl, session.id),
       session.wsToken,
     );
 
+    const message = nextMessage(ws);
+    const closed = waitForClose(ws);
     ws.send("{");
 
-    await expect(nextMessage(ws)).resolves.toEqual({
+    await expect(message).resolves.toEqual({
       type: "error",
       message: "invalid terminal message",
     });
-    ws.close();
+    await expect(closed).resolves.toMatchObject({ code: 1008 });
+    manager.closeAll();
+    await bridge.close();
+  });
+
+  it("sends an error before policy-closing schema-invalid messages", async () => {
+    const { bridge, manager, session } = await fixture();
+    const ws = await connectAndReadReady(
+      wsUrl(bridge.baseUrl, session.id),
+      session.wsToken,
+    );
+
+    const message = nextMessage(ws);
+    const closed = waitForClose(ws);
+    ws.send(JSON.stringify({ type: "resize", cols: 1, rows: 1 }));
+
+    await expect(message).resolves.toEqual({
+      type: "error",
+      message: "invalid terminal message",
+    });
+    await expect(closed).resolves.toMatchObject({ code: 1008 });
     manager.closeAll();
     await bridge.close();
   });
@@ -321,16 +439,6 @@ describe("startBridgeServer", () => {
     ws.send(JSON.stringify({ type: "input", data: "x".repeat(101) }));
     await expect(oversizeClosed).resolves.toMatchObject({ code: 1009 });
 
-    const ws2 = await connectAndReadReady(
-      wsUrl(bridge.baseUrl, session.id),
-      session.wsToken,
-    );
-    ws2.send(JSON.stringify({ type: "resize", cols: 1, rows: 1 }));
-    await expect(nextMessage(ws2)).resolves.toEqual({
-      type: "error",
-      message: "invalid terminal message",
-    });
-    ws2.close();
     manager.closeAll();
     await bridge.close();
   });
@@ -599,5 +707,84 @@ describe("startBridgeServer", () => {
 
     await expect(bridge.close()).resolves.toBeUndefined();
     await expect(bridge.close()).resolves.toBeUndefined();
+  });
+
+  it("closes cleanly with a code-point-safe reason after a multibyte startup error", async () => {
+    const runtimeConfig = testRuntimeConfig();
+    const startupError = `failed ${"🙂".repeat(100)}`;
+    const manager = new QuickShellSessionManager({
+      config: runtimeConfig,
+      allowedHosts: new Set(["test-device"]),
+      ptyFactory: () => {
+        throw new Error(startupError);
+      },
+    });
+    const session = await manager.createSession({ device: "test-device" });
+    const bridge = await startBridgeServer({ config: runtimeConfig, manager });
+    const ws = new WebSocket(wsUrl(bridge.baseUrl, session.id));
+    const message = nextMessage(ws);
+    const closed = waitForClose(ws);
+
+    try {
+      await waitForOpen(ws);
+      ws.send(JSON.stringify({ type: "authenticate", token: session.wsToken }));
+
+      await expect(message).resolves.toMatchObject({
+        type: "error",
+        message: expect.stringContaining(startupError),
+      });
+      const result = await closed;
+      expect(result.code).toBe(1011);
+      expect(Buffer.byteLength(result.reason, "utf8")).toBeLessThanOrEqual(123);
+      expect(result.reason).not.toContain("�");
+    } finally {
+      manager.closeAll();
+      await bridge.close();
+    }
+  });
+
+  it("continues connection and bridge cleanup when a disposable throws", async () => {
+    const { bridge, manager, ptys, session } = await fixture();
+    const pty = ptys[0]!;
+    let secondDisposed = false;
+    pty.onData = (listener) => {
+      pty.data.on("data", listener);
+      return {
+        dispose: () => {
+          pty.data.off("data", listener);
+          throw new Error("data cleanup failed");
+        },
+      };
+    };
+    pty.onExit = (listener) => {
+      pty.exit.on("exit", listener);
+      return {
+        dispose: () => {
+          secondDisposed = true;
+          pty.exit.off("exit", listener);
+        },
+      };
+    };
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const ws = await connectAndReadReady(
+      wsUrl(bridge.baseUrl, session.id),
+      session.wsToken,
+    );
+    const closed = waitForClose(ws);
+
+    try {
+      await expect(bridge.close()).resolves.toBeUndefined();
+      await expect(closed).resolves.toMatchObject({ code: 1001 });
+      expect(secondDisposed).toBe(true);
+      expect(bridge.httpServer.listening).toBe(false);
+      expect(error).toHaveBeenCalledWith(
+        "quick-shell bridge disposable cleanup failed",
+        expect.any(Error),
+      );
+    } finally {
+      error.mockRestore();
+      manager.closeAll();
+      await bridge.close().catch(() => undefined);
+    }
   });
 });

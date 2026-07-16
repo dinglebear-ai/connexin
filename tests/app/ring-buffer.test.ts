@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { BoundedTextBuffer } from "../../src/shared/bounded-text-buffer.js";
+import { takeFirstUtf8Bytes } from "../../src/shared/utf8.js";
+
+describe("takeFirstUtf8Bytes", () => {
+  it("truncates by UTF-8 bytes without splitting a code point", () => {
+    expect(takeFirstUtf8Bytes("a🙂b", 5)).toEqual({ text: "a🙂", bytes: 5 });
+    expect(takeFirstUtf8Bytes("🙂a", 3)).toEqual({ text: "", bytes: 0 });
+  });
+});
 
 describe("BoundedTextBuffer", () => {
   it("caps retained text and keeps recent chunks", () => {

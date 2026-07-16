@@ -72,6 +72,35 @@ describe("main transports", () => {
     }
   });
 
+  it("authenticates HTTP MCP requests before parsing malformed or oversized JSON", async () => {
+    const runtime = await prepareRuntime({
+      env: {
+        QUICK_SHELL_SSH_CONFIG: await sshConfigPath(),
+        QUICK_SHELL_HTTP_TOKEN: "secret",
+      },
+      ptyFactory: () => new FakePty(),
+    });
+    const http = await startHttpMcpServer({ runtime, port: 0 });
+    try {
+      const malformed = await fetch(`${http.baseUrl}/mcp`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: "{",
+      });
+      const oversized = await fetch(`${http.baseUrl}/mcp`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ value: "x".repeat(1024 * 1024) }),
+      });
+
+      expect(malformed.status).toBe(401);
+      expect(oversized.status).toBe(401);
+    } finally {
+      await http.close();
+      await runtime.close();
+    }
+  });
+
   it("rejects startup when the HTTP MCP port is already in use", async () => {
     const occupied = http.createServer();
     await new Promise<void>((resolve) =>

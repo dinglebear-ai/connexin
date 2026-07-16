@@ -89,6 +89,11 @@ export function parseSshConfigHosts(source: string): string[] {
     const [keyword, ...args] = tokenizeOpenSshLine(trimmed);
     const normalizedKeyword = keyword?.toLowerCase();
     if (normalizedKeyword === "host") {
+      if (args.some((arg) => arg.includes("\\"))) {
+        throw new Error(
+          "SSH config Host patterns with backslash escapes are unsupported",
+        );
+      }
       flushHostBlock();
       currentPatterns = args;
       currentAliases = args.filter(isExplicitAlias);
@@ -143,6 +148,13 @@ function unsafeExecutionDirective(
   ) {
     return "PermitLocalCommand";
   }
+  if (keyword === "pkcs11provider" && args.join(" ").toLowerCase() !== "none")
+    return "PKCS11Provider";
+  if (
+    keyword === "securitykeyprovider" &&
+    args.join(" ").toLowerCase() !== "internal"
+  )
+    return "SecurityKeyProvider";
   return undefined;
 }
 
@@ -152,11 +164,17 @@ function lineTokens(line: string): string[] | undefined {
   return tokenizeOpenSshLine(trimmed);
 }
 
-function includePatterns(source: string): string[] {
+function globallyReachableIncludePatterns(source: string): string[] {
   const patterns: string[] = [];
+  let globalScope = true;
   for (const line of source.split(/\r?\n/)) {
     const [keyword, ...rest] = lineTokens(line) ?? [];
-    if (keyword?.toLowerCase() === "include") patterns.push(...rest);
+    const normalizedKeyword = keyword?.toLowerCase();
+    if (normalizedKeyword === "host" || normalizedKeyword === "match") {
+      globalScope = false;
+      continue;
+    }
+    if (globalScope && normalizedKeyword === "include") patterns.push(...rest);
   }
   return patterns;
 }
@@ -263,7 +281,7 @@ async function collectSshConfigHosts(
   }
 
   const hosts = parseSshConfigHosts(source);
-  for (const include of includePatterns(source)) {
+  for (const include of globallyReachableIncludePatterns(source)) {
     const pattern = resolveIncludePattern(include);
     for (const includedPath of await expandIncludePath(pattern)) {
       hosts.push(

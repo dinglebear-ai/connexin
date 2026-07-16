@@ -7,7 +7,11 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { RuntimeConfig } from "./config.js";
 import { registerHealthTool } from "./health-tool.js";
-import type { QuickShellSessionManager } from "./session-manager.js";
+import type {
+  QuickShellSession,
+  QuickShellSessionManager,
+  StartedQuickShellSession,
+} from "./session-manager.js";
 import {
   APP_RESOURCE_URI,
   SERVER_INSTRUCTIONS,
@@ -15,6 +19,7 @@ import {
   appResourceMeta,
   appSessionFor,
   asStructuredContent,
+  modelToolMeta,
   publicStructuredContent,
   quickShellPublicOutputSchema,
   readBuiltAppHtml,
@@ -39,6 +44,84 @@ export interface CreateServerOptions {
 }
 
 export { resetAppHtmlCacheForTests };
+
+interface AppCapabilityArgs {
+  sessionId?: string;
+  appToken?: string;
+}
+
+function toolError(text: string) {
+  return {
+    isError: true as const,
+    content: [{ type: "text" as const, text }],
+  };
+}
+
+function requireAppCapability(
+  manager: QuickShellSessionManager,
+  args: AppCapabilityArgs,
+  options: {
+    missingReason: string;
+    missingMessage: string;
+    invalidReason: string;
+    auditFields?: Record<string, unknown>;
+  },
+): { session: QuickShellSession } | { error: ReturnType<typeof toolError> } {
+  if (!args.sessionId || !args.appToken) {
+    manager.recordAuditEvent("app_session_rejected", {
+      sessionId: args.sessionId,
+      reason: options.missingReason,
+      hasAppToken:
+        typeof args.appToken === "string" && args.appToken.length > 0,
+      ...options.auditFields,
+    });
+    return { error: toolError(options.missingMessage) };
+  }
+
+  const session = manager.authenticateApp(args.sessionId, args.appToken);
+  if (!session) {
+    manager.recordAuditEvent("app_session_rejected", {
+      sessionId: args.sessionId,
+      reason: options.invalidReason,
+      ...options.auditFields,
+    });
+    return { error: toolError("Invalid quick-shell app capability.") };
+  }
+  return { session };
+}
+
+function startAppSession(
+  manager: QuickShellSessionManager,
+  session: QuickShellSession,
+  failureReason: string,
+):
+  | { session: StartedQuickShellSession }
+  | { error: ReturnType<typeof toolError> } {
+  try {
+    const started = manager.startSession(session.id);
+    if (started) return { session: started };
+    manager.recordAuditEvent("app_session_rejected", {
+      sessionId: session.id,
+      device: session.publicSummary.device,
+      reason: "missing_session",
+    });
+    return { error: toolError("Quick-shell session is no longer available.") };
+  } catch (error) {
+    manager.closeSession(session.id);
+    const cause = safeErrorMessage(error);
+    manager.recordAuditEvent("app_session_rejected", {
+      sessionId: session.id,
+      device: session.publicSummary.device,
+      reason: failureReason,
+      error: cause,
+    });
+    return {
+      error: toolError(
+        `Unable to start quick-shell SSH session for ${session.publicSummary.device}${cause ? `: ${cause}` : "."}`,
+      ),
+    };
+  }
+}
 
 export function createServer(options: CreateServerOptions): McpServer {
   const server = new McpServer(
@@ -74,7 +157,7 @@ export function createServer(options: CreateServerOptions): McpServer {
         openWorldHint: false,
         idempotentHint: true,
       }),
-      _meta: toolMeta(["model"], {
+      _meta: modelToolMeta({
         invoking: "Listing devices",
         invoked: "Devices listed",
       }),
@@ -200,71 +283,19 @@ export function createServer(options: CreateServerOptions): McpServer {
         hasAppToken:
           typeof args.appToken === "string" && args.appToken.length > 0,
       });
-      if (!args.sessionId || !args.appToken) {
-        manager.recordAuditEvent("app_session_rejected", {
-          sessionId: args.sessionId,
-          reason: "missing_app_capability",
-        });
-        return {
-          isError: true,
-          content: [
-            { type: "text", text: "Missing quick-shell app capability." },
-          ],
-        };
-      }
-
-      const session = manager.authenticateApp(args.sessionId, args.appToken);
-      if (!session) {
-        manager.recordAuditEvent("app_session_rejected", {
-          sessionId: args.sessionId,
-          reason: "invalid_app_capability",
-        });
-        return {
-          isError: true,
-          content: [
-            { type: "text", text: "Invalid quick-shell app capability." },
-          ],
-        };
-      }
-
-      let started;
-      try {
-        started = manager.startSession(session.id);
-      } catch (error) {
-        manager.closeSession(session.id);
-        const cause = safeErrorMessage(error);
-        manager.recordAuditEvent("app_session_rejected", {
-          sessionId: session.id,
-          device: session.publicSummary.device,
-          reason: "ssh_start_failed",
-          error: cause,
-        });
-        return {
-          isError: true,
-          content: [
-            {
-              type: "text",
-              text: `Unable to start quick-shell SSH session for ${session.publicSummary.device}${cause ? `: ${cause}` : "."}`,
-            },
-          ],
-        };
-      }
-      if (!started) {
-        manager.recordAuditEvent("app_session_rejected", {
-          sessionId: session.id,
-          device: session.publicSummary.device,
-          reason: "missing_session",
-        });
-        return {
-          isError: true,
-          content: [
-            {
-              type: "text",
-              text: "Quick-shell session is no longer available.",
-            },
-          ],
-        };
-      }
+      const capability = requireAppCapability(manager, args, {
+        missingReason: "missing_app_capability",
+        missingMessage: "Missing quick-shell app capability.",
+        invalidReason: "invalid_app_capability",
+      });
+      if ("error" in capability) return capability.error;
+      const startup = startAppSession(
+        manager,
+        capability.session,
+        "ssh_start_failed",
+      );
+      if ("error" in startup) return startup.error;
+      const started = startup.session;
 
       const appSession = appSessionFor(started, config, bridgeBaseUrl);
       manager.recordAuditEvent("app_session_attached", {
@@ -318,7 +349,7 @@ export function createServer(options: CreateServerOptions): McpServer {
       }),
     },
     async (args) => {
-      if (!args.sessionId || !args.appToken || args.byteCount === undefined) {
+      if (args.byteCount === undefined) {
         manager.recordAuditEvent("app_session_rejected", {
           sessionId: args.sessionId,
           reason: "missing_output_confirm_capability",
@@ -336,19 +367,14 @@ export function createServer(options: CreateServerOptions): McpServer {
           ],
         };
       }
-      const session = manager.authenticateApp(args.sessionId, args.appToken);
-      if (!session) {
-        manager.recordAuditEvent("app_session_rejected", {
-          sessionId: args.sessionId,
-          reason: "invalid_output_confirm_capability",
-        });
-        return {
-          isError: true,
-          content: [
-            { type: "text", text: "Invalid quick-shell app capability." },
-          ],
-        };
-      }
+      const capability = requireAppCapability(manager, args, {
+        missingReason: "missing_output_confirm_capability",
+        missingMessage: "Missing quick-shell output confirmation capability.",
+        invalidReason: "invalid_output_confirm_capability",
+        auditFields: { hasByteCount: true },
+      });
+      if ("error" in capability) return capability.error;
+      const session = capability.session;
 
       manager.recordOutputConfirmed(session.id, args.byteCount);
       return {
@@ -388,66 +414,19 @@ export function createServer(options: CreateServerOptions): McpServer {
       }),
     },
     async (args) => {
-      if (!args.sessionId || !args.appToken) {
-        manager.recordAuditEvent("app_session_rejected", {
-          sessionId: args.sessionId,
-          reason: "missing_poll_capability",
-          hasAppToken:
-            typeof args.appToken === "string" && args.appToken.length > 0,
-        });
-        return {
-          isError: true,
-          content: [
-            { type: "text", text: "Missing quick-shell poll capability." },
-          ],
-        };
-      }
-      const session = manager.authenticateApp(args.sessionId, args.appToken);
-      if (!session) {
-        manager.recordAuditEvent("app_session_rejected", {
-          sessionId: args.sessionId,
-          reason: "invalid_poll_capability",
-        });
-        return {
-          isError: true,
-          content: [
-            { type: "text", text: "Invalid quick-shell app capability." },
-          ],
-        };
-      }
-      let started;
-      try {
-        started = manager.startSession(session.id);
-      } catch (error) {
-        manager.closeSession(session.id);
-        const cause = safeErrorMessage(error);
-        manager.recordAuditEvent("app_session_rejected", {
-          sessionId: session.id,
-          device: session.publicSummary.device,
-          reason: "poll_ssh_start_failed",
-          error: cause,
-        });
-        return {
-          isError: true,
-          content: [
-            {
-              type: "text",
-              text: `Unable to start quick-shell SSH session for ${session.publicSummary.device}.`,
-            },
-          ],
-        };
-      }
-      if (!started) {
-        return {
-          isError: true,
-          content: [
-            {
-              type: "text",
-              text: "Quick-shell session is no longer available.",
-            },
-          ],
-        };
-      }
+      const capability = requireAppCapability(manager, args, {
+        missingReason: "missing_poll_capability",
+        missingMessage: "Missing quick-shell poll capability.",
+        invalidReason: "invalid_poll_capability",
+      });
+      if ("error" in capability) return capability.error;
+      const startup = startAppSession(
+        manager,
+        capability.session,
+        "poll_ssh_start_failed",
+      );
+      if ("error" in startup) return startup.error;
+      const started = startup.session;
       const poll = manager.pollSession(started.id, args.afterSeq ?? 0);
       if (!poll) {
         return {
@@ -502,7 +481,7 @@ export function createServer(options: CreateServerOptions): McpServer {
       }),
     },
     async (args) => {
-      if (!args.sessionId || !args.appToken || args.data === undefined) {
+      if (args.data === undefined) {
         manager.recordAuditEvent("app_session_rejected", {
           sessionId: args.sessionId,
           reason: "missing_write_capability",
@@ -517,36 +496,20 @@ export function createServer(options: CreateServerOptions): McpServer {
           ],
         };
       }
-      const session = manager.authenticateApp(args.sessionId, args.appToken);
-      if (!session) {
-        return {
-          isError: true,
-          content: [
-            { type: "text", text: "Invalid quick-shell app capability." },
-          ],
-        };
-      }
-      try {
-        manager.startSession(session.id);
-      } catch (error) {
-        manager.closeSession(session.id);
-        const cause = safeErrorMessage(error);
-        manager.recordAuditEvent("app_session_rejected", {
-          sessionId: session.id,
-          device: session.publicSummary.device,
-          reason: "write_ssh_start_failed",
-          error: cause,
-        });
-        return {
-          isError: true,
-          content: [
-            {
-              type: "text",
-              text: `Unable to start quick-shell SSH session for ${session.publicSummary.device}${cause ? `: ${cause}` : "."}`,
-            },
-          ],
-        };
-      }
+      const capability = requireAppCapability(manager, args, {
+        missingReason: "missing_write_capability",
+        missingMessage: "Missing quick-shell write capability.",
+        invalidReason: "invalid_write_capability",
+        auditFields: { hasData: true },
+      });
+      if ("error" in capability) return capability.error;
+      const startup = startAppSession(
+        manager,
+        capability.session,
+        "write_ssh_start_failed",
+      );
+      if ("error" in startup) return startup.error;
+      const session = startup.session;
       const written = manager.writeInput(session.id, args.data);
       return {
         content: [
@@ -598,12 +561,15 @@ export function createServer(options: CreateServerOptions): McpServer {
       }),
     },
     async (args) => {
-      if (
-        !args.sessionId ||
-        !args.appToken ||
-        args.cols === undefined ||
-        args.rows === undefined
-      ) {
+      if (args.cols === undefined || args.rows === undefined) {
+        manager.recordAuditEvent("app_session_rejected", {
+          sessionId: args.sessionId,
+          reason: "missing_resize_capability",
+          hasAppToken:
+            typeof args.appToken === "string" && args.appToken.length > 0,
+          hasCols: args.cols !== undefined,
+          hasRows: args.rows !== undefined,
+        });
         return {
           isError: true,
           content: [
@@ -611,36 +577,20 @@ export function createServer(options: CreateServerOptions): McpServer {
           ],
         };
       }
-      const session = manager.authenticateApp(args.sessionId, args.appToken);
-      if (!session) {
-        return {
-          isError: true,
-          content: [
-            { type: "text", text: "Invalid quick-shell app capability." },
-          ],
-        };
-      }
-      try {
-        manager.startSession(session.id);
-      } catch (error) {
-        manager.closeSession(session.id);
-        const cause = safeErrorMessage(error);
-        manager.recordAuditEvent("app_session_rejected", {
-          sessionId: session.id,
-          device: session.publicSummary.device,
-          reason: "resize_ssh_start_failed",
-          error: cause,
-        });
-        return {
-          isError: true,
-          content: [
-            {
-              type: "text",
-              text: `Unable to start quick-shell SSH session for ${session.publicSummary.device}${cause ? `: ${cause}` : "."}`,
-            },
-          ],
-        };
-      }
+      const capability = requireAppCapability(manager, args, {
+        missingReason: "missing_resize_capability",
+        missingMessage: "Missing quick-shell resize capability.",
+        invalidReason: "invalid_resize_capability",
+        auditFields: { hasCols: true, hasRows: true },
+      });
+      if ("error" in capability) return capability.error;
+      const startup = startAppSession(
+        manager,
+        capability.session,
+        "resize_ssh_start_failed",
+      );
+      if ("error" in startup) return startup.error;
+      const session = startup.session;
       const resized = manager.resizeSession(session.id, args.cols, args.rows);
       return {
         content: [
@@ -689,16 +639,13 @@ export function createServer(options: CreateServerOptions): McpServer {
           typeof args.appToken === "string" && args.appToken.length > 0,
       });
       if (!args.sessionId || !args.appToken) {
-        manager.recordAuditEvent("app_session_rejected", {
-          sessionId: args.sessionId,
-          reason: "missing_close_capability",
+        const capability = requireAppCapability(manager, args, {
+          missingReason: "missing_close_capability",
+          missingMessage: "Missing quick-shell close capability.",
+          invalidReason: "invalid_close_capability",
         });
-        return {
-          isError: true,
-          content: [
-            { type: "text", text: "Missing quick-shell close capability." },
-          ],
-        };
+        if ("error" in capability) return capability.error;
+        return toolError("Missing quick-shell close capability.");
       }
       const existing = manager.getSession(args.sessionId);
       if (!existing) {
@@ -710,19 +657,13 @@ export function createServer(options: CreateServerOptions): McpServer {
         };
       }
 
-      const session = manager.authenticateApp(args.sessionId, args.appToken);
-      if (!session) {
-        manager.recordAuditEvent("app_session_rejected", {
-          sessionId: args.sessionId,
-          reason: "invalid_close_capability",
-        });
-        return {
-          isError: true,
-          content: [
-            { type: "text", text: "Invalid quick-shell app capability." },
-          ],
-        };
-      }
+      const capability = requireAppCapability(manager, args, {
+        missingReason: "missing_close_capability",
+        missingMessage: "Missing quick-shell close capability.",
+        invalidReason: "invalid_close_capability",
+      });
+      if ("error" in capability) return capability.error;
+      const session = capability.session;
 
       const closed = manager.closeSession(session.id);
       return {
@@ -731,7 +672,7 @@ export function createServer(options: CreateServerOptions): McpServer {
             type: "text",
             text: closed
               ? "Quick-shell session closed."
-              : "Quick-shell session already closed.",
+              : "Unable to close quick-shell session; termination will be retried.",
           },
         ],
         structuredContent: { closed },

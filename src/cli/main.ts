@@ -36,7 +36,6 @@ export type CliPtyFactory = (
 export interface CliArgs {
   device?: string;
   suggestedCommand?: string;
-  prefillDelayMs: number;
   list: boolean;
   help: boolean;
 }
@@ -70,8 +69,12 @@ export interface RunQuickShellCliOptions {
 
 const USAGE = `Usage:
   quick-shell --list
-  quick-shell <device> [--suggest <command>] [--prefill-delay-ms <ms>]
+  quick-shell <device> [--suggest <command>]
+
+With --suggest, press Ctrl-G to insert the command without submitting it.
 `;
+
+const INSERT_SUGGESTION_KEY = "\u0007";
 
 const ENV_ALLOWLIST = [
   "HOME",
@@ -108,7 +111,6 @@ function readFlagValue(args: string[], index: number, flag: string): string {
 
 export function parseCliArgs(args: string[]): CliArgs {
   const parsed: CliArgs = {
-    prefillDelayMs: 1_000,
     list: false,
     help: false,
   };
@@ -121,13 +123,6 @@ export function parseCliArgs(args: string[]): CliArgs {
       parsed.list = true;
     } else if (arg === "--suggest" || arg === "--suggested-command") {
       parsed.suggestedCommand = readFlagValue(args, index, arg);
-      index += 1;
-    } else if (arg === "--prefill-delay-ms") {
-      const raw = readFlagValue(args, index, arg);
-      const value = Number(raw);
-      if (!Number.isInteger(value) || value < 0)
-        throw new Error("--prefill-delay-ms must be a non-negative integer");
-      parsed.prefillDelayMs = value;
       index += 1;
     } else if (arg.startsWith("--")) {
       throw new Error(`unknown option: ${arg}`);
@@ -228,27 +223,32 @@ export async function runQuickShellCli(
     );
 
     const stdin = options.stdin ?? process.stdin;
-    let prefillTimer: NodeJS.Timeout | undefined;
-    let userInputSeen = false;
-    const cancelPrefill = () => {
-      if (!prefillTimer) return;
-      clearTimeout(prefillTimer);
-      prefillTimer = undefined;
-    };
+    let suggestionInserted = false;
     const onInput = (chunk: Buffer | string) => {
-      userInputSeen = true;
-      cancelPrefill();
-      pty.write(String(chunk));
+      const input = String(chunk);
+      if (!suggested || suggestionInserted) {
+        pty.write(input);
+        return;
+      }
+
+      const insertAt = input.indexOf(INSERT_SUGGESTION_KEY);
+      if (insertAt === -1) {
+        pty.write(input);
+        return;
+      }
+
+      suggestionInserted = true;
+      const before = input.slice(0, insertAt);
+      const after = input.slice(insertAt + INSERT_SUGGESTION_KEY.length);
+      if (before) pty.write(before);
+      pty.write(suggested);
+      if (after) pty.write(after);
     };
     const dataDisposable = pty.onData((data) => stdout.write(data));
     let cleanedUp = false;
     const cleanup = () => {
       if (cleanedUp) return;
       cleanedUp = true;
-      if (prefillTimer) {
-        clearTimeout(prefillTimer);
-        prefillTimer = undefined;
-      }
       dataDisposable.dispose();
       if (stdin.off) stdin.off("data", onInput);
       if (stdin.isTTY) stdin.setRawMode?.(false);
@@ -261,16 +261,10 @@ export async function runQuickShellCli(
       if (stdin.isTTY) stdin.setRawMode?.(true);
     }
 
-    if (suggested) {
-      if (parsed.prefillDelayMs === 0) pty.write(suggested);
-      else {
-        prefillTimer = setTimeout(() => {
-          prefillTimer = undefined;
-          if (!cleanedUp && !userInputSeen) pty.write(suggested);
-        }, parsed.prefillDelayMs);
-        prefillTimer.unref?.();
-      }
-    }
+    if (suggested)
+      stderr.write(
+        "Suggestion ready; press Ctrl-G to insert it without submitting.\n",
+      );
 
     return await new Promise<CliResult>((resolve) => {
       pty.onExit((event) => {

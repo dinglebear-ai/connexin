@@ -14,6 +14,23 @@ export function utf8ByteLength(text: string): number {
   return encoder.encode(text).byteLength;
 }
 
+export function takeFirstUtf8Bytes(
+  text: string,
+  maxBytes: number,
+): { text: string; bytes: number } {
+  if (maxBytes <= 0) return { text: "", bytes: 0 };
+
+  let bytes = 0;
+  let end = 0;
+  for (const codePoint of text) {
+    const codePointBytes = utf8ByteLength(codePoint);
+    if (bytes + codePointBytes > maxBytes) break;
+    bytes += codePointBytes;
+    end += codePoint.length;
+  }
+  return { text: text.slice(0, end), bytes };
+}
+
 export function takeLastUtf8Bytes(
   text: string,
   maxBytes: number,

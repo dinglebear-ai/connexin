@@ -42,6 +42,42 @@ export interface AuditLogger {
   flush?(): Promise<void>;
 }
 
+export interface AuditRateLimiter {
+  record(writeDetailedRecord: () => void): void;
+}
+
+export function createAuditRateLimiter(options: {
+  maxEvents: number;
+  windowMs: number;
+  onSuppressed: () => void;
+  now?: () => number;
+}): AuditRateLimiter {
+  const now = options.now ?? Date.now;
+  let windowStartedAt = now();
+  let eventCount = 0;
+  let suppressionRecorded = false;
+
+  return {
+    record(writeDetailedRecord) {
+      const currentTime = now();
+      if (currentTime - windowStartedAt >= options.windowMs) {
+        windowStartedAt = currentTime;
+        eventCount = 0;
+        suppressionRecorded = false;
+      }
+      if (eventCount < options.maxEvents) {
+        eventCount += 1;
+        writeDetailedRecord();
+        return;
+      }
+      if (!suppressionRecorded) {
+        suppressionRecorded = true;
+        options.onSuppressed();
+      }
+    },
+  };
+}
+
 const REDACTED_FIELD_PATTERN =
   /token|output|suggestedcommand|suggested_command/i;
 

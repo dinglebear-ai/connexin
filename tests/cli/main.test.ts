@@ -50,19 +50,10 @@ class FakeInput extends EventEmitter {
 }
 
 describe("parseCliArgs", () => {
-  it("parses device, suggested command, and prefill delay", () => {
-    expect(
-      parseCliArgs([
-        "devbox",
-        "--suggest",
-        "hostname",
-        "--prefill-delay-ms",
-        "1500",
-      ]),
-    ).toEqual({
+  it("parses a device and suggested command", () => {
+    expect(parseCliArgs(["devbox", "--suggest", "hostname"])).toEqual({
       device: "devbox",
       suggestedCommand: "hostname",
-      prefillDelayMs: 1500,
       list: false,
       help: false,
     });
@@ -74,6 +65,12 @@ describe("parseCliArgs", () => {
 
   it("rejects a missing device unless listing or showing help", () => {
     expect(() => parseCliArgs([])).toThrow("device is required");
+  });
+
+  it("rejects the removed timed prefill option", () => {
+    expect(() => parseCliArgs(["devbox", "--prefill-delay-ms", "0"])).toThrow(
+      "unknown option: --prefill-delay-ms",
+    );
   });
 });
 
@@ -113,16 +110,19 @@ describe("runQuickShellCli", () => {
     expect(error).toContain("not listed in SSH config");
   });
 
-  it("prefills suggested command without pressing Enter", async () => {
+  it("inserts a suggestion only after the user presses Ctrl-G", async () => {
     const ptys: FakeCliPty[] = [];
     const calls: Array<{ file: string; args: string[] }> = [];
+    const stdin = new FakeInput();
+    let error = "";
     const running = runQuickShellCli({
-      args: ["devbox", "--suggest", "hostname", "--prefill-delay-ms", "0"],
+      args: ["devbox", "--suggest", "hostname"],
       config: testRuntimeConfig(),
       allowedHosts: new Set(["devbox"]),
       deviceMetadata: { devices: new Map() },
+      stdin,
       stdout: { write: () => undefined },
-      stderr: { write: () => undefined },
+      stderr: { write: (chunk: string) => (error += chunk) },
       ptyFactory: (file, args) => {
         calls.push({ file, args });
         const pty = new FakeCliPty();
@@ -132,6 +132,11 @@ describe("runQuickShellCli", () => {
     });
 
     await new Promise((resolve) => setTimeout(resolve, 0));
+    ptys[0]?.data.emit("data", "Password: ");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(ptys[0]?.writes).toEqual([]);
+
+    stdin.emit("data", "\u0007");
     ptys[0]?.exit(0);
     const result = await running;
 
@@ -140,12 +145,13 @@ describe("runQuickShellCli", () => {
       { file: "ssh", args: ["-F", "/tmp/config", "devbox"] },
     ]);
     expect(ptys[0]?.writes).toEqual(["hostname"]);
+    expect(error).toContain("press Ctrl-G to insert it without submitting");
   });
 
-  it("cancels a delayed prefill when ssh exits first", async () => {
+  it("never writes an uninserted suggestion when ssh exits", async () => {
     const ptys: FakeCliPty[] = [];
     const running = runQuickShellCli({
-      args: ["devbox", "--suggest", "hostname", "--prefill-delay-ms", "10"],
+      args: ["devbox", "--suggest", "hostname"],
       config: testRuntimeConfig(),
       allowedHosts: new Set(["devbox"]),
       deviceMetadata: { devices: new Map() },
@@ -161,16 +167,15 @@ describe("runQuickShellCli", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     ptys[0]?.exit(0);
     await expect(running).resolves.toEqual({ exitCode: 0 });
-    await new Promise((resolve) => setTimeout(resolve, 20));
 
     expect(ptys[0]?.writes).toEqual([]);
   });
 
-  it("cancels a delayed prefill after user input", async () => {
+  it("forwards ordinary input and keeps explicit insertion available", async () => {
     const ptys: FakeCliPty[] = [];
     const stdin = new FakeInput();
     const running = runQuickShellCli({
-      args: ["devbox", "--suggest", "hostname", "--prefill-delay-ms", "10"],
+      args: ["devbox", "--suggest", "hostname"],
       config: testRuntimeConfig(),
       allowedHosts: new Set(["devbox"]),
       deviceMetadata: { devices: new Map() },
@@ -186,11 +191,11 @@ describe("runQuickShellCli", () => {
 
     await new Promise((resolve) => setTimeout(resolve, 0));
     stdin.emit("data", "typed");
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    stdin.emit("data", "\u0007");
     ptys[0]?.exit(0);
     await expect(running).resolves.toEqual({ exitCode: 0 });
 
-    expect(ptys[0]?.writes).toEqual(["typed"]);
+    expect(ptys[0]?.writes).toEqual(["typed", "hostname"]);
   });
 
   it("reports unknown PTY termination as failure", async () => {

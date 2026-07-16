@@ -48,12 +48,11 @@ The local CLI opens a human-controlled SSH terminal directly:
 npm run build
 node dist/server/cli/main.js --list
 node dist/server/cli/main.js test-device --suggest 'hostname'
-node dist/server/cli/main.js test-device --suggest 'hostname' --prefill-delay-ms 0
 ```
 
 `--list` prints explicit SSH aliases plus optional metadata columns: alias, label, group, and danger.
 
-`--suggest` writes a suggested command into the terminal input after the SSH PTY is created. It does not press Enter. The user can edit or delete the text before running it. `--prefill-delay-ms` controls the write delay, defaults to `1000`, accepts non-negative integers, and uses `0` for immediate prefill. A delayed prefill is canceled if the SSH process exits first.
+`--suggest` keeps the suggested command outside the SSH PTY until the user presses `Ctrl-G`. That explicit action inserts the command without pressing Enter, so the user can edit or delete it before running it. No timer writes suggestion bytes into host-key, password, or other SSH prompts.
 
 The local CLI does not accept `--reason`. Use the MCP API `reason` field when the caller needs to explain why a session is being requested.
 
@@ -69,7 +68,7 @@ The local CLI does not accept `--reason`. Use the MCP API `reason` field when th
 | `QUICK_SHELL_ALLOWED_ORIGINS`                | empty                                        | Comma-separated exact WebSocket `Origin` allowlist for `/terminal`. Empty means no origin filter. |
 | `QUICK_SHELL_BRIDGE_HOST`                    | `127.0.0.1`                                  | Terminal bridge bind host. Use `0.0.0.0` only behind a trusted TLS reverse proxy.                 |
 | `QUICK_SHELL_BRIDGE_PORT`                    | `0`                                          | Terminal bridge bind port. `0` asks the OS for a free port.                                       |
-| `QUICK_SHELL_BRIDGE_PUBLIC_URL`              | bridge listen URL                            | Public base URL advertised to the MCP App. Non-loopback URLs must use HTTPS by default.           |
+| `QUICK_SHELL_BRIDGE_PUBLIC_URL`              | bridge listen URL                            | Public origin advertised to the MCP App. Paths are rejected; non-loopback URLs require HTTPS.     |
 | `QUICK_SHELL_ALLOW_INSECURE_PUBLIC_BRIDGE`   | unset                                        | Set to `1` only for local development if a non-loopback public bridge URL must use HTTP.          |
 | `QUICK_SHELL_MAX_SESSIONS`                   | `4`                                          | Maximum live sessions in one server process.                                                      |
 | `QUICK_SHELL_MAX_DEVICE_LENGTH`              | `128`                                        | Maximum device alias length.                                                                      |
@@ -86,7 +85,9 @@ The local CLI does not accept `--reason`. Use the MCP API `reason` field when th
 
 ## Devices
 
-V1 accepts only explicit `Host` aliases from the configured SSH config. Wildcards such as `Host *`, `prod-*`, and negated aliases are ignored. `Include` files are followed recursively, including simple `*` and `?` path globs. Relative include paths are resolved the same way OpenSSH resolves user config includes: under `$HOME/.ssh`. The primary SSH config must be readable; optional included files that do not exist are skipped. Include entries that require OpenSSH token expansion, environment expansion, or another user's `~user` home expansion are rejected because quick-shell cannot safely validate the same file OpenSSH would load.
+V1 accepts only explicit `Host` aliases from the configured SSH config. Parsed membership is authoritative for names, so safe aliases such as `home/lab` are accepted; aliases beginning with `-` or containing whitespace/control characters are rejected as unsafe SSH arguments. Wildcards such as `Host *`, `prod-*`, and negated aliases are ignored. Escaped `Host` patterns are rejected conservatively so a partial token cannot become an alias.
+
+Only globally reachable `Include` directives are followed recursively, including simple `*` and `?` path globs. Includes inside `Host` or `Match` blocks do not contribute aliases. Relative include paths are resolved the same way OpenSSH resolves user config includes: under `$HOME/.ssh`. The primary SSH config must be readable; optional included files that do not exist are skipped. Include entries that require OpenSSH token expansion, environment expansion, or another user's `~user` home expansion are rejected because quick-shell cannot safely validate the same file OpenSSH would load.
 
 The parser rejects SSH config that can execute local commands before the user reaches the remote shell:
 
@@ -95,6 +96,8 @@ The parser rejects SSH config that can execute local commands before the user re
 - `LocalCommand`
 - `RemoteCommand`
 - `PermitLocalCommand yes`
+- `PKCS11Provider` values other than `none`
+- `SecurityKeyProvider` values other than `internal`
 - `Match exec` and negated forms such as `Match !exec`
 
 Add a device to the SSH config:
@@ -134,6 +137,7 @@ node dist/server/server/main.js --stdio
 Remote bridge requirements:
 
 - Proxy only the bridge path needed by the app: `/terminal`.
+- Set `QUICK_SHELL_BRIDGE_PUBLIC_URL` to an origin with no path prefix; v1 serves `/terminal` at that origin's root.
 - Preserve WebSocket upgrade headers.
 - Use HTTPS for `QUICK_SHELL_BRIDGE_PUBLIC_URL`; the app receives a `wss://` terminal URL.
 - Set `QUICK_SHELL_ALLOWED_ORIGINS` to the exact MCP App host origin or a comma-separated list of exact origins. When the list is non-empty, requests without a matching `Origin` are rejected before WebSocket upgrade.

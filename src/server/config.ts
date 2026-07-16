@@ -126,7 +126,12 @@ function optionalBaseUrl(
       `${key} must use https:// for non-loopback hosts; set QUICK_SHELL_ALLOW_INSECURE_PUBLIC_BRIDGE=1 only for local development`,
     );
   }
-  parsed.pathname = parsed.pathname.replace(/\/+$/, "");
+  if (parsed.pathname !== "/" && parsed.pathname !== "") {
+    throw new Error(
+      `${key} must not include a path prefix because quick-shell v1 proxies /terminal at the origin root`,
+    );
+  }
+  parsed.pathname = "";
   parsed.search = "";
   parsed.hash = "";
   return parsed.toString().replace(/\/$/, "");

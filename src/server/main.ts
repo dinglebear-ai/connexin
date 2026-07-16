@@ -185,15 +185,17 @@ export async function startHttpMcpServer(options: {
 
   const app = express();
   const requestClosers = new Set<() => Promise<void>>();
-  app.use(express.json({ limit: "1mb" }));
-  app.all("/mcp", async (req, res) => {
+  app.all("/mcp", (req, res, next) => {
     if (
       !bearerIsValid(req.header("authorization"), runtime.config.httpToken!)
     ) {
       res.status(401).json({ error: "missing or invalid bearer token" });
       return;
     }
-
+    next();
+  });
+  app.use("/mcp", express.json({ limit: "1mb" }));
+  app.all("/mcp", async (req, res) => {
     const requestServer = createServer({
       bridgeBaseUrl: runtime.bridge.baseUrl,
       config: runtime.config,

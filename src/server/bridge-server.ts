@@ -1,6 +1,7 @@
 import http from "node:http";
 import type { Duplex } from "node:stream";
 import { WebSocket, WebSocketServer } from "ws";
+import { createAuditRateLimiter } from "./audit-log.js";
 import type { RuntimeConfig } from "./config.js";
 import type {
   Disposable,
@@ -12,10 +13,13 @@ import {
   clientTerminalMessageSchema,
 } from "../shared/protocol.js";
 import type { ServerTerminalMessage, SessionId } from "../shared/protocol.js";
+import { takeFirstUtf8Bytes } from "../shared/utf8.js";
 
 const AUTH_TIMEOUT_MS = 5_000;
 const MAX_PENDING_AUTH_CONNECTIONS = 32;
 const MAX_WS_CLOSE_REASON_BYTES = 123;
+const REJECTION_AUDIT_LIMIT = 10;
+const REJECTION_AUDIT_WINDOW_MS = 60_000;
 
 export interface BridgeServer {
   baseUrl: string;
@@ -36,8 +40,17 @@ interface ActiveConnection {
 }
 
 function disposeConnection(connection: ActiveConnection): void {
-  for (const disposable of connection.disposables.splice(0))
-    disposable.dispose();
+  disposeAll(connection.disposables);
+}
+
+function disposeAll(disposables: Disposable[]): void {
+  for (const disposable of disposables.splice(0)) {
+    try {
+      disposable.dispose();
+    } catch (error) {
+      console.error("quick-shell bridge disposable cleanup failed", error);
+    }
+  }
 }
 
 function sendJson(ws: WebSocket, message: ServerTerminalMessage): void {
@@ -59,7 +72,7 @@ function sendOutputWithBackpressure(
   const payloadBytes = Buffer.byteLength(payload, "utf8");
   if (ws.bufferedAmount + payloadBytes > bufferedAmountLimitBytes) {
     sendJson(ws, { type: "error", message: "terminal client is too slow" });
-    ws.close(1011, "terminal client is too slow");
+    closeSocket(ws, 1011, "terminal client is too slow");
     return false;
   }
   ws.send(payload);
@@ -67,13 +80,27 @@ function sendOutputWithBackpressure(
 }
 
 function closeWithPolicy(ws: WebSocket, reason: string): void {
-  ws.close(1008, reason);
+  closeSocket(ws, 1008, reason);
 }
 
 function closeReason(reason: string): string {
-  if (Buffer.byteLength(reason, "utf8") <= MAX_WS_CLOSE_REASON_BYTES)
-    return reason;
-  return reason.slice(0, MAX_WS_CLOSE_REASON_BYTES - 1);
+  return takeFirstUtf8Bytes(reason, MAX_WS_CLOSE_REASON_BYTES).text;
+}
+
+function closeSocket(ws: WebSocket, code: number, reason: string): void {
+  try {
+    ws.close(code, closeReason(reason));
+  } catch (error) {
+    console.error("quick-shell bridge websocket close failed", error);
+    try {
+      ws.terminate();
+    } catch (terminateError) {
+      console.error(
+        "quick-shell bridge websocket terminate failed",
+        terminateError,
+      );
+    }
+  }
 }
 
 function wsOrigin(baseUrl: string): string {
@@ -153,6 +180,22 @@ export async function startBridgeServer(
   const activeConnections = new Map<SessionId, ActiveConnection>();
   let closePromise: Promise<void> | undefined;
   let pendingAuthConnections = 0;
+  const rejectionAuditLimiter = createAuditRateLimiter({
+    maxEvents: REJECTION_AUDIT_LIMIT,
+    windowMs: REJECTION_AUDIT_WINDOW_MS,
+    onSuppressed: () =>
+      manager.recordAuditEvent("bridge_connection_rejected", {
+        reason: "audit_rate_limited",
+        suppressedEvent: "unauthenticated_bridge_rejection",
+        detailLimit: REJECTION_AUDIT_LIMIT,
+        windowMs: REJECTION_AUDIT_WINDOW_MS,
+      }),
+  });
+  const recordUnauthenticatedRejection = (fields: Record<string, unknown>) => {
+    rejectionAuditLimiter.record(() =>
+      manager.recordAuditEvent("bridge_connection_rejected", fields),
+    );
+  };
   const schema = clientTerminalMessageSchema({
     maxInputBytes: config.maxInputBytes,
     maxSubmitBytes: config.maxSubmitBytes,
@@ -161,7 +204,7 @@ export async function startBridgeServer(
     const connection = activeConnections.get(sessionId);
     if (connection) {
       disposeConnection(connection);
-      connection.socket.close(1000, "session closed");
+      closeSocket(connection.socket, 1000, "session closed");
     }
     activeConnections.delete(sessionId);
   });
@@ -172,7 +215,7 @@ export async function startBridgeServer(
       config.allowedOrigins.length > 0 &&
       (!requestOrigin || !config.allowedOrigins.includes(requestOrigin))
     ) {
-      manager.recordAuditEvent("bridge_connection_rejected", {
+      recordUnauthenticatedRejection({
         reason: "origin_not_allowed",
         origin: requestOrigin,
       });
@@ -182,7 +225,7 @@ export async function startBridgeServer(
 
     const parsed = parseRequest(request.url);
     if (!parsed) {
-      manager.recordAuditEvent("bridge_connection_rejected", {
+      recordUnauthenticatedRejection({
         reason: "missing_session",
       });
       rejectUpgrade(socket, 400, "Bad Request");
@@ -190,7 +233,7 @@ export async function startBridgeServer(
     }
 
     if (!manager.getSession(parsed.sessionId)) {
-      manager.recordAuditEvent("bridge_connection_rejected", {
+      recordUnauthenticatedRejection({
         sessionId: parsed.sessionId,
         reason: "invalid_session",
       });
@@ -199,7 +242,7 @@ export async function startBridgeServer(
     }
 
     if (pendingAuthConnections >= MAX_PENDING_AUTH_CONNECTIONS) {
-      manager.recordAuditEvent("bridge_connection_rejected", {
+      recordUnauthenticatedRejection({
         sessionId: parsed.sessionId,
         reason: "too_many_pending_auth_connections",
       });
@@ -213,7 +256,7 @@ export async function startBridgeServer(
         wss.emit("connection", ws, request, parsed.sessionId);
       });
     } catch (error) {
-      manager.recordAuditEvent("bridge_connection_rejected", {
+      recordUnauthenticatedRejection({
         sessionId: parsed.sessionId,
         reason: "upgrade_failed",
         error: error instanceof Error ? error.message : String(error),
@@ -237,8 +280,7 @@ export async function startBridgeServer(
         activeSessionId !== undefined &&
         activeConnections.get(activeSessionId)?.socket === ws;
       const disposeThisConnection = () => {
-        for (const disposable of connectionDisposables.splice(0))
-          disposable.dispose();
+        disposeAll(connectionDisposables);
       };
       const settleAuth = () => {
         if (!authPending) return;
@@ -246,8 +288,17 @@ export async function startBridgeServer(
         pendingAuthConnections = Math.max(0, pendingAuthConnections - 1);
         clearTimeout(authTimer);
       };
+      const recordMessageRejection = (fields: Record<string, unknown>) => {
+        const write = () =>
+          manager.recordAuditEvent("bridge_message_rejected", fields);
+        if (authPending) {
+          rejectionAuditLimiter.record(write);
+          return;
+        }
+        write();
+      };
       const authTimer = setTimeout(() => {
-        manager.recordAuditEvent("bridge_connection_rejected", {
+        recordUnauthenticatedRejection({
           sessionId: pendingSessionId,
           reason: "auth_timeout",
         });
@@ -268,23 +319,25 @@ export async function startBridgeServer(
         try {
           raw = JSON.parse(data.toString());
         } catch {
-          manager.recordAuditEvent("bridge_message_rejected", {
+          recordMessageRejection({
             sessionId: activeSessionId ?? pendingSessionId,
             device: session?.publicSummary.device,
             reason: "invalid_json",
           });
           sendJson(ws, { type: "error", message: "invalid terminal message" });
+          closeWithPolicy(ws, "invalid terminal message");
           return;
         }
 
         const message = schema.safeParse(raw);
         if (!message.success) {
-          manager.recordAuditEvent("bridge_message_rejected", {
+          recordMessageRejection({
             sessionId: activeSessionId ?? pendingSessionId,
             device: session?.publicSummary.device,
             reason: "invalid_schema",
           });
           sendJson(ws, { type: "error", message: "invalid terminal message" });
+          closeWithPolicy(ws, "invalid terminal message");
           return;
         }
 
@@ -307,7 +360,7 @@ export async function startBridgeServer(
             message.data.token,
           );
           if (!pendingSession) {
-            manager.recordAuditEvent("bridge_connection_rejected", {
+            recordUnauthenticatedRejection({
               sessionId: pendingSessionId,
               reason: "invalid_session_or_token",
             });
@@ -330,7 +383,7 @@ export async function startBridgeServer(
             });
             settleAuth();
             sendJson(ws, { type: "error", message });
-            ws.close(1011, closeReason(message));
+            closeSocket(ws, 1011, message);
             return;
           }
           if (!session) {
@@ -350,7 +403,11 @@ export async function startBridgeServer(
           if (prior) {
             disposeConnection(prior);
             if (prior.socket.readyState === WebSocket.OPEN) {
-              prior.socket.close(1000, "replaced by another quick-shell view");
+              closeSocket(
+                prior.socket,
+                1000,
+                "replaced by another quick-shell view",
+              );
             }
           }
 
@@ -381,7 +438,7 @@ export async function startBridgeServer(
         }
 
         if (!session || !isCurrent()) {
-          manager.recordAuditEvent("bridge_message_rejected", {
+          recordMessageRejection({
             sessionId: pendingSessionId,
             reason: "unauthenticated_message",
           });
@@ -410,7 +467,7 @@ export async function startBridgeServer(
             try {
               manager.closeSession(activeSession.id);
             } finally {
-              ws.close(1000, "session closed");
+              closeSocket(ws, 1000, "session closed");
             }
             break;
           case "output_confirmed":
@@ -476,7 +533,7 @@ export async function startBridgeServer(
         sessionClosedSubscription.dispose();
         for (const connection of activeConnections.values()) {
           disposeConnection(connection);
-          connection.socket.close(1001, "bridge closing");
+          closeSocket(connection.socket, 1001, "bridge closing");
         }
         const terminateTimer = setTimeout(() => {
           for (const connection of activeConnections.values())
@@ -566,7 +623,7 @@ function writeToPty(
       error: error instanceof Error ? error.message : String(error),
     });
     manager.closeSession(session.id);
-    ws.close(1011, "terminal process unavailable");
+    closeSocket(ws, 1011, "terminal process unavailable");
   }
 }
 

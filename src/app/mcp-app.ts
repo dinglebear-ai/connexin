@@ -75,11 +75,20 @@ interface FallbackResizeQueue {
   inFlight: boolean;
 }
 
+interface SocketBinding {
+  socket: WebSocket;
+  generation: number;
+  sessionId: string;
+  capability: QuickShellHiddenMeta["quickShell"];
+  ready: boolean;
+}
+
 const DEFAULT_SUBMIT_BYTES = 64_000;
 const DEFAULT_INPUT_BYTES = 16_384;
 const DEFAULT_PING_INTERVAL_MS = 30_000;
 const FALLBACK_POLL_INTERVAL_MS = 500;
 const FALLBACK_CONNECT_TIMEOUT_MS = 5_000;
+const REMOTE_CLOSE_TIMEOUT_MS = 1_000;
 const MAX_PENDING_INPUT_BYTES = 16_384;
 const MAX_FALLBACK_INPUT_CHUNKS = 256;
 
@@ -98,7 +107,9 @@ let resizeObserver: ResizeObserver | undefined;
 let terminalDataDisposable: { dispose(): void } | undefined;
 let pingTimer: number | undefined;
 let pollTimer: number | undefined;
+let fallbackTimer: number | undefined;
 let resizeFrame: number | undefined;
+let transcriptFrame: number | undefined;
 let publicSession: QuickShellPublicSession | undefined;
 let session: QuickShellAppSession | undefined;
 let sessionDetails: QuickShellAppSession | undefined;
@@ -109,9 +120,10 @@ let pollSeq = 0;
 let fallbackInputQueue: FallbackInputQueue | undefined;
 let fallbackResizeQueue: FallbackResizeQueue | undefined;
 let outputBuffer = new BoundedTextBuffer(DEFAULT_SUBMIT_BYTES);
-let accessibleOutputBuffer = new BoundedTextBuffer(DEFAULT_SUBMIT_BYTES);
 let pendingInput: string[] = [];
 let pendingInputBytes = 0;
+let pendingResize: { cols: number; rows: number } | undefined;
+let socketBinding: SocketBinding | undefined;
 let connecting = false;
 let connectingGeneration: number | undefined;
 let connectionFailed = false;
@@ -122,7 +134,8 @@ let lastModelContextKey: string | undefined;
 const elements = buildShell();
 root.replaceChildren(elements.container);
 wireShellEvents();
-let toolResultGeneration = 0;
+let receivedToolResultOrder = 0;
+let activeGeneration = 0;
 let toolResultQueue: Promise<void> = Promise.resolve();
 
 app.ontoolinputpartial = (params) => applyToolInput(params.arguments);
@@ -131,10 +144,10 @@ app.onhostcontextchanged = (ctx) => applyHostContext(ctx);
 app.ontoolcancelled = (params) =>
   setStatus(params.reason ? `Cancelled: ${params.reason}` : "Cancelled");
 app.ontoolresult = (params) => {
-  const generation = ++toolResultGeneration;
+  const order = ++receivedToolResultOrder;
   toolResultQueue = toolResultQueue
     .catch(() => {})
-    .then(() => handleToolResult(params, generation))
+    .then(() => handleToolResult(params, order))
     .catch((error) => renderError(error));
 };
 app.onteardown = async () => {
@@ -166,9 +179,10 @@ function wireShellEvents(): void {
   });
 
   elements.connectButton.addEventListener("click", () => {
+    const generation = activeGeneration;
+    const capability = sessionCapability;
     void connectPendingSession().catch((error) => {
-      renderError(error);
-      updateControls();
+      handleConnectFailure(error, generation, capability);
     });
   });
 
@@ -227,13 +241,7 @@ function wireShellEvents(): void {
       elements.dialog,
       elements.cancelButton,
       elements.confirmButton,
-    ).catch((error) => {
-      elements.fallback.hidden = false;
-      elements.fallback.value = snapshot;
-      setStatus(
-        `Send failed: ${error instanceof Error ? error.message : String(error)}`,
-      );
-    });
+    ).catch((error) => console.error("quick-shell send failed", error));
   });
 
   elements.closeButton.addEventListener("click", () => {
@@ -267,7 +275,7 @@ function readQuickShellPoll(value: unknown): QuickShellPoll | undefined {
 
 async function handleToolResult(
   params: ToolResultParams,
-  generation: number,
+  order: number,
 ): Promise<void> {
   if (params.isError) {
     setStatus(toolResultText(params, "Tool error"));
@@ -293,29 +301,18 @@ async function handleToolResult(
     throw new Error("Invalid quick-shell session capability");
   }
 
-  if (generation !== toolResultGeneration) {
+  if (order !== receivedToolResultOrder) {
     await closeUnusedSession(quickShell);
     return;
   }
 
   const previousCapability = sessionCapability;
-  const previousClosed = await cleanup(true, previousCapability).catch(
-    (error) => {
-      console.error("quick-shell previous session close failed", error);
-      setStatus(
-        "Could not close previous session; it will expire automatically.",
-      );
-      return false;
-    },
-  );
-  if (!previousClosed) {
+  await cleanup(true, previousCapability);
+  if (order !== receivedToolResultOrder) {
     await closeUnusedSession(quickShell);
     return;
   }
-  if (generation !== toolResultGeneration) {
-    await closeUnusedSession(quickShell);
-    return;
-  }
+  const generation = ++activeGeneration;
   publicSession = nextPublicSession;
   sessionCapability = quickShell;
   sessionDetails = quickShellSession;
@@ -326,7 +323,9 @@ async function handleToolResult(
   setStatus(`Connecting ${sessionDisplayName(nextPublicSession)}`);
   updateModelContext("connecting");
   updateControls();
-  void connectPendingSession().catch((error) => handleConnectFailure(error));
+  void connectPendingSession().catch((error) =>
+    handleConnectFailure(error, generation, quickShell),
+  );
 }
 
 async function connectPendingSession(): Promise<void> {
@@ -337,7 +336,7 @@ async function connectPendingSession(): Promise<void> {
     (!sessionCapability && !sessionDetails)
   )
     return;
-  const generation = toolResultGeneration;
+  const generation = activeGeneration;
   const capability = sessionCapability;
   let detailsSession = sessionDetails;
   const requested = publicSession;
@@ -359,10 +358,7 @@ async function connectPendingSession(): Promise<void> {
       });
       if (details.isError)
         throw new Error(toolResultText(details, "Session capability rejected"));
-      if (
-        generation !== toolResultGeneration ||
-        sessionCapability !== capability
-      )
+      if (generation !== activeGeneration || sessionCapability !== capability)
         return;
       detailsSession = readAppSession(
         (details as { _meta?: Record<string, unknown> })._meta
@@ -381,7 +377,7 @@ async function connectPendingSession(): Promise<void> {
       await connectTerminal(detailsSession, generation);
     } catch (error) {
       if (
-        generation === toolResultGeneration &&
+        generation === activeGeneration &&
         session?.sessionId === detailsSession.sessionId
       ) {
         disposeTerminal();
@@ -404,7 +400,7 @@ async function connectTerminal(
 ): Promise<void> {
   disposeTerminal();
   outputBuffer.clear();
-  accessibleOutputBuffer.clear();
+  resetAccessibleTranscript();
   await loadGhosttyRuntime();
   if (!isCurrentGeneration(generation, details.sessionId)) return;
 
@@ -423,43 +419,54 @@ async function connectTerminal(
     return;
   }
   ws = socket;
-  let socketReady = false;
+  const capability = sessionCapability;
+  if (!capability) {
+    disposeTerminal();
+    socket.close();
+    return;
+  }
+  const binding: SocketBinding = {
+    socket,
+    generation,
+    sessionId: details.sessionId,
+    capability,
+    ready: false,
+  };
+  socketBinding = binding;
   let fallbackStarted = false;
   const startFallback = () => {
-    if (fallbackStarted || socketReady || ws !== socket) return;
+    if (fallbackStarted || binding.ready || !isCurrentSocketBinding(binding))
+      return;
     fallbackStarted = true;
-    window.clearTimeout(fallbackTimer);
+    clearFallbackTimer();
     ws = undefined;
+    socketBinding = undefined;
     socket.close();
     void startAppToolTransport(details, generation).catch((error) => {
-      handleConnectFailure(error);
-      updateControls();
+      handleConnectFailure(error, generation, capability);
     });
   };
-  const fallbackTimer = window.setTimeout(
-    startFallback,
-    FALLBACK_CONNECT_TIMEOUT_MS,
-  );
+  fallbackTimer = window.setTimeout(startFallback, FALLBACK_CONNECT_TIMEOUT_MS);
   socket.addEventListener("open", () => {
-    if (ws !== socket) return;
+    if (!isCurrentSocketBinding(binding)) return;
     socket.send(
       JSON.stringify({ type: "authenticate", token: details.wsToken }),
     );
     updateControls();
   });
   socket.addEventListener("message", (event) => {
-    if (handleTerminalMessage(socket, event.data)) {
-      socketReady = true;
-      window.clearTimeout(fallbackTimer);
+    if (handleTerminalMessage(binding, event.data)) {
+      binding.ready = true;
+      clearFallbackTimer();
     }
   });
   socket.addEventListener("close", (event) => {
-    if (ws === socket && !socketReady) {
+    if (isCurrentSocketBinding(binding) && !binding.ready) {
       startFallback();
       return;
     }
-    window.clearTimeout(fallbackTimer);
-    if (ws === socket) {
+    if (isCurrentSocketBinding(binding)) {
+      clearFallbackTimer();
       disposeTerminal();
       session = undefined;
       connectionFailed = true;
@@ -469,9 +476,9 @@ async function connectTerminal(
     }
   });
   socket.addEventListener("error", () => {
-    if (ws !== socket) return;
+    if (!isCurrentSocketBinding(binding)) return;
     setStatus("Connection error");
-    if (!socketReady) startFallback();
+    if (!binding.ready) startFallback();
   });
 }
 
@@ -522,8 +529,8 @@ function rebuildTerminalTheme(): void {
   scheduleResize();
 }
 
-function handleTerminalMessage(socket: WebSocket, data: unknown): boolean {
-  if (ws !== socket) return false;
+function handleTerminalMessage(binding: SocketBinding, data: unknown): boolean {
+  if (!isCurrentSocketBinding(binding)) return false;
 
   let message: ServerTerminalMessage;
   try {
@@ -535,10 +542,14 @@ function handleTerminalMessage(socket: WebSocket, data: unknown): boolean {
 
   switch (message.type) {
     case "ready":
+      if (message.sessionId !== binding.sessionId) {
+        setStatus("Bad bridge session");
+        return false;
+      }
       outputBuffer.clear();
-      accessibleOutputBuffer.clear();
-      elements.transcript.textContent = "";
+      resetAccessibleTranscript();
       appendTerminalOutput(message.scrollback);
+      binding.ready = true;
       fitAddon?.fit();
       sendResize();
       flushPendingInputToWebSocket();
@@ -580,9 +591,13 @@ function sendResize(): void {
   );
   terminal.resize(cols, rows);
   if (appToolTransport) {
+    pendingResize = undefined;
     enqueueFallbackResize(cols, rows);
-  } else if (ws?.readyState === WebSocket.OPEN) {
+  } else if (socketBinding?.ready && isCurrentSocketBinding(socketBinding)) {
+    pendingResize = undefined;
     sendTerminalMessage({ type: "resize", cols, rows });
+  } else {
+    pendingResize = { cols, rows };
   }
 }
 
@@ -629,7 +644,7 @@ function sendTerminalInput(data: string): void {
     return;
   }
 
-  if (ws?.readyState === WebSocket.OPEN) {
+  if (socketBinding?.ready && isCurrentSocketBinding(socketBinding)) {
     sendTerminalMessage({ type: "input", data });
     return;
   }
@@ -652,6 +667,7 @@ async function startAppToolTransport(
     return;
   stopPing();
   appToolTransport = true;
+  clearFallbackTimer();
   pollingGeneration = undefined;
   pollSeq = 0;
   fallbackInputQueue = undefined;
@@ -679,10 +695,12 @@ async function startAppToolTransport(
   updateModelContext("connected");
   updateControls();
   flushPendingInputToAppTool();
+  flushPendingResizeToAppTool();
   await pollAppToolTransport(generation);
   if (!isCurrentGeneration(generation, details.sessionId)) return;
   pollTimer = window.setInterval(() => {
     void pollAppToolTransport(generation).catch((error) => {
+      if (!isCurrentGeneration(generation, details.sessionId)) return;
       setStatus(
         `Poll failed: ${error instanceof Error ? error.message : String(error)}`,
       );
@@ -744,7 +762,7 @@ async function pollAppToolTransport(generation: number): Promise<void> {
 }
 
 function enqueueFallbackInput(data: string): void {
-  const generation = toolResultGeneration;
+  const generation = activeGeneration;
   const sessionId = session?.sessionId;
   if (!sessionCapability || !sessionId) return;
   const capability = sessionCapability;
@@ -782,6 +800,7 @@ async function drainFallbackInputQueue(
   queue: FallbackInputQueue,
 ): Promise<void> {
   queue.draining = true;
+  let failed = false;
   try {
     while (
       queue.chunks.length > 0 &&
@@ -790,21 +809,20 @@ async function drainFallbackInputQueue(
       sessionCapability === queue.capability &&
       appToolTransport
     ) {
-      const first = queue.chunks.shift()!;
-      queue.bytes -= first.bytes;
+      const first = queue.chunks[0]!;
       let data = first.data;
       let bytes = first.bytes;
-      while (queue.chunks.length > 0) {
-        const next = queue.chunks[0]!;
+      let chunkCount = 1;
+      while (chunkCount < queue.chunks.length) {
+        const next = queue.chunks[chunkCount]!;
         if (
           bytes + next.bytes >
           (session?.maxInputBytes ?? DEFAULT_INPUT_BYTES)
         )
           break;
-        queue.chunks.shift();
-        queue.bytes -= next.bytes;
         data += next.data;
         bytes += next.bytes;
+        chunkCount += 1;
       }
       const result = await app.callServerTool({
         name: "write_quick_shell_input",
@@ -821,8 +839,15 @@ async function drainFallbackInputQueue(
         return;
       if (result.isError)
         throw new Error(toolResultText(result, "Quick-shell input failed"));
+      if (result.structuredContent?.written !== true)
+        throw new Error("Quick-shell input was not acknowledged");
+      queue.chunks.splice(0, chunkCount);
+      queue.bytes -= bytes;
     }
   } catch (error) {
+    failed = true;
+    queue.chunks = [];
+    queue.bytes = 0;
     if (
       isCurrentGeneration(queue.generation, queue.sessionId) &&
       sessionCapability === queue.capability
@@ -834,14 +859,14 @@ async function drainFallbackInputQueue(
   } finally {
     if (fallbackInputQueue === queue) {
       queue.draining = false;
-      if (queue.chunks.length === 0) fallbackInputQueue = undefined;
+      if (failed || queue.chunks.length === 0) fallbackInputQueue = undefined;
       else void drainFallbackInputQueue(queue);
     }
   }
 }
 
 function enqueueFallbackResize(cols: number, rows: number): void {
-  const generation = toolResultGeneration;
+  const generation = activeGeneration;
   const sessionId = session?.sessionId;
   if (!sessionCapability || !sessionId) return;
   const capability = sessionCapability;
@@ -912,26 +937,45 @@ function flushPendingInputToAppTool(): void {
   drainPendingInput((data) => enqueueFallbackInput(data));
 }
 
+function flushPendingResizeToAppTool(): void {
+  const resize = pendingResize;
+  pendingResize = undefined;
+  if (resize) enqueueFallbackResize(resize.cols, resize.rows);
+}
+
 function appendTerminalOutput(data: string): void {
   if (data.length === 0) return;
   terminal?.write(data);
   outputBuffer.append(data);
-  accessibleOutputBuffer.append(data);
-  elements.transcript.textContent = normalizeTerminalOutput(
-    accessibleOutputBuffer.toString(),
-  );
+  scheduleAccessibleTranscriptUpdate();
 }
 
 function resetTerminalOutput(): void {
   outputBuffer.clear();
-  accessibleOutputBuffer.clear();
   terminal?.reset();
-  elements.transcript.textContent = "";
+  resetAccessibleTranscript();
 }
 
 function resetOutputBuffers(maxBytes = DEFAULT_SUBMIT_BYTES): void {
   outputBuffer = new BoundedTextBuffer(maxBytes);
-  accessibleOutputBuffer = new BoundedTextBuffer(maxBytes);
+  resetAccessibleTranscript();
+}
+
+function scheduleAccessibleTranscriptUpdate(): void {
+  if (transcriptFrame !== undefined) return;
+  transcriptFrame = window.requestAnimationFrame(() => {
+    transcriptFrame = undefined;
+    elements.transcript.textContent = normalizeTerminalOutput(
+      outputBuffer.toString(),
+    );
+  });
+}
+
+function resetAccessibleTranscript(): void {
+  if (transcriptFrame !== undefined) {
+    window.cancelAnimationFrame(transcriptFrame);
+    transcriptFrame = undefined;
+  }
   elements.transcript.textContent = "";
 }
 
@@ -942,7 +986,16 @@ async function confirmSend(
   cancelButton: HTMLButtonElement,
   confirmButton: HTMLButtonElement,
 ): Promise<void> {
-  const maxBytes = session?.maxSubmitBytes ?? DEFAULT_SUBMIT_BYTES;
+  const capturedGeneration = activeGeneration;
+  const capturedSession = session;
+  const capturedCapability = sessionCapability;
+  const capturedSocket = socketBinding;
+  if (!capturedSession) return;
+  const isCurrentSend = () =>
+    activeGeneration === capturedGeneration &&
+    session === capturedSession &&
+    sessionCapability === capturedCapability;
+  const maxBytes = capturedSession.maxSubmitBytes;
   const prepared = truncateForSubmit(normalizeTerminalOutput(text), maxBytes);
   sending = true;
   cancelButton.disabled = true;
@@ -952,6 +1005,7 @@ async function confirmSend(
       role: "user",
       content: [{ type: "text", text: prepared.text }],
     });
+    if (!isCurrentSend()) return;
     if (result.isError) {
       fallback.hidden = false;
       fallback.value = prepared.text;
@@ -959,14 +1013,21 @@ async function confirmSend(
       return;
     }
     const byteCount = new TextEncoder().encode(prepared.text).byteLength;
-    if (ws?.readyState === WebSocket.OPEN) {
-      sendTerminalMessage({ type: "output_confirmed", byteCount });
-    } else if (sessionCapability) {
+    if (
+      capturedSocket?.ready &&
+      socketBinding === capturedSocket &&
+      isCurrentSocketBinding(capturedSocket)
+    ) {
+      sendTerminalTransportMessage(capturedSocket.socket, {
+        type: "output_confirmed",
+        byteCount,
+      });
+    } else if (capturedCapability) {
       await app
         .callServerTool({
           name: "record_quick_shell_output_confirmed",
           arguments: {
-            ...sessionCapability,
+            ...capturedCapability,
             byteCount,
           },
         })
@@ -974,9 +1035,20 @@ async function confirmSend(
           console.error("quick-shell audit record failed", error),
         );
     }
+    if (!isCurrentSend()) return;
     dialog.close();
     setStatus("Sent");
     updateModelContext("output-sent");
+  } catch (error) {
+    if (isCurrentSend()) {
+      fallback.hidden = false;
+      fallback.value = prepared.text;
+      setStatus(
+        `Send failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    } else {
+      console.error("quick-shell stale send failed", error);
+    }
   } finally {
     sending = false;
     cancelButton.disabled = false;
@@ -1006,6 +1078,7 @@ function disposeTerminal(): void {
   const socket = ws;
   stopPing();
   stopPolling();
+  clearFallbackTimer();
   appToolTransport = false;
   if (resizeFrame !== undefined) {
     window.cancelAnimationFrame(resizeFrame);
@@ -1017,6 +1090,7 @@ function disposeTerminal(): void {
   terminal?.dispose();
   pendingInput = [];
   pendingInputBytes = 0;
+  pendingResize = undefined;
   fallbackInputQueue = undefined;
   fallbackResizeQueue = undefined;
   resizeObserver = undefined;
@@ -1024,7 +1098,15 @@ function disposeTerminal(): void {
   fitAddon = undefined;
   terminal = undefined;
   ws = undefined;
+  socketBinding = undefined;
   socket?.close();
+}
+
+function clearFallbackTimer(): void {
+  if (fallbackTimer !== undefined) {
+    window.clearTimeout(fallbackTimer);
+    fallbackTimer = undefined;
+  }
 }
 
 function stopPolling(): void {
@@ -1040,62 +1122,79 @@ async function cleanup(
   expectedCapability = sessionCapability,
 ): Promise<boolean> {
   const capability = expectedCapability;
-  const ownsCurrentSession = () => sessionCapability === expectedCapability;
-  const closeViaBridge = closeSession && ws?.readyState === WebSocket.OPEN;
-  if (closeViaBridge && ownsCurrentSession()) {
-    sendTerminalMessage({ type: "close" });
-  } else if (closeSession && capability) {
-    let closed;
-    try {
-      closed = await app.callServerTool({
-        name: "close_quick_shell_session",
-        arguments: capability,
-      });
-    } catch (error) {
-      console.error("quick-shell session close failed", error);
-      setStatus("Could not close session; it will expire automatically.");
-      updateControls();
-      return false;
-    }
+  const ownsCurrentSession = sessionCapability === expectedCapability;
+  const binding = ownsCurrentSession ? socketBinding : undefined;
+  const closeViaBridge = Boolean(
+    closeSession &&
+    binding?.ready &&
+    binding.capability === capability &&
+    isCurrentSocketBinding(binding),
+  );
 
-    if (closed.isError) {
-      setStatus(
-        toolResultText(
-          closed,
-          "Could not close session; it will expire automatically.",
-        ),
-      );
-      updateControls();
-      return false;
-    }
+  if (closeViaBridge && binding) {
+    sendTerminalTransportMessage(binding.socket, { type: "close" });
   }
 
-  if (!ownsCurrentSession()) return true;
-  disposeTerminal();
-  publicSession = undefined;
-  session = undefined;
-  sessionDetails = undefined;
-  sessionCapability = undefined;
-  connectionFailed = false;
-  updateSessionSummary();
-  resetOutputBuffers();
-  updateModelContext(closeSession ? "closed" : "idle");
-  updateControls();
-  return true;
+  if (ownsCurrentSession) {
+    activeGeneration += 1;
+    disposeTerminal();
+    publicSession = undefined;
+    session = undefined;
+    sessionDetails = undefined;
+    sessionCapability = undefined;
+    connectionFailed = false;
+    elements.dialog.close();
+    updateSessionSummary();
+    resetOutputBuffers();
+    updateModelContext(closeSession ? "closed" : "idle");
+    updateControls();
+  }
+
+  if (!closeSession || !capability || closeViaBridge) return true;
+  const error = await closeRemoteSession(capability);
+  if (!error) return true;
+  console.error("quick-shell session close failed", error);
+  if (ownsCurrentSession && sessionCapability === undefined) {
+    setStatus(error);
+    updateControls();
+  }
+  return false;
 }
 
 async function closeUnusedSession(
   capability: QuickShellHiddenMeta["quickShell"],
 ): Promise<void> {
+  const error = await closeRemoteSession(capability);
+  if (error) console.error("quick-shell unused session close failed", error);
+}
+
+async function closeRemoteSession(
+  capability: QuickShellHiddenMeta["quickShell"],
+): Promise<string | undefined> {
+  let timeout: number | undefined;
   try {
-    const closed = await app.callServerTool({
-      name: "close_quick_shell_session",
-      arguments: capability,
-    });
-    if (closed.isError)
-      console.error("quick-shell unused session close failed");
+    const closed = await Promise.race([
+      app.callServerTool({
+        name: "close_quick_shell_session",
+        arguments: capability,
+      }),
+      new Promise<never>((_, reject) => {
+        timeout = window.setTimeout(
+          () => reject(new Error("Remote close timed out")),
+          REMOTE_CLOSE_TIMEOUT_MS,
+        );
+      }),
+    ]);
+    return closed.isError
+      ? toolResultText(
+          closed,
+          "Could not close session; it will expire automatically.",
+        )
+      : undefined;
   } catch (error) {
-    console.error("quick-shell unused session close failed", error);
+    return error instanceof Error ? error.message : String(error);
+  } finally {
+    if (timeout !== undefined) window.clearTimeout(timeout);
   }
 }
 
@@ -1159,7 +1258,17 @@ function renderError(error: unknown): void {
   sendHostLog("error", message);
 }
 
-function handleConnectFailure(error: unknown): void {
+function handleConnectFailure(
+  error: unknown,
+  generation: number,
+  capability: QuickShellHiddenMeta["quickShell"] | undefined,
+): void {
+  if (
+    generation !== activeGeneration ||
+    sessionCapability !== capability ||
+    (session && !isCurrentGeneration(generation, session.sessionId))
+  )
+    return;
   connectionFailed = true;
   renderError(error);
   updateControls();
@@ -1178,8 +1287,15 @@ function toolResultText(
 }
 
 function isCurrentGeneration(generation: number, sessionId: string): boolean {
+  return generation === activeGeneration && session?.sessionId === sessionId;
+}
+
+function isCurrentSocketBinding(binding: SocketBinding): boolean {
   return (
-    generation === toolResultGeneration && session?.sessionId === sessionId
+    socketBinding === binding &&
+    ws === binding.socket &&
+    sessionCapability === binding.capability &&
+    isCurrentGeneration(binding.generation, binding.sessionId)
   );
 }
 

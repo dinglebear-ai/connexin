@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+  createAuditRateLimiter,
   createAuditLogger,
   createMemoryAuditSink,
 } from "../../src/server/audit-log.js";
@@ -14,6 +15,29 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 
 describe("audit logging", () => {
+  it("bounds detailed audit records and emits one fixed-cardinality suppression marker", () => {
+    let now = 1_000;
+    const details: number[] = [];
+    const summaries: number[] = [];
+    const limiter = createAuditRateLimiter({
+      maxEvents: 3,
+      windowMs: 60_000,
+      now: () => now,
+      onSuppressed: () => summaries.push(now),
+    });
+
+    for (let index = 0; index < 100; index += 1) {
+      limiter.record(() => details.push(index));
+    }
+
+    expect(details).toEqual([0, 1, 2]);
+    expect(summaries).toEqual([1_000]);
+
+    now += 60_000;
+    limiter.record(() => details.push(100));
+    expect(details).toEqual([0, 1, 2, 100]);
+  });
+
   it("redacts token-shaped and output-shaped fields", () => {
     const sink = createMemoryAuditSink();
     const audit = createAuditLogger({ sink });

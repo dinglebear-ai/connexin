@@ -5,10 +5,11 @@ import {
 } from "../../src/server/device.js";
 
 describe("validateDevice", () => {
-  const allowed = new Set(["fileserver", "admin-box"]);
+  const allowed = new Set(["fileserver", "admin-box", "home/lab"]);
 
   it("accepts allowlisted aliases", () => {
     expect(validateDevice("fileserver", allowed)).toBe("fileserver");
+    expect(validateDevice("home/lab", allowed)).toBe("home/lab");
   });
 
   it("rejects unknown aliases", () => {
@@ -17,9 +18,16 @@ describe("validateDevice", () => {
     );
   });
 
-  it("rejects unsupported target characters", () => {
+  it("rejects whitespace and control characters even when allowlisted", () => {
+    const unsafe = new Set(["bad host", "bad\talias"]);
     expect(() => validateDevice("bad host", allowed)).toThrow(
-      "unsupported characters",
+      "whitespace or control characters",
+    );
+    expect(() => validateDevice("bad host", unsafe)).toThrow(
+      "whitespace or control characters",
+    );
+    expect(() => validateDevice("bad\talias", unsafe)).toThrow(
+      "whitespace or control characters",
     );
   });
 

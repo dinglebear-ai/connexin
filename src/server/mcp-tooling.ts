@@ -5,7 +5,11 @@ import { z } from "zod";
 import { bridgeConnectDomains } from "./bridge-server.js";
 import type { RuntimeConfig } from "./config.js";
 import type { QuickShellSession } from "./session-manager.js";
-import { CapabilityTokenSchema, SessionIdSchema } from "../shared/protocol.js";
+import {
+  CapabilityTokenSchema,
+  QuickShellPublicSessionSchema,
+  SessionIdSchema,
+} from "../shared/protocol.js";
 import type {
   QuickShellAppSession,
   QuickShellPublicSession,
@@ -18,16 +22,7 @@ export const SERVER_INSTRUCTIONS =
 
 let appHtmlCache: string | undefined;
 
-export const quickShellPublicOutputSchema = {
-  sessionId: SessionIdSchema,
-  device: z.string().min(1),
-  reason: z.string().optional(),
-  suggestedCommand: z.string().optional(),
-  deviceLabel: z.string().optional(),
-  deviceGroup: z.string().optional(),
-  deviceDanger: z.enum(["normal", "caution", "danger"]).optional(),
-  deviceDefaultShell: z.string().optional(),
-};
+export const quickShellPublicOutputSchema = QuickShellPublicSessionSchema.shape;
 
 export const appResourceMeta = (bridgeBaseUrl: string) => ({
   csp: {
@@ -65,6 +60,22 @@ export function toolMeta(
   };
 }
 
+export function modelToolMeta(status?: {
+  invoking?: string;
+  invoked?: string;
+}): Record<string, unknown> {
+  return {
+    "openai/widgetAccessible": false,
+    "openai/visibility": "public",
+    ...(status?.invoking
+      ? { "openai/toolInvocation/invoking": status.invoking }
+      : {}),
+    ...(status?.invoked
+      ? { "openai/toolInvocation/invoked": status.invoked }
+      : {}),
+  };
+}
+
 export function toolAnnotations(
   title: string,
   hints: {
@@ -87,22 +98,7 @@ export function asStructuredContent(value: object): Record<string, unknown> {
 export function publicStructuredContent(
   session: QuickShellPublicSession,
 ): QuickShellPublicSession {
-  const content: QuickShellPublicSession = {
-    sessionId: session.sessionId,
-    device: session.device,
-  };
-  if (session.reason !== undefined) content.reason = session.reason;
-  if (session.suggestedCommand !== undefined)
-    content.suggestedCommand = session.suggestedCommand;
-  if (session.deviceLabel !== undefined)
-    content.deviceLabel = session.deviceLabel;
-  if (session.deviceGroup !== undefined)
-    content.deviceGroup = session.deviceGroup;
-  if (session.deviceDanger !== undefined)
-    content.deviceDanger = session.deviceDanger;
-  if (session.deviceDefaultShell !== undefined)
-    content.deviceDefaultShell = session.deviceDefaultShell;
-  return content;
+  return QuickShellPublicSessionSchema.parse(session);
 }
 
 export function appSessionFor(

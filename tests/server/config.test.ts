@@ -93,4 +93,15 @@ describe("loadRuntimeConfig", () => {
       }),
     ).toThrow("QUICK_SHELL_ALLOWED_ORIGINS");
   });
+
+  it("rejects public bridge URL path prefixes", () => {
+    expect(() =>
+      loadRuntimeConfig({
+        QUICK_SHELL_BRIDGE_PUBLIC_URL: "https://quick-shell.example/prefix/",
+        QUICK_SHELL_ALLOWED_ORIGINS: "https://chatgpt.com",
+      }),
+    ).toThrow(
+      "QUICK_SHELL_BRIDGE_PUBLIC_URL must not include a path prefix because quick-shell v1 proxies /terminal at the origin root",
+    );
+  });
 });

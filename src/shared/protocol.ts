@@ -29,7 +29,7 @@ export type QuickShellAppCapability = z.infer<
 
 export const QuickShellPublicSessionSchema = z.object({
   sessionId: SessionIdSchema,
-  device: z.string(),
+  device: z.string().min(1),
   reason: z.string().optional(),
   suggestedCommand: z.string().optional(),
   deviceLabel: z.string().optional(),
