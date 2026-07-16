@@ -1,6 +1,10 @@
 import { EventEmitter } from "node:events";
 import { describe, expect, it } from "vitest";
-import { parseCliArgs, runQuickShellCli, type CliPtyProcess } from "../../src/cli/main.js";
+import {
+  parseCliArgs,
+  runQuickShellCli,
+  type CliPtyProcess,
+} from "../../src/cli/main.js";
 import { testRuntimeConfig } from "../server/helpers/runtime-config.js";
 
 class FakeCliPty implements CliPtyProcess {
@@ -35,12 +39,17 @@ class FakeCliPty implements CliPtyProcess {
 }
 
 describe("parseCliArgs", () => {
-  it("parses device, reason, suggested command, and prefill delay", () => {
+  it("parses device, suggested command, and prefill delay", () => {
     expect(
-      parseCliArgs(["devbox", "--reason", "agent unblock", "--suggest", "hostname", "--prefill-delay-ms", "1500"]),
+      parseCliArgs([
+        "devbox",
+        "--suggest",
+        "hostname",
+        "--prefill-delay-ms",
+        "1500",
+      ]),
     ).toEqual({
       device: "devbox",
-      reason: "agent unblock",
       suggestedCommand: "hostname",
       prefillDelayMs: 1500,
       list: false,
@@ -95,6 +104,7 @@ describe("runQuickShellCli", () => {
 
   it("prefills suggested command without pressing Enter", async () => {
     const ptys: FakeCliPty[] = [];
+    const calls: Array<{ file: string; args: string[] }> = [];
     const running = runQuickShellCli({
       args: ["devbox", "--suggest", "hostname", "--prefill-delay-ms", "0"],
       config: testRuntimeConfig(),
@@ -102,7 +112,8 @@ describe("runQuickShellCli", () => {
       deviceMetadata: { devices: new Map() },
       stdout: { write: () => undefined },
       stderr: { write: () => undefined },
-      ptyFactory: () => {
+      ptyFactory: (file, args) => {
+        calls.push({ file, args });
         const pty = new FakeCliPty();
         ptys.push(pty);
         return pty;
@@ -114,6 +125,9 @@ describe("runQuickShellCli", () => {
     const result = await running;
 
     expect(result.exitCode).toBe(0);
+    expect(calls).toEqual([
+      { file: "ssh", args: ["-F", "/tmp/config", "devbox"] },
+    ]);
     expect(ptys[0]?.writes).toEqual(["hostname"]);
   });
 

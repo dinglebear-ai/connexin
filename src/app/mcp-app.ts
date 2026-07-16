@@ -1,4 +1,9 @@
-import { App, applyDocumentTheme, applyHostFonts, applyHostStyleVariables } from "@modelcontextprotocol/ext-apps";
+import {
+  App,
+  applyDocumentTheme,
+  applyHostFonts,
+  applyHostStyleVariables,
+} from "@modelcontextprotocol/ext-apps";
 import { FitAddon, Terminal } from "ghostty-web";
 import type {
   ClientTerminalMessage,
@@ -15,17 +20,38 @@ import {
   QuickShellPublicSessionSchema,
   ServerTerminalMessageSchema,
 } from "../shared/protocol.js";
+import {
+  DEFAULT_TERMINAL_COLS,
+  DEFAULT_TERMINAL_ROWS,
+  MAX_TERMINAL_COLS,
+  MAX_TERMINAL_ROWS,
+  MIN_TERMINAL_COLS,
+  MIN_TERMINAL_ROWS,
+} from "../shared/terminal-defaults.js";
 import { BoundedTextBuffer } from "../shared/bounded-text-buffer.js";
-import { buildInsertPayload, findSecretWarnings, normalizeTerminalOutput, truncateForSubmit } from "./output.js";
+import { readTerminalTheme } from "./terminal-theme.js";
+import {
+  openTerminalSocket,
+  sendTerminalTransportMessage,
+} from "./terminal-transport.js";
+import {
+  buildInsertPayload,
+  findSecretWarnings,
+  normalizeTerminalOutput,
+  truncateForSubmit,
+} from "./output.js";
 import { loadGhosttyRuntime } from "./ghostty-loader.js";
+import { buildShell } from "./view.js";
 import "./styles.css";
 
 type HostCapabilities = NonNullable<ReturnType<App["getHostCapabilities"]>>;
 type HostContext = NonNullable<ReturnType<App["getHostContext"]>>;
 
 const DEFAULT_SUBMIT_BYTES = 64_000;
+const DEFAULT_INPUT_BYTES = 16_384;
 const DEFAULT_PING_INTERVAL_MS = 30_000;
 const FALLBACK_POLL_INTERVAL_MS = 500;
+const FALLBACK_CONNECT_TIMEOUT_MS = 5_000;
 const MAX_PENDING_INPUT_BYTES = 16_384;
 
 const app = new App(
@@ -43,6 +69,7 @@ let resizeObserver: ResizeObserver | undefined;
 let terminalDataDisposable: { dispose(): void } | undefined;
 let pingTimer: number | undefined;
 let pollTimer: number | undefined;
+let resizeFrame: number | undefined;
 let publicSession: QuickShellPublicSession | undefined;
 let session: QuickShellAppSession | undefined;
 let sessionDetails: QuickShellAppSession | undefined;
@@ -50,7 +77,8 @@ let sessionCapability: QuickShellHiddenMeta["quickShell"] | undefined;
 let appToolTransport = false;
 let polling = false;
 let pollSeq = 0;
-let fallbackWriteQueue: Promise<void> = Promise.resolve();
+let fallbackWriteQueue:
+  { generation: number; promise: Promise<void> } | undefined;
 let outputBuffer = new BoundedTextBuffer(DEFAULT_SUBMIT_BYTES);
 let pendingInput: string[] = [];
 let pendingInputBytes = 0;
@@ -63,12 +91,14 @@ let lastModelContextKey: string | undefined;
 
 const elements = buildShell();
 root.replaceChildren(elements.container);
+wireShellEvents();
 let toolResultGeneration = 0;
 
 app.ontoolinputpartial = (params) => applyToolInput(params.arguments);
 app.ontoolinput = (params) => applyToolInput(params.arguments);
 app.onhostcontextchanged = (ctx) => applyHostContext(ctx);
-app.ontoolcancelled = (params) => setStatus(params.reason ? `Cancelled: ${params.reason}` : "Cancelled");
+app.ontoolcancelled = (params) =>
+  setStatus(params.reason ? `Cancelled: ${params.reason}` : "Cancelled");
 app.ontoolresult = (params) => {
   void handleToolResult(params).catch((error) => renderError(error));
 };
@@ -76,8 +106,12 @@ app.onteardown = async () => {
   await cleanup(true);
   return {};
 };
-window.addEventListener("error", (event) => renderError(event.error ?? event.message));
-window.addEventListener("unhandledrejection", (event) => renderError(event.reason));
+window.addEventListener("error", (event) =>
+  renderError(event.error ?? event.message),
+);
+window.addEventListener("unhandledrejection", (event) =>
+  renderError(event.reason),
+);
 
 void start().catch((error) => renderError(error));
 
@@ -86,161 +120,95 @@ async function start(): Promise<void> {
   applyHostContext(app.getHostContext());
 }
 
-function buildShell() {
-  const container = document.createElement("section");
-  container.className = "shell";
-
-  const header = document.createElement("header");
-  header.className = "shell__header";
-  const title = document.createElement("h1");
-  title.textContent = "quick-shell";
-  const status = document.createElement("p");
-  status.className = "shell__status";
-  status.textContent = "Waiting";
-  header.append(title, status);
-
-  const commandStrip = document.createElement("form");
-  commandStrip.className = "command-strip";
-  const commandInput = document.createElement("input");
-  commandInput.type = "text";
-  commandInput.autocomplete = "off";
-  commandInput.spellcheck = false;
-  commandInput.placeholder = "Suggested command";
-  const insertButton = document.createElement("button");
-  insertButton.type = "submit";
-  insertButton.textContent = "Insert";
-  insertButton.disabled = true;
-  commandStrip.append(commandInput, insertButton);
-
-  const terminalMount = document.createElement("div");
-  terminalMount.className = "terminal";
-
-  const actions = document.createElement("div");
-  actions.className = "actions";
-  const connectButton = document.createElement("button");
-  connectButton.type = "button";
-  connectButton.textContent = "Reconnect";
-  connectButton.disabled = true;
-  connectButton.hidden = true;
-  const displayModeButton = document.createElement("button");
-  displayModeButton.type = "button";
-  displayModeButton.textContent = "Fullscreen";
-  displayModeButton.hidden = true;
-  const sendButton = document.createElement("button");
-  sendButton.type = "button";
-  sendButton.textContent = "Send output";
-  sendButton.disabled = true;
-  const downloadButton = document.createElement("button");
-  downloadButton.type = "button";
-  downloadButton.textContent = "Download output";
-  downloadButton.disabled = true;
-  downloadButton.hidden = true;
-  const closeButton = document.createElement("button");
-  closeButton.type = "button";
-  closeButton.textContent = "Close";
-  closeButton.disabled = true;
-  actions.append(connectButton, displayModeButton, sendButton, downloadButton, closeButton);
-
-  const dialog = document.createElement("dialog");
-  dialog.className = "send-dialog";
-  const dialogTitle = document.createElement("h2");
-  dialogTitle.textContent = "Send output";
-  const textarea = document.createElement("textarea");
-  textarea.rows = 12;
-  textarea.spellcheck = false;
-  const meta = document.createElement("p");
-  meta.className = "send-dialog__meta";
-  const warnings = document.createElement("ul");
-  warnings.className = "send-dialog__warnings";
-  const fallback = document.createElement("textarea");
-  fallback.className = "send-dialog__fallback";
-  fallback.readOnly = true;
-  fallback.hidden = true;
-  const dialogActions = document.createElement("div");
-  dialogActions.className = "send-dialog__actions";
-  const cancelButton = document.createElement("button");
-  cancelButton.type = "button";
-  cancelButton.textContent = "Cancel";
-  const confirmButton = document.createElement("button");
-  confirmButton.type = "button";
-  confirmButton.textContent = "Confirm";
-  dialogActions.append(cancelButton, confirmButton);
-  dialog.append(dialogTitle, textarea, meta, warnings, fallback, dialogActions);
-
-  container.append(header, commandStrip, terminalMount, actions, dialog);
-
-  commandStrip.addEventListener("submit", (event) => {
+function wireShellEvents(): void {
+  elements.commandStrip.addEventListener("submit", (event) => {
     event.preventDefault();
-    const payload = buildInsertPayload(commandInput.value);
+    const payload = buildInsertPayload(elements.commandInput.value);
     if (payload && session) {
       sendTerminalInput(payload);
       setStatus("Inserted");
     }
   });
 
-  connectButton.addEventListener("click", () => {
+  elements.connectButton.addEventListener("click", () => {
     void connectPendingSession().catch((error) => {
       renderError(error);
       updateControls();
     });
   });
 
-  sendButton.addEventListener("click", () => {
+  elements.sendButton.addEventListener("click", () => {
     if (!session) return;
-    const prepared = truncateForSubmit(normalizeTerminalOutput(outputBuffer.toString()), session.maxSubmitBytes);
-    textarea.value = prepared.text;
-    updateDialogMeta(prepared.text, session.maxSubmitBytes, prepared.truncated, meta, warnings);
-    fallback.hidden = true;
-    dialog.showModal();
+    const prepared = truncateForSubmit(
+      normalizeTerminalOutput(outputBuffer.toString()),
+      session.maxSubmitBytes,
+    );
+    elements.textarea.value = prepared.text;
+    updateDialogMeta(
+      prepared.text,
+      session.maxSubmitBytes,
+      prepared.truncated,
+      elements.meta,
+      elements.warnings,
+    );
+    elements.fallback.hidden = true;
+    elements.dialog.showModal();
   });
 
-  displayModeButton.addEventListener("click", () => {
+  elements.displayModeButton.addEventListener("click", () => {
     void toggleDisplayMode().catch((error) => renderError(error));
   });
 
-  downloadButton.addEventListener("click", () => {
+  elements.downloadButton.addEventListener("click", () => {
     void downloadOutput().catch((error) => renderError(error));
   });
 
-  textarea.addEventListener("input", () => {
+  elements.textarea.addEventListener("input", () => {
     const maxBytes = session?.maxSubmitBytes ?? DEFAULT_SUBMIT_BYTES;
-    const prepared = truncateForSubmit(normalizeTerminalOutput(textarea.value), maxBytes);
-    if (prepared.text !== textarea.value) textarea.value = prepared.text;
-    updateDialogMeta(textarea.value, maxBytes, prepared.truncated, meta, warnings);
+    const prepared = truncateForSubmit(
+      normalizeTerminalOutput(elements.textarea.value),
+      maxBytes,
+    );
+    if (prepared.text !== elements.textarea.value)
+      elements.textarea.value = prepared.text;
+    updateDialogMeta(
+      elements.textarea.value,
+      maxBytes,
+      prepared.truncated,
+      elements.meta,
+      elements.warnings,
+    );
   });
 
-  cancelButton.addEventListener("click", () => dialog.close());
-  confirmButton.addEventListener("click", () => {
+  elements.cancelButton.addEventListener("click", () =>
+    elements.dialog.close(),
+  );
+  elements.confirmButton.addEventListener("click", () => {
     if (sending) return;
-    const snapshot = textarea.value;
-    void confirmSend(snapshot, fallback, dialog, cancelButton, confirmButton).catch((error) => {
-      fallback.hidden = false;
-      fallback.value = snapshot;
-      setStatus(`Send failed: ${error instanceof Error ? error.message : String(error)}`);
+    const snapshot = elements.textarea.value;
+    void confirmSend(
+      snapshot,
+      elements.fallback,
+      elements.dialog,
+      elements.cancelButton,
+      elements.confirmButton,
+    ).catch((error) => {
+      elements.fallback.hidden = false;
+      elements.fallback.value = snapshot;
+      setStatus(
+        `Send failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
     });
   });
 
-  closeButton.addEventListener("click", () => {
+  elements.closeButton.addEventListener("click", () => {
     void cleanup(true).catch((error) => renderError(error));
   });
-
-  return {
-    container,
-    status,
-    commandInput,
-    insertButton,
-    connectButton,
-    displayModeButton,
-    sendButton,
-    downloadButton,
-    closeButton,
-    cancelButton,
-    confirmButton,
-    terminalMount,
-  };
 }
 
-function readPublicSession(value: unknown): QuickShellPublicSession | undefined {
+function readPublicSession(
+  value: unknown,
+): QuickShellPublicSession | undefined {
   const parsed = QuickShellPublicSessionSchema.safeParse(value);
   return parsed.success ? parsed.data : undefined;
 }
@@ -250,7 +218,9 @@ function readAppSession(value: unknown): QuickShellAppSession | undefined {
   return parsed.success ? parsed.data : undefined;
 }
 
-function readQuickShellMeta(value: unknown): QuickShellHiddenMeta["quickShell"] | undefined {
+function readQuickShellMeta(
+  value: unknown,
+): QuickShellHiddenMeta["quickShell"] | undefined {
   const parsed = QuickShellHiddenMetaSchema.safeParse(value);
   return parsed.success ? parsed.data.quickShell : undefined;
 }
@@ -276,28 +246,42 @@ async function handleToolResult(params: {
   const nextPublicSession = readPublicSession(params.structuredContent);
   const quickShell = readQuickShellMeta(params._meta);
   const quickShellSession = readAppSession(params._meta?.quickShellSession);
-  if (!nextPublicSession || !quickShell || quickShell.sessionId !== nextPublicSession.sessionId) {
+  if (
+    !nextPublicSession ||
+    !quickShell ||
+    quickShell.sessionId !== nextPublicSession.sessionId
+  ) {
     throw new Error("Missing quick-shell app capability");
   }
-  if (quickShellSession && quickShellSession.sessionId !== nextPublicSession.sessionId) {
+  if (
+    quickShellSession &&
+    quickShellSession.sessionId !== nextPublicSession.sessionId
+  ) {
     throw new Error("Invalid quick-shell session capability");
   }
 
   const previousClosed = await cleanup(true).catch((error) => {
     console.error("quick-shell previous session close failed", error);
-    setStatus("Could not close previous session; it will expire automatically.");
+    setStatus(
+      "Could not close previous session; it will expire automatically.",
+    );
     return false;
   });
   if (!previousClosed) {
     await closeUnusedSession(quickShell);
     return;
   }
-  if (generation !== toolResultGeneration) return;
+  if (generation !== toolResultGeneration) {
+    await closeUnusedSession(quickShell);
+    return;
+  }
   publicSession = nextPublicSession;
   sessionCapability = quickShell;
   sessionDetails = quickShellSession;
   session = undefined;
-  outputBuffer = new BoundedTextBuffer(quickShellSession?.maxSubmitBytes ?? DEFAULT_SUBMIT_BYTES);
+  outputBuffer = new BoundedTextBuffer(
+    quickShellSession?.maxSubmitBytes ?? DEFAULT_SUBMIT_BYTES,
+  );
   elements.commandInput.value = nextPublicSession.suggestedCommand ?? "";
   setStatus(`Connecting ${nextPublicSession.device}`);
   updateModelContext("connecting");
@@ -306,7 +290,13 @@ async function handleToolResult(params: {
 }
 
 async function connectPendingSession(): Promise<void> {
-  if (connecting || session || !publicSession || (!sessionCapability && !sessionDetails)) return;
+  if (
+    connecting ||
+    session ||
+    !publicSession ||
+    (!sessionCapability && !sessionDetails)
+  )
+    return;
   const generation = toolResultGeneration;
   const capability = sessionCapability;
   let detailsSession = sessionDetails;
@@ -327,9 +317,17 @@ async function connectPendingSession(): Promise<void> {
           appToken: capability.appToken,
         },
       });
-      if (details.isError) throw new Error(toolResultText(details, "Session capability rejected"));
-      if (generation !== toolResultGeneration || sessionCapability !== capability) return;
-      detailsSession = readAppSession((details as { _meta?: Record<string, unknown> })._meta?.quickShellSession);
+      if (details.isError)
+        throw new Error(toolResultText(details, "Session capability rejected"));
+      if (
+        generation !== toolResultGeneration ||
+        sessionCapability !== capability
+      )
+        return;
+      detailsSession = readAppSession(
+        (details as { _meta?: Record<string, unknown> })._meta
+          ?.quickShellSession,
+      );
     }
     if (!detailsSession || detailsSession.sessionId !== requested.sessionId) {
       throw new Error("Invalid quick-shell session details");
@@ -341,7 +339,10 @@ async function connectPendingSession(): Promise<void> {
     try {
       await connectTerminal(detailsSession, generation);
     } catch (error) {
-      if (generation === toolResultGeneration && session?.sessionId === detailsSession.sessionId) {
+      if (
+        generation === toolResultGeneration &&
+        session?.sessionId === detailsSession.sessionId
+      ) {
         disposeTerminal();
         session = undefined;
         outputBuffer = new BoundedTextBuffer(detailsSession.maxSubmitBytes);
@@ -356,23 +357,22 @@ async function connectPendingSession(): Promise<void> {
   }
 }
 
-async function connectTerminal(details: QuickShellAppSession, generation: number): Promise<void> {
+async function connectTerminal(
+  details: QuickShellAppSession,
+  generation: number,
+): Promise<void> {
   disposeTerminal();
   outputBuffer.clear();
   await loadGhosttyRuntime();
   if (!isCurrentGeneration(generation, details.sessionId)) return;
 
   const nextTerminal = new Terminal({
-    cols: 100,
-    rows: 30,
-    fontFamily: "JetBrains Mono, ui-monospace, SFMono-Regular, Menlo, monospace",
+    cols: DEFAULT_TERMINAL_COLS,
+    rows: DEFAULT_TERMINAL_ROWS,
+    fontFamily:
+      "JetBrains Mono, ui-monospace, SFMono-Regular, Menlo, monospace",
     fontSize: 13,
-    theme: {
-      background: "#07131c",
-      foreground: "#e6f4fb",
-      cursor: "#29b6f6",
-      selectionBackground: "#1d3d4e",
-    },
+    theme: readTerminalTheme(),
   });
   const nextFitAddon = new FitAddon();
   nextTerminal.loadAddon(nextFitAddon);
@@ -382,33 +382,58 @@ async function connectTerminal(details: QuickShellAppSession, generation: number
     sendTerminalInput(data);
   });
 
-  const socket = new WebSocket(details.wsUrl);
-  if (!isCurrentGeneration(generation, details.sessionId)) {
-    nextTerminalDataDisposable.dispose();
-    nextFitAddon.dispose();
-    nextTerminal.dispose();
-    socket.close();
-    return;
-  }
   terminal = nextTerminal;
   fitAddon = nextFitAddon;
   terminalDataDisposable = nextTerminalDataDisposable;
+  let socket: WebSocket;
+  try {
+    socket = openTerminalSocket(details);
+  } catch {
+    await startAppToolTransport(details, generation);
+    return;
+  }
+  if (!isCurrentGeneration(generation, details.sessionId)) {
+    disposeTerminal();
+    socket.close();
+    return;
+  }
   ws = socket;
   let socketOpened = false;
+  let fallbackStarted = false;
+  const startFallback = () => {
+    if (fallbackStarted || socketOpened || ws !== socket) return;
+    fallbackStarted = true;
+    window.clearTimeout(fallbackTimer);
+    ws = undefined;
+    socket.close();
+    void startAppToolTransport(details, generation).catch((error) => {
+      handleConnectFailure(error);
+      updateControls();
+    });
+  };
+  const fallbackTimer = window.setTimeout(
+    startFallback,
+    FALLBACK_CONNECT_TIMEOUT_MS,
+  );
   socket.addEventListener("open", () => {
     if (ws !== socket) return;
+    window.clearTimeout(fallbackTimer);
     socketOpened = true;
     connectionFailed = false;
-    fitAddon?.fit();
-    sendResize();
-    flushPendingInput();
-    startPing(details.pingIntervalMs);
-    setStatus("Connected");
-    updateModelContext("connected");
+    socket.send(
+      JSON.stringify({ type: "authenticate", token: details.wsToken }),
+    );
     updateControls();
   });
-  socket.addEventListener("message", (event) => handleTerminalMessage(socket, event.data));
+  socket.addEventListener("message", (event) =>
+    handleTerminalMessage(socket, event.data),
+  );
   socket.addEventListener("close", () => {
+    window.clearTimeout(fallbackTimer);
+    if (ws === socket && !socketOpened) {
+      startFallback();
+      return;
+    }
     if (ws === socket) {
       disposeTerminal();
       session = undefined;
@@ -421,19 +446,11 @@ async function connectTerminal(details: QuickShellAppSession, generation: number
   socket.addEventListener("error", () => {
     if (ws !== socket) return;
     setStatus("Connection error");
-    if (!socketOpened) {
-      ws = undefined;
-      socket.close();
-      void startAppToolTransport(details, generation).catch((error) => {
-        handleConnectFailure(error);
-        updateControls();
-      });
-    }
+    if (!socketOpened) startFallback();
   });
 
   resizeObserver = new ResizeObserver(() => {
-    fitAddon?.fit();
-    sendResize();
+    scheduleResize();
   });
   resizeObserver.observe(elements.terminalMount);
 }
@@ -452,15 +469,23 @@ function handleTerminalMessage(socket: WebSocket, data: unknown): void {
   switch (message.type) {
     case "ready":
       outputBuffer.clear();
-      outputBuffer.append(message.scrollback);
-      terminal?.write(message.scrollback);
+      appendTerminalOutput(message.scrollback);
+      fitAddon?.fit();
+      sendResize();
+      flushPendingInputToWebSocket();
+      startPing(session?.pingIntervalMs ?? DEFAULT_PING_INTERVAL_MS);
+      setStatus("Connected");
+      updateModelContext("connected");
+      updateControls();
       break;
     case "output":
       outputBuffer.append(message.data);
       terminal?.write(message.data);
       break;
     case "exit":
-      setStatus(message.exitCode === null ? "Exited" : `Exited ${message.exitCode}`);
+      setStatus(
+        message.exitCode === null ? "Exited" : `Exited ${message.exitCode}`,
+      );
       break;
     case "error":
       setStatus(message.message);
@@ -473,8 +498,16 @@ function handleTerminalMessage(socket: WebSocket, data: unknown): void {
 function sendResize(): void {
   if (!terminal) return;
   const proposed = fitAddon?.proposeDimensions();
-  const cols = clamp(proposed?.cols ?? terminal.cols, 20, 400);
-  const rows = clamp(proposed?.rows ?? terminal.rows, 5, 200);
+  const cols = clamp(
+    proposed?.cols ?? terminal.cols,
+    MIN_TERMINAL_COLS,
+    MAX_TERMINAL_COLS,
+  );
+  const rows = clamp(
+    proposed?.rows ?? terminal.rows,
+    MIN_TERMINAL_ROWS,
+    MAX_TERMINAL_ROWS,
+  );
   terminal.resize(cols, rows);
   if (appToolTransport) {
     void resizeViaAppTool(cols, rows);
@@ -483,13 +516,27 @@ function sendResize(): void {
   }
 }
 
+function scheduleResize(): void {
+  if (resizeFrame !== undefined) return;
+  resizeFrame = window.requestAnimationFrame(() => {
+    resizeFrame = undefined;
+    fitAddon?.fit();
+    sendResize();
+  });
+}
+
 function sendTerminalMessage(message: ClientTerminalMessage): void {
-  if (ws?.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify(message));
-  }
+  if (ws) sendTerminalTransportMessage(ws, message);
 }
 
 function sendTerminalInput(data: string): void {
+  const bytes = new TextEncoder().encode(data).byteLength;
+  const maxInputBytes = session?.maxInputBytes ?? DEFAULT_INPUT_BYTES;
+  if (bytes > maxInputBytes) {
+    setStatus(`Input is larger than ${maxInputBytes} bytes.`);
+    return;
+  }
+
   if (appToolTransport) {
     enqueueFallbackInput(data);
     return;
@@ -500,7 +547,6 @@ function sendTerminalInput(data: string): void {
     return;
   }
 
-  const bytes = new TextEncoder().encode(data).byteLength;
   if (pendingInputBytes + bytes > MAX_PENDING_INPUT_BYTES) {
     setStatus("Waiting for connection; input buffer full.");
     return;
@@ -511,8 +557,12 @@ function sendTerminalInput(data: string): void {
   setStatus("Waiting for connection");
 }
 
-async function startAppToolTransport(details: QuickShellAppSession, generation: number): Promise<void> {
-  if (!sessionCapability || !isCurrentGeneration(generation, details.sessionId)) return;
+async function startAppToolTransport(
+  details: QuickShellAppSession,
+  generation: number,
+): Promise<void> {
+  if (!sessionCapability || !isCurrentGeneration(generation, details.sessionId))
+    return;
   stopPing();
   appToolTransport = true;
   polling = false;
@@ -522,25 +572,44 @@ async function startAppToolTransport(details: QuickShellAppSession, generation: 
     name: "get_quick_shell_session",
     arguments: sessionCapability,
   });
-  if (attached.isError) throw new Error(toolResultText(attached, "Session capability rejected"));
-  const attachedSession = readAppSession((attached as { _meta?: Record<string, unknown> })._meta?.quickShellSession) ?? details;
-  if (!isCurrentGeneration(generation, details.sessionId) || attachedSession.sessionId !== details.sessionId) return;
+  if (attached.isError)
+    throw new Error(toolResultText(attached, "Session capability rejected"));
+  const attachedSession =
+    readAppSession(
+      (attached as { _meta?: Record<string, unknown> })._meta
+        ?.quickShellSession,
+    ) ?? details;
+  if (
+    !isCurrentGeneration(generation, details.sessionId) ||
+    attachedSession.sessionId !== details.sessionId
+  )
+    return;
   session = attachedSession;
   connectionFailed = false;
   setStatus("Connected");
   updateModelContext("connected");
   updateControls();
+  flushPendingInputToAppTool();
   await pollAppToolTransport(generation);
   if (!isCurrentGeneration(generation, details.sessionId)) return;
   pollTimer = window.setInterval(() => {
     void pollAppToolTransport(generation).catch((error) => {
-      setStatus(`Poll failed: ${error instanceof Error ? error.message : String(error)}`);
+      setStatus(
+        `Poll failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
     });
   }, FALLBACK_POLL_INTERVAL_MS);
 }
 
 async function pollAppToolTransport(generation: number): Promise<void> {
-  if (polling || !session || !sessionCapability || !appToolTransport || !isCurrentGeneration(generation, session.sessionId)) return;
+  if (
+    polling ||
+    !session ||
+    !sessionCapability ||
+    !appToolTransport ||
+    !isCurrentGeneration(generation, session.sessionId)
+  )
+    return;
   polling = true;
   try {
     const result = await app.callServerTool({
@@ -550,17 +619,30 @@ async function pollAppToolTransport(generation: number): Promise<void> {
         afterSeq: pollSeq,
       },
     });
-    if (result.isError) throw new Error(toolResultText(result, "Quick-shell poll failed"));
-    const poll = readQuickShellPoll((result as { _meta?: Record<string, unknown> })._meta?.quickShellPoll);
+    if (result.isError)
+      throw new Error(toolResultText(result, "Quick-shell poll failed"));
+    const poll = readQuickShellPoll(
+      (result as { _meta?: Record<string, unknown> })._meta?.quickShellPoll,
+    );
     if (!poll || !isCurrentGeneration(generation, poll.sessionId)) return;
-    for (const chunk of poll.chunks) {
-      terminal?.write(chunk.data);
-      outputBuffer.append(chunk.data);
+    const truncated =
+      (poll.truncatedBytes ?? 0) > 0 ||
+      poll.chunks.some((chunk) => chunk.truncated);
+    const chunks =
+      poll.reset && poll.snapshot !== undefined
+        ? poll.chunks.filter((chunk) => !chunk.snapshot)
+        : poll.chunks;
+    if (poll.reset) {
+      resetTerminalOutput();
+      if (poll.snapshot !== undefined) appendTerminalOutput(poll.snapshot);
     }
+    for (const chunk of chunks) appendTerminalOutput(chunk.data);
     pollSeq = poll.nextSeq;
     if (poll.exited) {
       setStatus(poll.exitCode === null ? "Exited" : `Exited ${poll.exitCode}`);
       stopPolling();
+    } else if (poll.reset && truncated) {
+      setStatus("Connected, earlier output was truncated");
     } else {
       setStatus("Connected");
     }
@@ -570,11 +652,23 @@ async function pollAppToolTransport(generation: number): Promise<void> {
 }
 
 function enqueueFallbackInput(data: string): void {
-  if (!sessionCapability) return;
+  const generation = toolResultGeneration;
+  const sessionId = session?.sessionId;
+  if (!sessionCapability || !sessionId) return;
   const capability = sessionCapability;
-  fallbackWriteQueue = fallbackWriteQueue
+  const previous =
+    fallbackWriteQueue?.generation === generation
+      ? fallbackWriteQueue.promise
+      : Promise.resolve();
+  const promise = previous
     .catch(() => {})
     .then(async () => {
+      if (
+        !isCurrentGeneration(generation, sessionId) ||
+        sessionCapability !== capability ||
+        !appToolTransport
+      )
+        return;
       const result = await app.callServerTool({
         name: "write_quick_shell_input",
         arguments: {
@@ -582,32 +676,68 @@ function enqueueFallbackInput(data: string): void {
           data,
         },
       });
-      if (result.isError) throw new Error(toolResultText(result, "Quick-shell input failed"));
+      if (
+        !isCurrentGeneration(generation, sessionId) ||
+        sessionCapability !== capability ||
+        !appToolTransport
+      )
+        return;
+      if (result.isError)
+        throw new Error(toolResultText(result, "Quick-shell input failed"));
     })
     .catch((error) => {
-      setStatus(`Input failed: ${error instanceof Error ? error.message : String(error)}`);
+      if (
+        !isCurrentGeneration(generation, sessionId) ||
+        sessionCapability !== capability
+      )
+        return;
+      setStatus(
+        `Input failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
     });
+  fallbackWriteQueue = { generation, promise };
 }
 
 async function resizeViaAppTool(cols: number, rows: number): Promise<void> {
   if (!sessionCapability) return;
-  await app.callServerTool({
-    name: "resize_quick_shell_session",
-    arguments: {
-      ...sessionCapability,
-      cols,
-      rows,
-    },
-  }).catch((error) => console.error("quick-shell resize failed", error));
+  await app
+    .callServerTool({
+      name: "resize_quick_shell_session",
+      arguments: {
+        ...sessionCapability,
+        cols,
+        rows,
+      },
+    })
+    .catch((error) => console.error("quick-shell resize failed", error));
 }
 
-function flushPendingInput(): void {
+function drainPendingInput(send: (data: string) => void): void {
   const queued = pendingInput;
   pendingInput = [];
   pendingInputBytes = 0;
   for (const data of queued) {
-    sendTerminalMessage({ type: "input", data });
+    send(data);
   }
+}
+
+function flushPendingInputToWebSocket(): void {
+  drainPendingInput((data) => sendTerminalMessage({ type: "input", data }));
+}
+
+function flushPendingInputToAppTool(): void {
+  drainPendingInput((data) => enqueueFallbackInput(data));
+}
+
+function appendTerminalOutput(data: string): void {
+  if (data.length === 0) return;
+  terminal?.write(data);
+  outputBuffer.append(data);
+}
+
+function resetTerminalOutput(): void {
+  outputBuffer.clear();
+  terminal?.reset();
 }
 
 async function confirmSend(
@@ -637,13 +767,17 @@ async function confirmSend(
     if (ws?.readyState === WebSocket.OPEN) {
       sendTerminalMessage({ type: "output_confirmed", byteCount });
     } else if (sessionCapability) {
-      await app.callServerTool({
-        name: "record_quick_shell_output_confirmed",
-        arguments: {
-          ...sessionCapability,
-          byteCount,
-        },
-      }).catch((error) => console.error("quick-shell audit record failed", error));
+      await app
+        .callServerTool({
+          name: "record_quick_shell_output_confirmed",
+          arguments: {
+            ...sessionCapability,
+            byteCount,
+          },
+        })
+        .catch((error) =>
+          console.error("quick-shell audit record failed", error),
+        );
     }
     dialog.close();
     setStatus("Sent");
@@ -678,6 +812,10 @@ function disposeTerminal(): void {
   stopPing();
   stopPolling();
   appToolTransport = false;
+  if (resizeFrame !== undefined) {
+    window.cancelAnimationFrame(resizeFrame);
+    resizeFrame = undefined;
+  }
   resizeObserver?.disconnect();
   terminalDataDisposable?.dispose();
   fitAddon?.dispose();
@@ -719,7 +857,12 @@ async function cleanup(closeSession: boolean): Promise<boolean> {
     }
 
     if (closed.isError) {
-      setStatus(toolResultText(closed, "Could not close session; it will expire automatically."));
+      setStatus(
+        toolResultText(
+          closed,
+          "Could not close session; it will expire automatically.",
+        ),
+      );
       updateControls();
       return false;
     }
@@ -736,13 +879,16 @@ async function cleanup(closeSession: boolean): Promise<boolean> {
   return true;
 }
 
-async function closeUnusedSession(capability: QuickShellHiddenMeta["quickShell"]): Promise<void> {
+async function closeUnusedSession(
+  capability: QuickShellHiddenMeta["quickShell"],
+): Promise<void> {
   try {
     const closed = await app.callServerTool({
       name: "close_quick_shell_session",
       arguments: capability,
     });
-    if (closed.isError) console.error("quick-shell unused session close failed");
+    if (closed.isError)
+      console.error("quick-shell unused session close failed");
   } catch (error) {
     console.error("quick-shell unused session close failed", error);
   }
@@ -764,7 +910,10 @@ function handleConnectFailure(error: unknown): void {
   updateControls();
 }
 
-function toolResultText(result: { content?: Array<{ type?: string; text?: string }> }, fallback: string): string {
+function toolResultText(
+  result: { content?: Array<{ type?: string; text?: string }> },
+  fallback: string,
+): string {
   const text = result.content
     ?.map((item) => (item.type === "text" ? item.text : undefined))
     .filter((item): item is string => Boolean(item?.trim()))
@@ -774,7 +923,9 @@ function toolResultText(result: { content?: Array<{ type?: string; text?: string
 }
 
 function isCurrentGeneration(generation: number, sessionId: string): boolean {
-  return generation === toolResultGeneration && session?.sessionId === sessionId;
+  return (
+    generation === toolResultGeneration && session?.sessionId === sessionId
+  );
 }
 
 function startPing(intervalMs = DEFAULT_PING_INTERVAL_MS): void {
@@ -797,22 +948,34 @@ function updateControls(): void {
   const displayTarget = nextDisplayMode(context);
   elements.displayModeButton.hidden = displayTarget === undefined;
   elements.displayModeButton.disabled = displayTarget === undefined;
-  elements.displayModeButton.textContent = context.displayMode === "fullscreen" ? "Inline" : "Fullscreen";
+  elements.displayModeButton.textContent =
+    context.displayMode === "fullscreen" ? "Inline" : "Fullscreen";
   elements.downloadButton.hidden = capabilities?.downloadFile === undefined;
-  elements.downloadButton.disabled = session === undefined || capabilities?.downloadFile === undefined;
+  elements.downloadButton.disabled =
+    session === undefined || capabilities?.downloadFile === undefined;
   elements.connectButton.hidden = !connectionFailed || session !== undefined;
-  elements.connectButton.disabled = connecting || (!sessionCapability && !sessionDetails) || session !== undefined;
+  elements.connectButton.disabled =
+    connecting ||
+    (!sessionCapability && !sessionDetails) ||
+    session !== undefined;
   elements.insertButton.disabled = session === undefined;
   elements.sendButton.disabled = session === undefined;
-  elements.closeButton.disabled = sessionCapability === undefined && sessionDetails === undefined && session === undefined;
+  elements.closeButton.disabled =
+    sessionCapability === undefined &&
+    sessionDetails === undefined &&
+    session === undefined;
 }
 
 function applyToolInput(args: Record<string, unknown> | undefined): void {
   if (!args) return;
   const device = typeof args.device === "string" ? args.device : undefined;
-  const suggested = typeof args.suggested_command === "string" ? args.suggested_command : undefined;
+  const suggested =
+    typeof args.suggested_command === "string"
+      ? args.suggested_command
+      : undefined;
   if (device && !publicSession) setStatus(`Preparing: ${device}`);
-  if (suggested && !elements.commandInput.value) elements.commandInput.value = suggested;
+  if (suggested && !elements.commandInput.value)
+    elements.commandInput.value = suggested;
 }
 
 function applyHostContext(ctx: HostContext | undefined): void {
@@ -836,9 +999,12 @@ function applyHostContext(ctx: HostContext | undefined): void {
   updateControls();
 }
 
-function nextDisplayMode(ctx: HostContext | undefined): "inline" | "fullscreen" | undefined {
+function nextDisplayMode(
+  ctx: HostContext | undefined,
+): "inline" | "fullscreen" | undefined {
   const available = ctx?.availableDisplayModes ?? [];
-  if (ctx?.displayMode === "fullscreen") return available.includes("inline") ? "inline" : undefined;
+  if (ctx?.displayMode === "fullscreen")
+    return available.includes("inline") ? "inline" : undefined;
   return available.includes("fullscreen") ? "fullscreen" : undefined;
 }
 
@@ -851,7 +1017,10 @@ async function toggleDisplayMode(): Promise<void> {
 
 async function downloadOutput(): Promise<void> {
   if (!session || app.getHostCapabilities()?.downloadFile === undefined) return;
-  const prepared = truncateForSubmit(normalizeTerminalOutput(outputBuffer.toString()), session.maxSubmitBytes);
+  const prepared = truncateForSubmit(
+    normalizeTerminalOutput(outputBuffer.toString()),
+    session.maxSubmitBytes,
+  );
   const result = await app.downloadFile({
     contents: [
       {
@@ -886,7 +1055,7 @@ function updateModelContext(state: string): void {
     payload.content = [
       {
         type: "text",
-        text: `quick-shell state: ${state}${device}. The terminal connects automatically; output is sent back to Claude only when the user chooses Send output.`,
+        text: `quick-shell state: ${state}${device}. The terminal connects automatically; output is sent back only when the user chooses Send output.`,
       },
     ];
   }
@@ -900,7 +1069,11 @@ function updateModelContext(state: string): void {
     };
   }
   if (!payload.content && !payload.structuredContent) return;
-  void app.updateModelContext(payload).catch((error) => sendHostLog("warning", `updateModelContext failed: ${String(error)}`));
+  void app
+    .updateModelContext(payload)
+    .catch((error) =>
+      sendHostLog("warning", `updateModelContext failed: ${String(error)}`),
+    );
 }
 
 function sendHostLog(level: "warning" | "error", message: string): void {

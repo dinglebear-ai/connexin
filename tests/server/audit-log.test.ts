@@ -2,7 +2,10 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { createAuditLogger, createMemoryAuditSink } from "../../src/server/audit-log.js";
+import {
+  createAuditLogger,
+  createMemoryAuditSink,
+} from "../../src/server/audit-log.js";
 import { createServer } from "../../src/server/create-server.js";
 import { QuickShellSessionManager } from "../../src/server/session-manager.js";
 import { testRuntimeConfig } from "./helpers/runtime-config.js";
@@ -25,8 +28,14 @@ describe("audit logging", () => {
     });
 
     expect(sink.records).toHaveLength(1);
-    expect(sink.records[0]).toMatchObject({ event: "session_opened", sessionId: "s1", device: "fileserver" });
-    expect(JSON.stringify(sink.records[0])).not.toMatch(/secret|terminal output|hostname|appToken|wsToken|output|suggestedCommand/);
+    expect(sink.records[0]).toMatchObject({
+      event: "session_opened",
+      sessionId: "s1",
+      device: "fileserver",
+    });
+    expect(JSON.stringify(sink.records[0])).not.toMatch(
+      /secret|terminal output|hostname|appToken|wsToken|output|suggestedCommand/,
+    );
   });
 
   it("redacts nested token-shaped and output-shaped fields", () => {
@@ -41,8 +50,12 @@ describe("audit logging", () => {
       },
     });
 
-    expect(sink.records[0]).toMatchObject({ nested: { items: [{ safe: "kept" }] } });
-    expect(JSON.stringify(sink.records[0])).not.toMatch(/secret-app|terminal output|appToken|output/);
+    expect(sink.records[0]).toMatchObject({
+      nested: { items: [{ safe: "kept" }] },
+    });
+    expect(JSON.stringify(sink.records[0])).not.toMatch(
+      /secret-app|terminal output|appToken|output/,
+    );
   });
 
   it("writes JSON lines to a configured file", async () => {
@@ -55,7 +68,11 @@ describe("audit logging", () => {
       await audit.flush?.();
 
       const lines = (await readFile(path, "utf8")).trim().split("\n");
-      expect(JSON.parse(lines[0]!)).toMatchObject({ event: "session_closed", sessionId: "s1", device: "fileserver" });
+      expect(JSON.parse(lines[0]!)).toMatchObject({
+        event: "session_closed",
+        sessionId: "s1",
+        device: "fileserver",
+      });
     } finally {
       await rm(tempDir, { recursive: true, force: true });
     }
@@ -75,7 +92,10 @@ describe("audit logging", () => {
       },
     });
 
-    const started = await manager.createSession({ device: "fileserver", suggested: "hostname" });
+    const started = await manager.createSession({
+      device: "fileserver",
+      suggested: "hostname",
+    });
     manager.startSession(started.id);
     manager.closeSession(started.id);
     const expired = await manager.createSession({ device: "admin-box" });
@@ -107,12 +127,22 @@ describe("audit logging", () => {
       config: testRuntimeConfig(),
       manager,
     });
-    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    const [clientTransport, serverTransport] =
+      InMemoryTransport.createLinkedPair();
     const client = new Client({ name: "audit-test", version: "0.1.0" });
-    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+    await Promise.all([
+      server.connect(serverTransport),
+      client.connect(clientTransport),
+    ]);
     try {
-      const opened = await client.callTool({ name: "open_quick_shell", arguments: { device: "test-device" } });
-      const quickShell = opened._meta?.quickShell as { sessionId: string; appToken: string };
+      const opened = await client.callTool({
+        name: "open_quick_shell",
+        arguments: { device: "test-device" },
+      });
+      const quickShell = opened._meta?.quickShell as {
+        sessionId: string;
+        appToken: string;
+      };
 
       const result = await client.callTool({
         name: "record_quick_shell_output_confirmed",

@@ -20,6 +20,7 @@ const harness = vi.hoisted(() => ({
   initResolvers: [] as Array<() => void>,
   terminals: [] as MockTerminal[],
   sockets: [] as MockWebSocket[],
+  webSocketConstructorError: undefined as Error | undefined,
 }));
 
 type MockHostCapabilities = {
@@ -34,7 +35,9 @@ type MockHostCapabilities = {
 
 class MockApp {
   onhostcontextchanged?: (params: Record<string, unknown>) => void;
-  ontoolinputpartial?: (params: { arguments?: Record<string, unknown> }) => void;
+  ontoolinputpartial?: (params: {
+    arguments?: Record<string, unknown>;
+  }) => void;
   ontoolinput?: (params: { arguments?: Record<string, unknown> }) => void;
   ontoolcancelled?: (params: { reason?: string }) => void;
   ontoolresult?: (params: {
@@ -50,11 +53,13 @@ class MockApp {
   readonly sendLogCalls: unknown[] = [];
   hostCapabilities: MockHostCapabilities = { message: {} };
   hostContext: Record<string, unknown> = {};
-  callServerToolImpl: (call: ToolCall) => Promise<MockToolResult> = async () => ({
-    isError: true,
-    content: [{ type: "text", text: "not mocked" }],
-  });
-  sendMessageImpl: (message: unknown) => Promise<{ isError?: boolean }> = async () => ({});
+  callServerToolImpl: (call: ToolCall) => Promise<MockToolResult> =
+    async () => ({
+      isError: true,
+      content: [{ type: "text", text: "not mocked" }],
+    });
+  sendMessageImpl: (message: unknown) => Promise<{ isError?: boolean }> =
+    async () => ({});
 
   constructor(_info?: unknown, _capabilities?: unknown, _options?: unknown) {
     harness.app = this;
@@ -75,7 +80,9 @@ class MockApp {
     return this.callServerToolImpl(call);
   }
 
-  async requestDisplayMode(params: { mode: "inline" | "fullscreen" | "pip" }): Promise<{ mode: "inline" | "fullscreen" | "pip" }> {
+  async requestDisplayMode(params: {
+    mode: "inline" | "fullscreen" | "pip";
+  }): Promise<{ mode: "inline" | "fullscreen" | "pip" }> {
     this.hostContext = { ...this.hostContext, displayMode: params.mode };
     return { mode: params.mode };
   }
@@ -115,6 +122,7 @@ class MockTerminal {
   rows = 30;
   writes: string[] = [];
   disposed = false;
+  resets = 0;
   private dataListener?: (data: string) => void;
 
   constructor() {
@@ -142,6 +150,11 @@ class MockTerminal {
     this.writes.push(data);
   }
 
+  reset(): void {
+    this.resets += 1;
+    this.writes = [];
+  }
+
   resize(cols: number, rows: number): void {
     this.cols = cols;
     this.rows = rows;
@@ -161,6 +174,8 @@ class MockWebSocket {
   readyState = MockWebSocket.CONNECTING;
 
   constructor(readonly url: string) {
+    if (harness.webSocketConstructorError)
+      throw harness.webSocketConstructorError;
     harness.sockets.push(this);
   }
 
@@ -203,7 +218,11 @@ class MockResizeObserver {
   disconnect(): void {}
 }
 
-function openedResult(sessionId: string, device = sessionId, suggestedCommand?: string) {
+function openedResult(
+  sessionId: string,
+  device = sessionId,
+  suggestedCommand?: string,
+) {
   const structuredContent: Record<string, unknown> = { sessionId, device };
   if (suggestedCommand) structuredContent.suggestedCommand = suggestedCommand;
   return {
@@ -212,7 +231,11 @@ function openedResult(sessionId: string, device = sessionId, suggestedCommand?: 
   };
 }
 
-function openedResultWithSession(sessionId: string, device = sessionId, suggestedCommand?: string) {
+function openedResultWithSession(
+  sessionId: string,
+  device = sessionId,
+  suggestedCommand?: string,
+) {
   const details = detailsResult(sessionId, device)._meta?.quickShellSession;
   if (!details) throw new Error("missing quick-shell session fixture");
   return {
@@ -232,11 +255,13 @@ function detailsResult(sessionId: string, device = sessionId): MockToolResult {
     },
     _meta: {
       quickShellSession: {
-      sessionId,
-      device,
-      wsUrl: `ws://127.0.0.1/terminal?session=${sessionId}&token=ws-${sessionId}`,
-      maxSubmitBytes: 64,
-      pingIntervalMs: 1000,
+        sessionId,
+        device,
+        wsUrl: `ws://127.0.0.1/terminal?session=${sessionId}`,
+        wsToken: `ws-${sessionId}`,
+        maxInputBytes: 16_384,
+        maxSubmitBytes: 64,
+        pingIntervalMs: 1000,
       },
     },
   };
@@ -250,6 +275,7 @@ async function loadApp(): Promise<MockApp> {
   harness.initResolvers = [];
   harness.terminals = [];
   harness.sockets = [];
+  harness.webSocketConstructorError = undefined;
   document.body.innerHTML = '<main id="app"></main>';
   document.head.querySelector("#__test-host-fonts")?.remove();
   document.documentElement.removeAttribute("data-theme");
@@ -257,7 +283,8 @@ async function loadApp(): Promise<MockApp> {
   document.documentElement.removeAttribute("data-platform");
   document.documentElement.removeAttribute("style");
   globalThis.WebSocket = MockWebSocket as unknown as typeof WebSocket;
-  globalThis.ResizeObserver = MockResizeObserver as unknown as typeof ResizeObserver;
+  globalThis.ResizeObserver =
+    MockResizeObserver as unknown as typeof ResizeObserver;
   HTMLDialogElement.prototype.showModal = function showModal() {
     this.setAttribute("open", "");
   };
@@ -290,7 +317,9 @@ async function loadApp(): Promise<MockApp> {
     loadGhosttyRuntime: () => {
       if (harness.initError) return Promise.reject(harness.initError);
       if (!harness.deferInit) return Promise.resolve();
-      return new Promise<void>((resolve) => harness.initResolvers.push(resolve));
+      return new Promise<void>((resolve) =>
+        harness.initResolvers.push(resolve),
+      );
     },
   }));
   await import("../../src/app/mcp-app.js");
@@ -313,8 +342,11 @@ async function waitForCondition(condition: () => boolean): Promise<void> {
 }
 
 function button(label: string): HTMLButtonElement {
-  const found = [...document.querySelectorAll("button")].find((candidate) => candidate.textContent === label);
-  if (!(found instanceof HTMLButtonElement)) throw new Error(`button not found: ${label}`);
+  const found = [...document.querySelectorAll("button")].find(
+    (candidate) => candidate.textContent === label,
+  );
+  if (!(found instanceof HTMLButtonElement))
+    throw new Error(`button not found: ${label}`);
   return found;
 }
 
@@ -322,15 +354,62 @@ function statusText(): string {
   return document.querySelector(".shell__status")?.textContent ?? "";
 }
 
+function openSocketWithReady(
+  socket: MockWebSocket | undefined,
+  sessionId = "s1",
+): void {
+  if (!socket) throw new Error("missing socket");
+  socket.open();
+  expect(socket.sent.map((message) => JSON.parse(message))).toContainEqual({
+    type: "authenticate",
+    token: `ws-${sessionId}`,
+  });
+  socket.message({ type: "ready", sessionId, scrollback: "" });
+}
+
 describe("quick-shell MCP app", () => {
   beforeEach(() => {
     vi.useRealTimers();
   });
 
+  it("provides host-neutral labels and live regions for assistive technology", async () => {
+    await loadApp();
+
+    expect(
+      document.querySelector(".shell")?.getAttribute("aria-labelledby"),
+    ).toBe("quick-shell-title");
+    expect(document.querySelector(".shell__status")?.getAttribute("role")).toBe(
+      "status",
+    );
+    expect(
+      document.querySelector(".shell__status")?.getAttribute("aria-live"),
+    ).toBe("polite");
+    expect(
+      document
+        .querySelector(".command-strip input")
+        ?.getAttribute("aria-label"),
+    ).toBe("Suggested command");
+    expect(document.querySelector(".terminal")?.getAttribute("role")).toBe(
+      "region",
+    );
+    expect(
+      document.querySelector(".terminal")?.getAttribute("aria-label"),
+    ).toBe("Terminal output");
+    expect(
+      document.querySelector(".send-dialog")?.getAttribute("aria-labelledby"),
+    ).toBe("quick-shell-send-title");
+    expect(
+      document
+        .querySelector(".send-dialog textarea")
+        ?.getAttribute("aria-label"),
+    ).toBe("Output to send");
+  });
+
   it("auto-connects and requests session details without a click", async () => {
     const app = await loadApp();
     app.callServerToolImpl = async (call) => {
-      if (call.name === "get_quick_shell_session") return detailsResult("s1", "fileserver");
+      if (call.name === "get_quick_shell_session")
+        return detailsResult("s1", "fileserver");
       return { structuredContent: { closed: true } };
     };
 
@@ -339,7 +418,9 @@ describe("quick-shell MCP app", () => {
     await waitForCondition(() => harness.sockets.length === 1);
 
     expect(button("Reconnect").hidden).toBe(true);
-    expect(app.serverToolCalls.map((call) => call.name)).toEqual(["get_quick_shell_session"]);
+    expect(app.serverToolCalls.map((call) => call.name)).toEqual([
+      "get_quick_shell_session",
+    ]);
     expect(harness.sockets).toHaveLength(1);
     expect(harness.sockets[0]?.url).toContain("session=s1");
   });
@@ -358,10 +439,16 @@ describe("quick-shell MCP app", () => {
   it("falls back to app-only terminal tools when the WebSocket is unreachable", async () => {
     const app = await loadApp();
     app.callServerToolImpl = async (call) => {
-      if (call.name === "get_quick_shell_session") return detailsResult("s1", "fileserver");
+      if (call.name === "get_quick_shell_session")
+        return detailsResult("s1", "fileserver");
       if (call.name === "poll_quick_shell_session") {
         return {
-          structuredContent: { sessionId: "s1", device: "fileserver", exited: false, exitCode: null },
+          structuredContent: {
+            sessionId: "s1",
+            device: "fileserver",
+            exited: false,
+            exitCode: null,
+          },
           _meta: {
             quickShellPoll: {
               sessionId: "s1",
@@ -374,23 +461,290 @@ describe("quick-shell MCP app", () => {
           },
         };
       }
-      if (call.name === "write_quick_shell_input") return { structuredContent: { written: true } };
+      if (call.name === "write_quick_shell_input")
+        return { structuredContent: { written: true } };
       return { structuredContent: { closed: true } };
     };
 
     app.ontoolresult?.(openedResultWithSession("s1", "fileserver"));
-    await waitForCondition(() => harness.sockets.length === 1 && harness.terminals.length === 1);
+    await waitForCondition(
+      () => harness.sockets.length === 1 && harness.terminals.length === 1,
+    );
+    harness.terminals[0]?.emitData("queued-before-fallback");
     harness.sockets[0]?.error();
 
-    await waitForCondition(() => harness.terminals[0]?.writes.includes("hello from fallback"));
-    expect(app.serverToolCalls.map((call) => call.name)).toContain("get_quick_shell_session");
-    expect(app.serverToolCalls.map((call) => call.name)).toContain("poll_quick_shell_session");
+    await waitForCondition(() =>
+      harness.terminals[0]?.writes.includes("hello from fallback"),
+    );
+    expect(app.serverToolCalls.map((call) => call.name)).toContain(
+      "get_quick_shell_session",
+    );
+    expect(app.serverToolCalls.map((call) => call.name)).toContain(
+      "poll_quick_shell_session",
+    );
     expect(statusText()).toBe("Connected");
 
     harness.terminals[0]?.emitData("whoami");
-    await waitForCondition(() => app.serverToolCalls.some((call) => call.name === "write_quick_shell_input"));
-    expect(app.serverToolCalls.find((call) => call.name === "write_quick_shell_input")).toMatchObject({
-      arguments: { sessionId: "s1", appToken: "app-s1", data: "whoami" },
+    await waitForCondition(
+      () =>
+        app.serverToolCalls.filter(
+          (call) => call.name === "write_quick_shell_input",
+        ).length === 2,
+    );
+    expect(
+      app.serverToolCalls.filter(
+        (call) => call.name === "write_quick_shell_input",
+      ),
+    ).toEqual([
+      {
+        name: "write_quick_shell_input",
+        arguments: {
+          sessionId: "s1",
+          appToken: "app-s1",
+          data: "queued-before-fallback",
+        },
+      },
+      {
+        name: "write_quick_shell_input",
+        arguments: { sessionId: "s1", appToken: "app-s1", data: "whoami" },
+      },
+    ]);
+  });
+
+  it("falls back to app-only terminal tools when WebSocket construction fails", async () => {
+    const app = await loadApp();
+    harness.webSocketConstructorError = new Error("blocked by host policy");
+    app.callServerToolImpl = async (call) => {
+      if (call.name === "get_quick_shell_session")
+        return detailsResult("s1", "fileserver");
+      if (call.name === "poll_quick_shell_session") {
+        return {
+          structuredContent: {
+            sessionId: "s1",
+            device: "fileserver",
+            exited: false,
+            exitCode: null,
+          },
+          _meta: {
+            quickShellPoll: {
+              sessionId: "s1",
+              chunks: [],
+              nextSeq: 0,
+              reset: false,
+              exited: false,
+              exitCode: null,
+            },
+          },
+        };
+      }
+      return { structuredContent: { closed: true } };
+    };
+
+    app.ontoolresult?.(openedResultWithSession("s1", "fileserver"));
+
+    await waitForCondition(() =>
+      app.serverToolCalls.some(
+        (call) => call.name === "poll_quick_shell_session",
+      ),
+    );
+    expect(harness.sockets).toHaveLength(0);
+    expect(statusText()).toBe("Connected");
+  });
+
+  it("applies fallback poll reset snapshots without duplicating snapshot chunks", async () => {
+    const app = await loadApp();
+    harness.webSocketConstructorError = new Error("blocked by host policy");
+    let pollCount = 0;
+    app.callServerToolImpl = async (call) => {
+      if (call.name === "get_quick_shell_session")
+        return detailsResult("s1", "fileserver");
+      if (call.name === "poll_quick_shell_session") {
+        pollCount += 1;
+        if (pollCount === 1) {
+          return {
+            structuredContent: {
+              sessionId: "s1",
+              device: "fileserver",
+              exited: false,
+              exitCode: null,
+            },
+            _meta: {
+              quickShellPoll: {
+                sessionId: "s1",
+                chunks: [{ seq: 1, data: "first" }],
+                nextSeq: 1,
+                reset: false,
+                exited: false,
+                exitCode: null,
+              },
+            },
+          };
+        }
+        return {
+          structuredContent: {
+            sessionId: "s1",
+            device: "fileserver",
+            exited: false,
+            exitCode: null,
+          },
+          _meta: {
+            quickShellPoll: {
+              sessionId: "s1",
+              chunks: [
+                { seq: 2, data: "snapshot", snapshot: true },
+                { seq: 3, data: "delta" },
+              ],
+              nextSeq: 3,
+              reset: true,
+              resetReason: "stale_cursor",
+              snapshot: "snapshot",
+              snapshotBytes: 8,
+              snapshotSeq: 2,
+              truncatedBytes: 5,
+              exited: false,
+              exitCode: null,
+            },
+          },
+        };
+      }
+      return { structuredContent: { closed: true } };
+    };
+
+    app.ontoolresult?.(openedResultWithSession("s1", "fileserver"));
+
+    await waitForCondition(() =>
+      harness.terminals[0]?.writes.includes("first"),
+    );
+    await waitForCondition(() =>
+      harness.terminals[0]?.writes.includes("delta"),
+    );
+    expect(harness.terminals[0]?.resets).toBeGreaterThan(0);
+    expect(harness.terminals[0]?.writes).toEqual(["snapshot", "delta"]);
+    expect(statusText()).toBe("Connected, earlier output was truncated");
+  });
+
+  it("does not let stale fallback writes block a newer session", async () => {
+    const app = await loadApp();
+    harness.webSocketConstructorError = new Error("blocked by host policy");
+    let releaseOldWrite: (() => void) | undefined;
+    app.callServerToolImpl = async (call) => {
+      const sessionId = String(call.arguments.sessionId);
+      if (call.name === "get_quick_shell_session")
+        return detailsResult(sessionId);
+      if (call.name === "poll_quick_shell_session") {
+        return {
+          structuredContent: {
+            sessionId,
+            device: sessionId,
+            exited: false,
+            exitCode: null,
+          },
+          _meta: {
+            quickShellPoll: {
+              sessionId,
+              chunks: [],
+              nextSeq: 0,
+              reset: false,
+              exited: false,
+              exitCode: null,
+            },
+          },
+        };
+      }
+      if (call.name === "write_quick_shell_input") {
+        if (
+          call.arguments.sessionId === "s1" &&
+          call.arguments.data === "old-one"
+        ) {
+          return new Promise<MockToolResult>((resolve) => {
+            releaseOldWrite = () =>
+              resolve({ structuredContent: { written: true } });
+          });
+        }
+        return { structuredContent: { written: true } };
+      }
+      return { structuredContent: { closed: true } };
+    };
+
+    app.ontoolresult?.(openedResultWithSession("s1"));
+    await waitForCondition(() =>
+      app.serverToolCalls.some(
+        (call) => call.name === "poll_quick_shell_session",
+      ),
+    );
+    harness.terminals[0]?.emitData("old-one");
+    harness.terminals[0]?.emitData("old-two");
+    await waitForCondition(() =>
+      app.serverToolCalls.some(
+        (call) =>
+          call.name === "write_quick_shell_input" &&
+          call.arguments.data === "old-one",
+      ),
+    );
+
+    app.ontoolresult?.(openedResultWithSession("s2"));
+    await waitForCondition(() =>
+      app.serverToolCalls.some(
+        (call) => call.name === "close_quick_shell_session",
+      ),
+    );
+    await waitForCondition(() =>
+      app.serverToolCalls.some(
+        (call) =>
+          call.name === "poll_quick_shell_session" &&
+          call.arguments.sessionId === "s2",
+      ),
+    );
+    harness.terminals[1]?.emitData("fresh");
+
+    await waitForCondition(() =>
+      app.serverToolCalls.some(
+        (call) =>
+          call.name === "write_quick_shell_input" &&
+          call.arguments.data === "fresh",
+      ),
+    );
+    expect(app.serverToolCalls).not.toContainEqual({
+      name: "write_quick_shell_input",
+      arguments: { sessionId: "s1", appToken: "app-s1", data: "old-two" },
+    });
+    releaseOldWrite?.();
+    await flush();
+    expect(app.serverToolCalls).not.toContainEqual({
+      name: "write_quick_shell_input",
+      arguments: { sessionId: "s1", appToken: "app-s1", data: "old-two" },
+    });
+  });
+
+  it("rejects terminal input larger than the advertised byte limit", async () => {
+    const app = await loadApp();
+    app.callServerToolImpl = async (call) => {
+      if (call.name === "get_quick_shell_session") {
+        const result = detailsResult("s1", "fileserver");
+        const quickShellSession = result._meta?.quickShellSession as Record<
+          string,
+          unknown
+        >;
+        quickShellSession.maxInputBytes = 4;
+        return result;
+      }
+      return { structuredContent: { closed: true } };
+    };
+
+    app.ontoolresult?.(openedResult("s1", "fileserver"));
+    await waitForCondition(
+      () => harness.sockets.length === 1 && harness.terminals.length === 1,
+    );
+    openSocketWithReady(harness.sockets[0]);
+
+    harness.terminals[0]?.emitData("🙂x");
+
+    expect(statusText()).toBe("Input is larger than 4 bytes.");
+    expect(
+      harness.sockets[0]?.sent.map((message) => JSON.parse(message)),
+    ).not.toContainEqual({
+      type: "input",
+      data: "🙂x",
     });
   });
 
@@ -412,9 +766,15 @@ describe("quick-shell MCP app", () => {
 
     expect(document.documentElement.dataset.theme).toBe("light");
     expect(document.documentElement.dataset.platform).toBe("mobile");
-    expect(document.documentElement.style.getPropertyValue("--color-text-primary")).toBe("#123456");
-    expect(document.documentElement.style.getPropertyValue("--qs-safe-area-left")).toBe("5px");
-    expect(document.head.querySelector("#__test-host-fonts")?.textContent).toContain("TestSans");
+    expect(
+      document.documentElement.style.getPropertyValue("--color-text-primary"),
+    ).toBe("#123456");
+    expect(
+      document.documentElement.style.getPropertyValue("--qs-safe-area-left"),
+    ).toBe("5px");
+    expect(
+      document.head.querySelector("#__test-host-fonts")?.textContent,
+    ).toContain("TestSans");
     expect(button("Fullscreen").hidden).toBe(false);
 
     button("Fullscreen").click();
@@ -429,7 +789,8 @@ describe("quick-shell MCP app", () => {
     const app = await loadApp();
     harness.deferInit = true;
     app.callServerToolImpl = async (call) => {
-      if (call.name === "get_quick_shell_session") return detailsResult(String(call.arguments.sessionId));
+      if (call.name === "get_quick_shell_session")
+        return detailsResult(String(call.arguments.sessionId));
       return { structuredContent: { closed: true } };
     };
 
@@ -449,21 +810,59 @@ describe("quick-shell MCP app", () => {
     expect(harness.sockets[0]?.url).toContain("session=s2");
   });
 
+  it("closes a stale rapid tool-result session before the newer one takes over", async () => {
+    const app = await loadApp();
+    app.callServerToolImpl = async (call) => {
+      if (call.name === "get_quick_shell_session")
+        return detailsResult(String(call.arguments.sessionId));
+      return { structuredContent: { closed: true } };
+    };
+
+    app.ontoolresult?.(openedResult("s1"));
+    app.ontoolresult?.(openedResult("s2"));
+
+    await waitForCondition(() =>
+      app.serverToolCalls.some(
+        (call) => call.name === "close_quick_shell_session",
+      ),
+    );
+    expect(app.serverToolCalls).toContainEqual({
+      name: "close_quick_shell_session",
+      arguments: { sessionId: "s1", appToken: "app-s1" },
+    });
+    await waitForCondition(() => harness.sockets.length === 1);
+    expect(harness.sockets[0]?.url).toContain("session=s2");
+  });
+
   it("queues terminal input until the WebSocket opens", async () => {
     const app = await loadApp();
     app.callServerToolImpl = async (call) => {
-      if (call.name === "get_quick_shell_session") return detailsResult("s1", "fileserver");
+      if (call.name === "get_quick_shell_session")
+        return detailsResult("s1", "fileserver");
       return { structuredContent: { closed: true } };
     };
 
     app.ontoolresult?.(openedResult("s1", "fileserver"));
-    await waitForCondition(() => harness.sockets.length === 1 && harness.terminals.length === 1);
+    await waitForCondition(
+      () => harness.sockets.length === 1 && harness.terminals.length === 1,
+    );
 
     harness.terminals[0]?.emitData("whoami");
     expect(harness.sockets[0]?.sent).toEqual([]);
 
     harness.sockets[0]?.open();
-    expect(harness.sockets[0]?.sent.map((message) => JSON.parse(message))).toContainEqual({
+    expect(
+      harness.sockets[0]?.sent.map((message) => JSON.parse(message)),
+    ).toEqual([{ type: "authenticate", token: "ws-s1" }]);
+
+    harness.sockets[0]?.message({
+      type: "ready",
+      sessionId: "s1",
+      scrollback: "",
+    });
+    expect(
+      harness.sockets[0]?.sent.map((message) => JSON.parse(message)),
+    ).toContainEqual({
       type: "input",
       data: "whoami",
     });
@@ -472,12 +871,13 @@ describe("quick-shell MCP app", () => {
   it("uses the bridge close message when closing an active terminal", async () => {
     const app = await loadApp();
     app.callServerToolImpl = async (call) => {
-      if (call.name === "get_quick_shell_session") return detailsResult("s1", "fileserver");
+      if (call.name === "get_quick_shell_session")
+        return detailsResult("s1", "fileserver");
       return { structuredContent: { closed: true } };
     };
     app.ontoolresult?.(openedResult("s1", "fileserver"));
     await waitForCondition(() => harness.sockets.length === 1);
-    harness.sockets[0]?.open();
+    openSocketWithReady(harness.sockets[0]);
     const socket = harness.sockets[0];
     if (!socket) throw new Error("missing socket");
     socket.sent.length = 0;
@@ -485,15 +885,25 @@ describe("quick-shell MCP app", () => {
     button("Close").click();
     await flush();
 
-    expect(app.serverToolCalls.map((call) => call.name)).toEqual(["get_quick_shell_session"]);
-    expect(socket.sent.map((message) => JSON.parse(message))).toContainEqual({ type: "close" });
+    expect(app.serverToolCalls.map((call) => call.name)).toEqual([
+      "get_quick_shell_session",
+    ]);
+    expect(socket.sent.map((message) => JSON.parse(message))).toContainEqual({
+      type: "close",
+    });
   });
 
   it("keeps the previous capability and closes the unused new session when switching cannot close the old one", async () => {
     const app = await loadApp();
     app.callServerToolImpl = async (call) => {
-      if (call.name === "close_quick_shell_session" && call.arguments.sessionId === "s1") {
-        return { isError: true, content: [{ type: "text", text: "close failed" }] };
+      if (
+        call.name === "close_quick_shell_session" &&
+        call.arguments.sessionId === "s1"
+      ) {
+        return {
+          isError: true,
+          content: [{ type: "text", text: "close failed" }],
+        };
       }
       return { structuredContent: { closed: true } };
     };
@@ -505,7 +915,13 @@ describe("quick-shell MCP app", () => {
 
     expect(statusText()).toBe("close failed");
     expect(button("Reconnect").hidden).toBe(true);
-    expect((document.querySelector(".command-strip input") as HTMLInputElement | null)?.value).toBe("uptime");
+    expect(
+      (
+        document.querySelector(
+          ".command-strip input",
+        ) as HTMLInputElement | null
+      )?.value,
+    ).toBe("uptime");
     expect(app.serverToolCalls).toEqual([
       {
         name: "close_quick_shell_session",
@@ -521,13 +937,14 @@ describe("quick-shell MCP app", () => {
   it("returns to a reconnectable state when the WebSocket closes", async () => {
     const app = await loadApp();
     app.callServerToolImpl = async (call) => {
-      if (call.name === "get_quick_shell_session") return detailsResult("s1", "fileserver");
+      if (call.name === "get_quick_shell_session")
+        return detailsResult("s1", "fileserver");
       return { structuredContent: { closed: true } };
     };
 
     app.ontoolresult?.(openedResult("s1", "fileserver"));
     await waitForCondition(() => harness.sockets.length === 1);
-    harness.sockets[0]?.open();
+    openSocketWithReady(harness.sockets[0]);
     expect(button("Send output").disabled).toBe(false);
 
     harness.sockets[0]?.close();
@@ -546,14 +963,18 @@ describe("quick-shell MCP app", () => {
       updateModelContext: { text: {}, structuredContent: {} },
     };
     app.callServerToolImpl = async (call) => {
-      if (call.name === "get_quick_shell_session") return detailsResult("s1", "fileserver");
+      if (call.name === "get_quick_shell_session")
+        return detailsResult("s1", "fileserver");
       return { structuredContent: { closed: true } };
     };
 
     app.ontoolresult?.(openedResult("s1", "fileserver"));
     await waitForCondition(() => harness.sockets.length === 1);
-    harness.sockets[0]?.open();
-    harness.sockets[0]?.message({ type: "output", data: "visible\u001b]52;c;secret\u0007" });
+    openSocketWithReady(harness.sockets[0]);
+    harness.sockets[0]?.message({
+      type: "output",
+      data: "visible\u001b]52;c;secret\u0007",
+    });
 
     expect(button("Download output").hidden).toBe(false);
     button("Download output").click();
@@ -572,15 +993,20 @@ describe("quick-shell MCP app", () => {
         },
       ],
     });
-    expect(JSON.stringify(app.updateModelContextCalls)).toContain("quick-shell state");
-    expect(JSON.stringify(app.updateModelContextCalls)).not.toMatch(/token=|app-s1|ws-s1/);
+    expect(JSON.stringify(app.updateModelContextCalls)).toContain(
+      "quick-shell state",
+    );
+    expect(JSON.stringify(app.updateModelContextCalls)).not.toMatch(
+      /token=|app-s1|ws-s1/,
+    );
   });
 
   it("rolls back active session state when terminal initialization fails", async () => {
     const app = await loadApp();
     harness.initError = new Error("ghostty init failed");
     app.callServerToolImpl = async (call) => {
-      if (call.name === "get_quick_shell_session") return detailsResult("s1", "fileserver");
+      if (call.name === "get_quick_shell_session")
+        return detailsResult("s1", "fileserver");
       return { structuredContent: { closed: true } };
     };
 
@@ -596,36 +1022,44 @@ describe("quick-shell MCP app", () => {
   it("does not call the app close tool for an active terminal", async () => {
     const app = await loadApp();
     app.callServerToolImpl = async (call) => {
-      if (call.name === "get_quick_shell_session") return detailsResult("s1", "fileserver");
-      if (call.name === "close_quick_shell_session") throw new Error("gateway unavailable");
+      if (call.name === "get_quick_shell_session")
+        return detailsResult("s1", "fileserver");
+      if (call.name === "close_quick_shell_session")
+        throw new Error("gateway unavailable");
       return { structuredContent: { closed: true } };
     };
 
     app.ontoolresult?.(openedResult("s1", "fileserver"));
     await waitForCondition(() => harness.sockets.length === 1);
-    harness.sockets[0]?.open();
+    openSocketWithReady(harness.sockets[0]);
 
     button("Close").click();
     await flush();
 
-    expect(app.serverToolCalls.map((call) => call.name)).toEqual(["get_quick_shell_session"]);
-    expect(harness.sockets[0]?.sent.map((message) => JSON.parse(message))).toContainEqual({ type: "close" });
+    expect(app.serverToolCalls.map((call) => call.name)).toEqual([
+      "get_quick_shell_session",
+    ]);
+    expect(
+      harness.sockets[0]?.sent.map((message) => JSON.parse(message)),
+    ).toContainEqual({ type: "close" });
   });
 
   it("gates confirm send while a host send is pending", async () => {
     const app = await loadApp();
     let resolveSend: (() => void) | undefined;
-    app.sendMessageImpl = async () => new Promise((resolve) => {
-      resolveSend = () => resolve({});
-    });
+    app.sendMessageImpl = async () =>
+      new Promise((resolve) => {
+        resolveSend = () => resolve({});
+      });
     app.callServerToolImpl = async (call) => {
-      if (call.name === "get_quick_shell_session") return detailsResult("s1", "fileserver");
+      if (call.name === "get_quick_shell_session")
+        return detailsResult("s1", "fileserver");
       return { structuredContent: { closed: true } };
     };
 
     app.ontoolresult?.(openedResult("s1", "fileserver"));
     await waitForCondition(() => harness.sockets.length === 1);
-    harness.sockets[0]?.open();
+    openSocketWithReady(harness.sockets[0]);
     harness.sockets[0]?.message({ type: "output", data: "hello" });
     button("Send output").click();
 
@@ -642,17 +1076,23 @@ describe("quick-shell MCP app", () => {
   it("sanitizes terminal controls before review and send", async () => {
     const app = await loadApp();
     app.callServerToolImpl = async (call) => {
-      if (call.name === "get_quick_shell_session") return detailsResult("s1", "fileserver");
+      if (call.name === "get_quick_shell_session")
+        return detailsResult("s1", "fileserver");
       return { structuredContent: { closed: true } };
     };
 
     app.ontoolresult?.(openedResult("s1", "fileserver"));
     await waitForCondition(() => harness.sockets.length === 1);
-    harness.sockets[0]?.open();
-    harness.sockets[0]?.message({ type: "output", data: "visible\u001b]52;c;secret\u0007\u001b[2K" });
+    openSocketWithReady(harness.sockets[0]);
+    harness.sockets[0]?.message({
+      type: "output",
+      data: "visible\u001b]52;c;secret\u0007\u001b[2K",
+    });
     button("Send output").click();
 
-    const textarea = document.querySelector(".send-dialog textarea:not(.send-dialog__fallback)") as HTMLTextAreaElement | null;
+    const textarea = document.querySelector(
+      ".send-dialog textarea:not(.send-dialog__fallback)",
+    ) as HTMLTextAreaElement | null;
     if (!textarea) throw new Error("send textarea not found");
     expect(textarea.value).toBe("visible");
 

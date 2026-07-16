@@ -1,13 +1,21 @@
 #!/usr/bin/env node
 import { spawn as spawnPty } from "node-pty";
 import { loadRuntimeConfig, type RuntimeConfig } from "../server/config.js";
-import { loadDeviceMetadata, type DeviceMetadataConfig } from "../server/device-metadata.js";
+import {
+  loadDeviceMetadata,
+  type DeviceMetadataConfig,
+} from "../server/device-metadata.js";
 import { sanitizeSuggestedCommand, validateDevice } from "../server/device.js";
-import { loadAllowedSshHosts } from "../server/ssh-config.js";
+import {
+  buildSshCommandArgs,
+  loadAllowedSshHosts,
+} from "../server/ssh-config.js";
 
 export interface CliPtyProcess {
   onData(listener: (data: string) => void): { dispose(): void };
-  onExit(listener: (event: { exitCode: number | null }) => void): { dispose(): void };
+  onExit(listener: (event: { exitCode: number | null }) => void): {
+    dispose(): void;
+  };
   write(data: string): void;
   resize(cols: number, rows: number): void;
   kill(signal?: string): void;
@@ -27,7 +35,6 @@ export type CliPtyFactory = (
 
 export interface CliArgs {
   device?: string;
-  reason?: string;
   suggestedCommand?: string;
   prefillDelayMs: number;
   list: boolean;
@@ -63,16 +70,26 @@ export interface RunQuickShellCliOptions {
 
 const USAGE = `Usage:
   quick-shell --list
-  quick-shell <device> [--suggest <command>] [--reason <text>] [--prefill-delay-ms <ms>]
+  quick-shell <device> [--suggest <command>] [--prefill-delay-ms <ms>]
 `;
 
-const ENV_ALLOWLIST = ["HOME", "USER", "LOGNAME", "PATH", "SHELL", "SSH_AUTH_SOCK", "TERM"];
+const ENV_ALLOWLIST = [
+  "HOME",
+  "USER",
+  "LOGNAME",
+  "PATH",
+  "SHELL",
+  "SSH_AUTH_SOCK",
+  "TERM",
+];
 
 function defaultPtyFactory(): CliPtyFactory {
   return (file, args, options) => spawnPty(file, args, options);
 }
 
-function ptyEnv(source: NodeJS.ProcessEnv = process.env): Record<string, string> {
+function ptyEnv(
+  source: NodeJS.ProcessEnv = process.env,
+): Record<string, string> {
   const env: Record<string, string> = {};
   for (const key of ENV_ALLOWLIST) {
     const value = source[key];
@@ -84,7 +101,8 @@ function ptyEnv(source: NodeJS.ProcessEnv = process.env): Record<string, string>
 
 function readFlagValue(args: string[], index: number, flag: string): string {
   const value = args[index + 1];
-  if (value === undefined || value.startsWith("--")) throw new Error(`${flag} requires a value`);
+  if (value === undefined || value.startsWith("--"))
+    throw new Error(`${flag} requires a value`);
   return value;
 }
 
@@ -104,13 +122,11 @@ export function parseCliArgs(args: string[]): CliArgs {
     } else if (arg === "--suggest" || arg === "--suggested-command") {
       parsed.suggestedCommand = readFlagValue(args, index, arg);
       index += 1;
-    } else if (arg === "--reason") {
-      parsed.reason = readFlagValue(args, index, arg);
-      index += 1;
     } else if (arg === "--prefill-delay-ms") {
       const raw = readFlagValue(args, index, arg);
       const value = Number(raw);
-      if (!Number.isInteger(value) || value < 0) throw new Error("--prefill-delay-ms must be a non-negative integer");
+      if (!Number.isInteger(value) || value < 0)
+        throw new Error("--prefill-delay-ms must be a non-negative integer");
       parsed.prefillDelayMs = value;
       index += 1;
     } else if (arg.startsWith("--")) {
@@ -122,14 +138,25 @@ export function parseCliArgs(args: string[]): CliArgs {
     }
   }
 
-  if (!parsed.help && !parsed.list && !parsed.device) throw new Error("device is required");
+  if (!parsed.help && !parsed.list && !parsed.device)
+    throw new Error("device is required");
   return parsed;
 }
 
-function formatDevices(allowedHosts: ReadonlySet<string>, metadata: DeviceMetadataConfig): string {
+function formatDevices(
+  allowedHosts: ReadonlySet<string>,
+  metadata: DeviceMetadataConfig,
+): string {
   const lines = [...allowedHosts].sort().map((alias) => {
     const device = metadata.devices.get(alias);
-    return [alias, device?.label ?? "", device?.group ?? "", device?.danger ?? ""].join("\t").replace(/\t+$/g, "");
+    return [
+      alias,
+      device?.label ?? "",
+      device?.group ?? "",
+      device?.danger ?? "",
+    ]
+      .join("\t")
+      .replace(/\t+$/g, "");
   });
   return `${lines.join("\n")}${lines.length > 0 ? "\n" : ""}`;
 }
@@ -141,20 +168,28 @@ async function loadDefaults(options: RunQuickShellCliOptions): Promise<{
 }> {
   const config = options.config ?? loadRuntimeConfig();
   const [allowedHosts, deviceMetadata] = await Promise.all([
-    options.allowedHosts ? Promise.resolve(options.allowedHosts) : loadAllowedSshHosts(config.sshConfigPath),
-    options.deviceMetadata ? Promise.resolve(options.deviceMetadata) : loadDeviceMetadata(config.quickShellConfigPath),
+    options.allowedHosts
+      ? Promise.resolve(options.allowedHosts)
+      : loadAllowedSshHosts(config.sshConfigPath),
+    options.deviceMetadata
+      ? Promise.resolve(options.deviceMetadata)
+      : loadDeviceMetadata(config.quickShellConfigPath),
   ]);
   return { config, allowedHosts, deviceMetadata };
 }
 
-export async function runQuickShellCli(options: RunQuickShellCliOptions): Promise<CliResult> {
+export async function runQuickShellCli(
+  options: RunQuickShellCliOptions,
+): Promise<CliResult> {
   const stdout = options.stdout ?? process.stdout;
   const stderr = options.stderr ?? process.stderr;
   let parsed: CliArgs;
   try {
     parsed = parseCliArgs(options.args);
   } catch (error) {
-    stderr.write(`${error instanceof Error ? error.message : String(error)}\n${USAGE}`);
+    stderr.write(
+      `${error instanceof Error ? error.message : String(error)}\n${USAGE}`,
+    );
     return { exitCode: 2 };
   }
 
@@ -170,16 +205,27 @@ export async function runQuickShellCli(options: RunQuickShellCliOptions): Promis
   }
 
   try {
-    const device = validateDevice(parsed.device!, allowedHosts, config.maxDeviceLength);
-    const suggested = sanitizeSuggestedCommand(parsed.suggestedCommand, config.maxSuggestedCommandLength);
+    const device = validateDevice(
+      parsed.device!,
+      allowedHosts,
+      config.maxDeviceLength,
+    );
+    const suggested = sanitizeSuggestedCommand(
+      parsed.suggestedCommand,
+      config.maxSuggestedCommandLength,
+    );
     const ptyFactory = options.ptyFactory ?? defaultPtyFactory();
-    const pty = ptyFactory("ssh", [device], {
-      name: "xterm-256color",
-      cols: Number(process.env.COLUMNS) || 100,
-      rows: Number(process.env.LINES) || 30,
-      cwd: process.env.HOME,
-      env: ptyEnv(),
-    });
+    const pty = ptyFactory(
+      "ssh",
+      buildSshCommandArgs(config.sshConfigPath, device),
+      {
+        name: "xterm-256color",
+        cols: Number(process.env.COLUMNS) || 100,
+        rows: Number(process.env.LINES) || 30,
+        cwd: process.env.HOME,
+        env: ptyEnv(),
+      },
+    );
 
     const stdin = options.stdin ?? process.stdin;
     const onInput = (chunk: Buffer | string) => pty.write(String(chunk));

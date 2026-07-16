@@ -10,7 +10,7 @@ export default defineConfig({
   plugins: [viteSingleFile()],
   build: {
     outDir: "dist/app",
-    emptyOutDir: false,
+    emptyOutDir: !isDevelopment,
     sourcemap: isDevelopment ? "inline" : undefined,
     cssMinify: !isDevelopment,
     minify: !isDevelopment,

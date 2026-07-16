@@ -5,17 +5,26 @@
   "private": true,
   "description": "Human-approved quick shell MCP App for SSH-backed unblock commands",
   "main": "dist/server/server/main.js",
+  "packageManager": "npm@11.16.0",
+  "engines": {
+    "node": ">=24.0.0",
+    "npm": ">=11.0.0"
+  },
   "bin": {
     "quick-shell": "dist/server/cli/main.js"
   },
   "scripts": {
-    "build": "npm run typecheck && cross-env INPUT=mcp-app.html vite build && tsc -p tsconfig.server.json && node scripts/write-build-manifest.mjs",
+    "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
+    "build": "npm run clean && npm run typecheck && cross-env INPUT=mcp-app.html vite build && tsc -p tsconfig.server.json && node scripts/write-build-manifest.mjs",
     "dev": "cross-env NODE_ENV=development QUICK_SHELL_HTTP_TOKEN=dev-local-token concurrently \"cross-env INPUT=mcp-app.html vite build --watch\" \"tsx watch src/server/main.ts --http\"",
     "serve": "node dist/server/server/main.js --http",
     "serve:stdio": "node dist/server/server/main.js --stdio",
+    "lint": "node scripts/lint-static.mjs",
+    "format:check": "prettier --check \"src/**/*.{ts,css}\" \"tests/**/*.ts\" \"scripts/**/*.{ts,mjs}\" \"*.{json,ts}\" \"docs/**/*.md\" \"README.md\" \".github/**/*.yml\"",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit",
-    "check": "npm run build && npm test",
+    "test:coverage": "vitest run --coverage",
+    "typecheck": "tsc -p tsconfig.app.json --noEmit && tsc -p tsconfig.server.json --noEmit && tsc -p tsconfig.scripts.json --noEmit && tsc -p tsconfig.test.json --noEmit",
+    "check": "npm run build && npm run lint && npm run format:check && npm run test:coverage",
     "smoke:stdio": "npm run build && tsx scripts/smoke-build-and-stdio.ts",
     "verify:deployment": "tsx scripts/verify-deployment.ts"
   },
@@ -32,9 +41,11 @@
     "@types/express": "^5.0.6",
     "@types/node": "^26.1.1",
     "@types/ws": "^8.18.1",
+    "@vitest/coverage-v8": "^4.1.10",
     "concurrently": "^10.0.3",
     "cross-env": "^10.1.0",
     "happy-dom": "^20.10.6",
+    "prettier": "^3.9.5",
     "tsx": "^4.23.0",
     "typescript": "^7.0.2",
     "vite": "^8.1.4",

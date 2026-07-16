@@ -1,26 +1,25 @@
 # Manual MCP App Smoke
 
-Use this checklist in a host that supports MCP Apps.
+Use this matrix in a host that supports MCP Apps. Run the baseline scenario after every deploy, then choose the scenario rows that match the changed surface.
 
-1. Ask the agent to call `quick_shell.open_quick_shell` with an SSH alias and a harmless suggested command.
-2. Confirm the app renders with the expected device label when `quick-shell.toml` metadata exists.
-3. Confirm the terminal begins connecting immediately without an extra `Connect` click.
-4. In remote gateway mode, confirm a direct WebSocket failure recovers through the app-only fallback and the shell becomes usable.
-5. Confirm the suggested command is visible in the command field and is not inserted automatically.
-6. Click `Insert` and confirm the command text appears without pressing Enter.
-7. Edit the command in the terminal and run it manually.
-8. If the host offers fullscreen, click `Fullscreen` and confirm the app expands, then click `Inline`.
-9. If the host offers downloads, click `Download output` and confirm the exported file contains sanitized recent scrollback.
-10. Click `Send output` and confirm the dialog is prefilled with recent bounded scrollback.
-11. Edit the output snippet and confirm byte counts update.
-12. Confirm likely secret warnings appear for token-like text.
-13. Click `Confirm` and verify the approved output appears in the conversation.
-14. Confirm the terminal remains open after output is sent.
-15. Click `Close` and verify the session closes without stale terminal output.
+| Scenario                          | Setup                                                                                                                                               | Steps                                                                                                                         | Expected result                                                                                                                                                                                     |
+| --------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Baseline app attach               | SSH config contains an explicit harmless alias. Optional `quick-shell.toml` contains label/group metadata for that alias.                           | Ask the agent to call `quick_shell.open_quick_shell` with the alias and a harmless `suggested_command`.                       | The app renders with host-neutral copy, shows the metadata label when present, and begins connecting without an extra Connect click. No app token or WebSocket token appears in model-visible text. |
+| Suggested command prefill         | Use a suggested command such as `hostname`.                                                                                                         | Confirm the command appears in the command field. Click `Insert`, edit if desired, then press Enter manually in the terminal. | The command is not inserted automatically. `Insert` writes the edited text only and does not press Enter.                                                                                           |
+| Direct bridge terminal            | Host browser can reach the configured bridge public URL.                                                                                            | Wait for the terminal to connect and run a harmless command manually.                                                         | The shell is usable through the WebSocket bridge. `Reconnect` stays hidden unless the automatic attach fails.                                                                                       |
+| App-only fallback                 | Block direct browser access to the bridge, or use a host/network path where the WebSocket cannot connect while app-only MCP tools remain available. | Trigger `open_quick_shell` and wait for fallback recovery. Type and run a harmless command.                                   | The app falls back to app-only MCP polling/input and becomes usable. Terminal output remains hidden from model-visible tool fields.                                                                 |
+| Host capability gating            | Run in hosts with and without fullscreen, download, model-context, and logging capabilities.                                                        | Inspect controls, click `Fullscreen`/`Inline` when offered, and click `Download output` when offered.                         | Host-specific controls appear only when the host advertises the capability. Downloaded output contains sanitized recent scrollback.                                                                 |
+| Output confirmation               | Produce a small amount of harmless output.                                                                                                          | Click `Send output`, edit the snippet, confirm byte counts update, then click `Confirm`.                                      | The dialog contains bounded sanitized output. The edited output is inserted into the conversation through `app.sendMessage`. The terminal remains open after send.                                  |
+| Output warning and not-DLP caveat | Produce output containing token-like text in a test-only value.                                                                                     | Click `Send output`. Review warnings, edit or remove the sensitive-looking text, and either cancel or confirm safe text.      | Likely secret warnings appear for common patterns. The user can still edit or cancel; warnings are advisory and not a DLP guarantee.                                                                |
+| Unsupported output host           | Use a host that renders the app but rejects or lacks `app.sendMessage`.                                                                             | Click `Send output`, then `Confirm`.                                                                                          | The send dialog remains open and shows a copyable fallback. Full v1 output return is considered unsupported on that host.                                                                           |
+| Unsupported app rendering         | Use a host that can call the MCP tool but does not render MCP Apps.                                                                                 | Trigger `open_quick_shell`.                                                                                                   | Model-visible text says the session was opened for the device. Hidden capability values are not visible to the model, but the terminal UI cannot be used.                                           |
+| Remote bridge origin policy       | Configure `QUICK_SHELL_BRIDGE_PUBLIC_URL` and a non-empty `QUICK_SHELL_ALLOWED_ORIGINS` list.                                                       | Load the app from an allowed host origin, then try from a disallowed or missing origin if practical.                          | Allowed origin can connect. Disallowed or missing origin is rejected before WebSocket upgrade and the app reports connection failure or fallback.                                                   |
+| Close and stale session cleanup   | Open a session, send or cancel output, then click `Close`. Optionally wait past idle timeout in a low-timeout test config.                          | After close, try stale app controls or a stale reconnect.                                                                     | Session closes without stale terminal output. Stale capabilities are rejected or reported as unavailable.                                                                                           |
 
-Unsupported host fallback:
+Minimum deploy smoke:
 
-1. Trigger `open_quick_shell` in a host without MCP App rendering.
-2. Confirm the model-visible text says the session was opened.
-3. Confirm no app tokens or WebSocket tokens appear in model-visible content.
-4. Confirm host-specific controls are hidden when their capabilities are not advertised.
+1. Run `npm run verify:deployment`.
+2. Run Baseline app attach.
+3. Run Suggested command prefill.
+4. Run Output confirmation.
+5. Run Close and stale session cleanup.

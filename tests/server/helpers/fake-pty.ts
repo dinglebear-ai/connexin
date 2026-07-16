@@ -13,7 +13,9 @@ export class FakePty implements PtyProcess {
     return { dispose: () => this.data.off("data", listener) };
   }
 
-  onExit(listener: (event: { exitCode: number | null }) => void): { dispose(): void } {
+  onExit(listener: (event: { exitCode: number | null }) => void): {
+    dispose(): void;
+  } {
     this.exit.on("exit", listener);
     return { dispose: () => this.exit.off("exit", listener) };
   }

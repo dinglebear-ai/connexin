@@ -29,7 +29,10 @@ export class BoundedTextBuffer {
   }
 
   private trim(): void {
-    while (this.totalBytes > this.maxBytes && this.firstChunk < this.chunks.length) {
+    while (
+      this.totalBytes > this.maxBytes &&
+      this.firstChunk < this.chunks.length
+    ) {
       const first = this.chunks[this.firstChunk]!;
       const firstBytes = utf8ByteLength(first);
       const overflow = this.totalBytes - this.maxBytes;
@@ -49,7 +52,8 @@ export class BoundedTextBuffer {
   }
 
   private compactIfNeeded(): void {
-    if (this.firstChunk < 64 || this.firstChunk * 2 < this.chunks.length) return;
+    if (this.firstChunk < 64 || this.firstChunk * 2 < this.chunks.length)
+      return;
     this.chunks = this.chunks.slice(this.firstChunk);
     this.firstChunk = 0;
   }

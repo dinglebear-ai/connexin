@@ -1,10 +1,16 @@
+import http from "node:http";
+import { spawn } from "node:child_process";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { describe, expect, it, vi } from "vitest";
-import { prepareRuntime, startHttpMcpServer } from "../../src/server/main.js";
+import {
+  prepareRuntime,
+  runHttp,
+  startHttpMcpServer,
+} from "../../src/server/main.js";
 import { FakePty } from "./helpers/fake-pty.js";
 
 async function sshConfigPath(): Promise<string> {
@@ -33,6 +39,7 @@ describe("main transports", () => {
       env: {
         QUICK_SHELL_SSH_CONFIG: await sshConfigPath(),
         QUICK_SHELL_BRIDGE_PUBLIC_URL: "https://quick-shell.example",
+        QUICK_SHELL_ALLOWED_ORIGINS: "https://chatgpt.com",
       },
       ptyFactory: () => new FakePty(),
     });
@@ -46,12 +53,18 @@ describe("main transports", () => {
 
   it("rejects HTTP MCP requests without bearer authorization", async () => {
     const runtime = await prepareRuntime({
-      env: { QUICK_SHELL_SSH_CONFIG: await sshConfigPath(), QUICK_SHELL_HTTP_TOKEN: "secret" },
+      env: {
+        QUICK_SHELL_SSH_CONFIG: await sshConfigPath(),
+        QUICK_SHELL_HTTP_TOKEN: "secret",
+      },
       ptyFactory: () => new FakePty(),
     });
     const http = await startHttpMcpServer({ runtime, port: 0 });
     try {
-      const response = await fetch(`${http.baseUrl}/mcp`, { method: "POST", body: "{}" });
+      const response = await fetch(`${http.baseUrl}/mcp`, {
+        method: "POST",
+        body: "{}",
+      });
       expect(response.status).toBe(401);
     } finally {
       await http.close();
@@ -59,23 +72,93 @@ describe("main transports", () => {
     }
   });
 
+  it("rejects startup when the HTTP MCP port is already in use", async () => {
+    const occupied = http.createServer();
+    await new Promise<void>((resolve) =>
+      occupied.listen(0, "127.0.0.1", resolve),
+    );
+    const address = occupied.address();
+    if (address === null || typeof address === "string")
+      throw new Error("test server did not bind");
+    const runtime = await prepareRuntime({
+      env: {
+        QUICK_SHELL_SSH_CONFIG: await sshConfigPath(),
+        QUICK_SHELL_HTTP_TOKEN: "secret",
+      },
+      ptyFactory: () => new FakePty(),
+    });
+
+    try {
+      await expect(
+        startHttpMcpServer({ runtime, port: address.port }),
+      ).rejects.toMatchObject({ code: "EADDRINUSE" });
+    } finally {
+      await runtime.close();
+      await new Promise<void>((resolveClose, rejectClose) => {
+        occupied.close((error) =>
+          error ? rejectClose(error) : resolveClose(),
+        );
+      });
+    }
+  });
+
+  it("rolls back the prepared runtime when HTTP startup fails", async () => {
+    const occupied = http.createServer();
+    await new Promise<void>((resolve) =>
+      occupied.listen(0, "127.0.0.1", resolve),
+    );
+    const address = occupied.address();
+    if (address === null || typeof address === "string")
+      throw new Error("test server did not bind");
+
+    try {
+      await expect(
+        runHttp({
+          env: {
+            QUICK_SHELL_SSH_CONFIG: await sshConfigPath(),
+            QUICK_SHELL_HTTP_TOKEN: "secret",
+            QUICK_SHELL_HTTP_PORT: String(address.port),
+          },
+          ptyFactory: () => new FakePty(),
+        }),
+      ).rejects.toMatchObject({ code: "EADDRINUSE" });
+    } finally {
+      await new Promise<void>((resolveClose, rejectClose) => {
+        occupied.close((error) =>
+          error ? rejectClose(error) : resolveClose(),
+        );
+      });
+    }
+  });
+
   it("handles multiple authorized stateless HTTP MCP requests", async () => {
     const runtime = await prepareRuntime({
-      env: { QUICK_SHELL_SSH_CONFIG: await sshConfigPath(), QUICK_SHELL_HTTP_TOKEN: "secret" },
+      env: {
+        QUICK_SHELL_SSH_CONFIG: await sshConfigPath(),
+        QUICK_SHELL_HTTP_TOKEN: "secret",
+      },
       ptyFactory: () => new FakePty(),
     });
     const http = await startHttpMcpServer({ runtime, port: 0 });
-    const transport = new StreamableHTTPClientTransport(new URL(`${http.baseUrl}/mcp`), {
-      requestInit: { headers: { authorization: "Bearer secret" } },
-    });
+    const transport = new StreamableHTTPClientTransport(
+      new URL(`${http.baseUrl}/mcp`),
+      {
+        requestInit: { headers: { authorization: "Bearer secret" } },
+      },
+    );
     const client = new Client({ name: "http-test-client", version: "0.1.0" });
     try {
       await client.connect(transport);
 
       const listed = await client.listTools();
-      const opened = await client.callTool({ name: "open_quick_shell", arguments: { device: "test-device" } });
+      const opened = await client.callTool({
+        name: "open_quick_shell",
+        arguments: { device: "test-device" },
+      });
 
-      expect(listed.tools.some((tool) => tool.name === "open_quick_shell")).toBe(true);
+      expect(
+        listed.tools.some((tool) => tool.name === "open_quick_shell"),
+      ).toBe(true);
       expect(opened.structuredContent).toMatchObject({ device: "test-device" });
     } finally {
       await client.close().catch(() => undefined);
@@ -95,6 +178,66 @@ describe("main transports", () => {
     await expect(runtime.close()).resolves.toBeUndefined();
   });
 
+  it("closes the stdio runtime when stdin ends", async () => {
+    const child = spawn(
+      process.execPath,
+      [
+        resolve("node_modules/.bin/tsx"),
+        resolve("src/server/main.ts"),
+        "--stdio",
+      ],
+      {
+        cwd: process.cwd(),
+        env: {
+          ...process.env,
+          QUICK_SHELL_SSH_CONFIG: await sshConfigPath(),
+          QUICK_SHELL_CLEANUP_INTERVAL_MS: "1000",
+        },
+        stdio: ["pipe", "pipe", "pipe"],
+      },
+    );
+    const stderr: Buffer[] = [];
+    child.stderr.on("data", (chunk: Buffer) => stderr.push(chunk));
+
+    await Promise.race([
+      new Promise<void>((resolveReady) => {
+        child.stderr.on("data", () => {
+          if (
+            Buffer.concat(stderr).toString("utf8").includes("bridge_listening")
+          )
+            resolveReady();
+        });
+      }),
+      new Promise<"timeout">((resolveTimeout) =>
+        setTimeout(() => resolveTimeout("timeout"), 10_000),
+      ),
+    ]).then((ready) => {
+      if (ready === "timeout")
+        throw new Error(
+          `stdio child did not start: ${Buffer.concat(stderr).toString("utf8")}`,
+        );
+    });
+    child.stdin.end();
+    const exit = await Promise.race([
+      new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(
+        (resolveExit) => {
+          child.once("exit", (code, signal) => resolveExit({ code, signal }));
+        },
+      ),
+      new Promise<"timeout">((resolveTimeout) =>
+        setTimeout(() => resolveTimeout("timeout"), 5_000),
+      ),
+    ]);
+
+    if (exit === "timeout") {
+      child.kill("SIGTERM");
+      throw new Error(
+        `stdio child did not exit after stdin closed: ${Buffer.concat(stderr).toString("utf8")}`,
+      );
+    }
+    expect(exit).toMatchObject({ code: 0, signal: null });
+  }, 20_000);
+
   it("schedules cleanup for sessions past max age", async () => {
     vi.useFakeTimers();
     const ptys: FakePty[] = [];
@@ -112,7 +255,9 @@ describe("main transports", () => {
       },
     });
     try {
-      const session = await runtime.manager.createSession({ device: "test-device" });
+      const session = await runtime.manager.createSession({
+        device: "test-device",
+      });
       runtime.manager.startSession(session.id);
 
       await vi.advanceTimersByTimeAsync(10);

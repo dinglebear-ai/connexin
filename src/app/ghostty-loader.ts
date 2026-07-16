@@ -4,7 +4,8 @@ let initPromise: Promise<void> | undefined;
 
 export function decodeInlineWasmDataUrl(url: string): Uint8Array {
   const match = /^data:application\/wasm(?:;[^,]*)?;base64,(.+)$/s.exec(url);
-  if (!match) throw new Error("Ghostty WASM was not loaded from an inline data URL");
+  if (!match)
+    throw new Error("Ghostty WASM was not loaded from an inline data URL");
 
   const binary = atob(match[1]!);
   const bytes = new Uint8Array(binary.length);
@@ -16,9 +17,7 @@ export function decodeInlineWasmDataUrl(url: string): Uint8Array {
 
 export function responseForInlineWasmDataUrl(url: string): Response {
   const bytes = decodeInlineWasmDataUrl(url);
-  const body = new Uint8Array(bytes.byteLength);
-  body.set(bytes);
-  return new Response(body.buffer, {
+  return new Response(bytes.buffer as ArrayBuffer, {
     status: 200,
     headers: { "content-type": "application/wasm" },
   });
@@ -29,7 +28,9 @@ export function loadGhosttyRuntime(): Promise<void> {
   return initPromise;
 }
 
-export async function withInlineWasmFetchShim<T>(load: () => Promise<T>): Promise<T> {
+export async function withInlineWasmFetchShim<T>(
+  load: () => Promise<T>,
+): Promise<T> {
   const originalFetch = globalThis.fetch;
   const shim: typeof fetch = (input, initOptions) => {
     const url = readFetchUrl(input);
@@ -50,6 +51,7 @@ export async function withInlineWasmFetchShim<T>(load: () => Promise<T>): Promis
 function readFetchUrl(input: RequestInfo | URL): string | undefined {
   if (typeof input === "string") return input;
   if (input instanceof URL) return input.href;
-  if (typeof Request !== "undefined" && input instanceof Request) return input.url;
+  if (typeof Request !== "undefined" && input instanceof Request)
+    return input.url;
   return undefined;
 }

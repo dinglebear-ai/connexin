@@ -71,16 +71,19 @@ describe("parseQuickShellToml", () => {
   });
 
   it("reports invalid quoted device table names with line context", () => {
-    expect(() => parseQuickShellToml("[devices.\"unterminated]\nlabel = \"bad\"\n")).toThrow(
-      "quick-shell.toml line 1: invalid device table name",
-    );
+    expect(() =>
+      parseQuickShellToml('[devices."unterminated]\nlabel = "bad"\n'),
+    ).toThrow("quick-shell.toml line 1: invalid device table name");
   });
 
   it("loads metadata from disk", async () => {
     const tempDir = await mkdtemp(join(tmpdir(), "quick-shell-metadata-"));
     try {
       const configPath = join(tempDir, "quick-shell.toml");
-      await writeFile(configPath, '[devices.fileserver]\nlabel = "File Server"\n');
+      await writeFile(
+        configPath,
+        '[devices.fileserver]\nlabel = "File Server"\n',
+      );
 
       const config = await loadDeviceMetadata(configPath);
 
@@ -138,6 +141,8 @@ describe("device metadata integration", () => {
       },
     });
 
-    await expect(manager.createSession({ device: "unknown" })).rejects.toThrow("not listed in SSH config");
+    await expect(manager.createSession({ device: "unknown" })).rejects.toThrow(
+      "not listed in SSH config",
+    );
   });
 });

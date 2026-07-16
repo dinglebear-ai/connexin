@@ -1,76 +1,36 @@
-import { readFile } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
-import { registerAppResource, registerAppTool, RESOURCE_MIME_TYPE } from "@modelcontextprotocol/ext-apps/server";
+import {
+  registerAppResource,
+  registerAppTool,
+  RESOURCE_MIME_TYPE,
+} from "@modelcontextprotocol/ext-apps/server";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { RuntimeConfig } from "./config.js";
-import { bridgeConnectDomains } from "./bridge-server.js";
-import type { QuickShellSession, QuickShellSessionManager } from "./session-manager.js";
-import type { QuickShellAppSession, QuickShellHiddenMeta, QuickShellPublicSession } from "../shared/protocol.js";
-
-const APP_RESOURCE_URI = "ui://quick-shell/mcp-app.v2.html";
-const SERVER_INSTRUCTIONS =
-  "quick-shell opens a human-controlled SSH terminal for an allowlisted SSH config host alias. Use open_quick_shell only when a remote agent is blocked by a one-off command; suggested_command is prefilled only, and the user must run commands, review output, and explicitly send output back.";
-let appHtmlCache: string | undefined;
-
-const quickShellPublicOutputSchema = {
-  sessionId: z.string(),
-  device: z.string(),
-  reason: z.string().optional(),
-  suggestedCommand: z.string().optional(),
-  deviceLabel: z.string().optional(),
-  deviceGroup: z.string().optional(),
-  deviceDanger: z.enum(["normal", "caution", "danger"]).optional(),
-  deviceDefaultShell: z.string().optional(),
-};
-
-const appResourceMeta = (bridgeBaseUrl: string) => ({
-  csp: {
-    connectDomains: bridgeConnectDomains(bridgeBaseUrl),
-    resourceDomains: [],
-    frameDomains: [],
-    baseUriDomains: [],
-  },
-  prefersBorder: false,
-});
-
-function toolMeta(
-  visibility: Array<"model" | "app">,
-  status?: {
-    invoking?: string;
-    invoked?: string;
-  },
-): Record<string, unknown> {
-  const appVisible = visibility.includes("app");
-  const modelVisible = visibility.includes("model");
-  return {
-    ui: {
-      resourceUri: APP_RESOURCE_URI,
-      visibility,
-    },
-    "openai/outputTemplate": APP_RESOURCE_URI,
-    "openai/widgetAccessible": appVisible,
-    "openai/visibility": modelVisible ? "public" : "private",
-    ...(status?.invoking ? { "openai/toolInvocation/invoking": status.invoking } : {}),
-    ...(status?.invoked ? { "openai/toolInvocation/invoked": status.invoked } : {}),
-  };
-}
-
-function toolAnnotations(
-  title: string,
-  hints: {
-    readOnlyHint: boolean;
-    destructiveHint: boolean;
-    openWorldHint: boolean;
-    idempotentHint?: boolean;
-  },
-) {
-  return {
-    title,
-    ...hints,
-  };
-}
+import { registerHealthTool } from "./health-tool.js";
+import type { QuickShellSessionManager } from "./session-manager.js";
+import {
+  APP_RESOURCE_URI,
+  SERVER_INSTRUCTIONS,
+  appCapabilityInputSchema,
+  appResourceMeta,
+  appSessionFor,
+  asStructuredContent,
+  publicStructuredContent,
+  quickShellPublicOutputSchema,
+  readBuiltAppHtml,
+  resetAppHtmlCacheForTests,
+  safeErrorMessage,
+  toolAnnotations,
+  toolMeta,
+  utf8Max,
+} from "./mcp-tooling.js";
+import type { QuickShellHiddenMeta } from "../shared/protocol.js";
+import {
+  MAX_TERMINAL_COLS,
+  MAX_TERMINAL_ROWS,
+  MIN_TERMINAL_COLS,
+  MIN_TERMINAL_ROWS,
+} from "../shared/terminal-defaults.js";
 
 export interface CreateServerOptions {
   bridgeBaseUrl: string;
@@ -78,110 +38,31 @@ export interface CreateServerOptions {
   manager: QuickShellSessionManager;
 }
 
-function bridgeWsUrl(baseUrl: string, sessionId: string, wsToken: string): string {
-  const url = new URL("/terminal", baseUrl);
-  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-  url.searchParams.set("session", sessionId);
-  url.searchParams.set("token", wsToken);
-  return url.toString();
-}
-
-function asStructuredContent(value: object): Record<string, unknown> {
-  return value as Record<string, unknown>;
-}
-
-function publicStructuredContent(session: QuickShellPublicSession): QuickShellPublicSession {
-  const content: QuickShellPublicSession = {
-    sessionId: session.sessionId,
-    device: session.device,
-  };
-  if (session.reason !== undefined) content.reason = session.reason;
-  if (session.suggestedCommand !== undefined) content.suggestedCommand = session.suggestedCommand;
-  if (session.deviceLabel !== undefined) content.deviceLabel = session.deviceLabel;
-  if (session.deviceGroup !== undefined) content.deviceGroup = session.deviceGroup;
-  if (session.deviceDanger !== undefined) content.deviceDanger = session.deviceDanger;
-  if (session.deviceDefaultShell !== undefined) content.deviceDefaultShell = session.deviceDefaultShell;
-  return content;
-}
-
-function pingIntervalMs(config: RuntimeConfig): number {
-  return Math.max(100, Math.min(30_000, Math.floor(config.idleGraceMs / 2)));
-}
-
-function appSessionFor(session: QuickShellSession, config: RuntimeConfig, bridgeBaseUrl: string): QuickShellAppSession {
-  return {
-    ...session.publicSummary,
-    wsUrl: bridgeWsUrl(bridgeBaseUrl, session.id, session.wsToken),
-    maxSubmitBytes: config.maxSubmitBytes,
-    pingIntervalMs: pingIntervalMs(config),
-  };
-}
-
-function safeErrorMessage(error: unknown): string {
-  return (error instanceof Error ? error.message : String(error)).replace(/\s+/g, " ").trim();
-}
-
-async function readBuiltAppHtml(): Promise<string> {
-  if (process.env.NODE_ENV !== "test" && appHtmlCache !== undefined) return appHtmlCache;
-
-  const moduleDir = dirname(fileURLToPath(import.meta.url));
-  const candidates = [
-    resolve(moduleDir, "../../app/mcp-app.html"),
-    resolve(moduleDir, "../../dist/app/mcp-app.html"),
-  ];
-
-  let lastError: unknown;
-  for (const candidate of candidates) {
-    try {
-      const html = await readFile(candidate, "utf8");
-      if (process.env.NODE_ENV !== "test") appHtmlCache = html;
-      return html;
-    } catch (error) {
-      lastError = error;
-    }
-  }
-
-  throw new Error(`Unable to read built MCP app HTML: ${String(lastError)}`);
-}
-
-export function resetAppHtmlCacheForTests(): void {
-  appHtmlCache = undefined;
-}
+export { resetAppHtmlCacheForTests };
 
 export function createServer(options: CreateServerOptions): McpServer {
-  const server = new McpServer({ name: "quick-shell", version: "0.1.0" }, { instructions: SERVER_INSTRUCTIONS });
+  const server = new McpServer(
+    { name: "quick-shell", version: "0.1.0" },
+    { instructions: SERVER_INSTRUCTIONS },
+  );
   const { bridgeBaseUrl, config, manager } = options;
 
-  server.registerTool(
-    "check_quick_shell",
-    {
-      title: "Check Quick Shell",
-      description: "Side-effect-free quick-shell health check for gateway verification.",
-      inputSchema: {},
-      outputSchema: { ok: z.boolean() },
-      annotations: toolAnnotations("Check Quick Shell", {
-        readOnlyHint: true,
-        destructiveHint: false,
-        openWorldHint: false,
-        idempotentHint: true,
-      }),
-    },
-    async () => ({
-      content: [{ type: "text", text: "quick-shell is available." }],
-      structuredContent: { ok: true },
-    }),
-  );
+  registerHealthTool(server, config, manager);
 
   registerAppTool(
     server,
     "open_quick_shell",
     {
       title: "Open Quick Shell",
-      description: "Request a human-controlled SSH terminal for an allowlisted SSH config host alias.",
+      description:
+        "Request a human-controlled SSH terminal for an allowlisted SSH config host alias.",
       inputSchema: {
         device: z.string().max(config.maxDeviceLength),
         reason: z.string().max(config.maxReasonLength).optional(),
-        suggested_command: z.string().max(config.maxSuggestedCommandLength).optional(),
+        suggested_command: z
+          .string()
+          .max(config.maxSuggestedCommandLength)
+          .optional(),
       },
       outputSchema: quickShellPublicOutputSchema,
       annotations: toolAnnotations("Open Quick Shell", {
@@ -209,7 +90,15 @@ export function createServer(options: CreateServerOptions): McpServer {
         });
         return {
           isError: true,
-          content: [{ type: "text", text: error instanceof Error ? error.message : "Unable to open quick-shell session." }],
+          content: [
+            {
+              type: "text",
+              text:
+                error instanceof Error
+                  ? error.message
+                  : "Unable to open quick-shell session.",
+            },
+          ],
         };
       }
       const quickShell = {
@@ -225,7 +114,9 @@ export function createServer(options: CreateServerOptions): McpServer {
             text: `Opened quick-shell session for ${session.publicSummary.device}. The terminal is controlled by the user.`,
           },
         ],
-        structuredContent: asStructuredContent(publicStructuredContent(session.publicSummary)),
+        structuredContent: asStructuredContent(
+          publicStructuredContent(session.publicSummary),
+        ),
         _meta: {
           quickShell,
           quickShellSession,
@@ -241,8 +132,7 @@ export function createServer(options: CreateServerOptions): McpServer {
       title: "Get Quick Shell Session",
       description: "App-only quick-shell session detail lookup.",
       inputSchema: {
-        sessionId: z.string().optional(),
-        appToken: z.string().optional(),
+        ...appCapabilityInputSchema(),
       },
       outputSchema: quickShellPublicOutputSchema,
       annotations: toolAnnotations("Get Quick Shell Session", {
@@ -258,8 +148,10 @@ export function createServer(options: CreateServerOptions): McpServer {
     async (args) => {
       manager.recordAuditEvent("app_session_requested", {
         sessionId: args.sessionId,
-        hasSessionId: typeof args.sessionId === "string" && args.sessionId.length > 0,
-        hasAppToken: typeof args.appToken === "string" && args.appToken.length > 0,
+        hasSessionId:
+          typeof args.sessionId === "string" && args.sessionId.length > 0,
+        hasAppToken:
+          typeof args.appToken === "string" && args.appToken.length > 0,
       });
       if (!args.sessionId || !args.appToken) {
         manager.recordAuditEvent("app_session_rejected", {
@@ -268,7 +160,9 @@ export function createServer(options: CreateServerOptions): McpServer {
         });
         return {
           isError: true,
-          content: [{ type: "text", text: "Missing quick-shell app capability." }],
+          content: [
+            { type: "text", text: "Missing quick-shell app capability." },
+          ],
         };
       }
 
@@ -280,7 +174,9 @@ export function createServer(options: CreateServerOptions): McpServer {
         });
         return {
           isError: true,
-          content: [{ type: "text", text: "Invalid quick-shell app capability." }],
+          content: [
+            { type: "text", text: "Invalid quick-shell app capability." },
+          ],
         };
       }
 
@@ -314,7 +210,12 @@ export function createServer(options: CreateServerOptions): McpServer {
         });
         return {
           isError: true,
-          content: [{ type: "text", text: "Quick-shell session is no longer available." }],
+          content: [
+            {
+              type: "text",
+              text: "Quick-shell session is no longer available.",
+            },
+          ],
         };
       }
 
@@ -324,8 +225,15 @@ export function createServer(options: CreateServerOptions): McpServer {
         device: started.publicSummary.device,
       });
       return {
-        content: [{ type: "text", text: "Quick-shell session details are available to the app." }],
-        structuredContent: asStructuredContent(publicStructuredContent(started.publicSummary)),
+        content: [
+          {
+            type: "text",
+            text: "Quick-shell session details are available to the app.",
+          },
+        ],
+        structuredContent: asStructuredContent(
+          publicStructuredContent(started.publicSummary),
+        ),
         _meta: {
           quickShellSession: appSession,
         },
@@ -338,11 +246,16 @@ export function createServer(options: CreateServerOptions): McpServer {
     "record_quick_shell_output_confirmed",
     {
       title: "Record Quick Shell Output Confirmed",
-      description: "App-only audit breadcrumb for user-confirmed output return.",
+      description:
+        "App-only audit breadcrumb for user-confirmed output return.",
       inputSchema: {
-        sessionId: z.string().optional(),
-        appToken: z.string().optional(),
-        byteCount: z.number().int().min(0).max(config.maxSubmitBytes).optional(),
+        ...appCapabilityInputSchema(),
+        byteCount: z
+          .number()
+          .int()
+          .min(0)
+          .max(config.maxSubmitBytes)
+          .optional(),
       },
       outputSchema: {
         recorded: z.boolean(),
@@ -362,12 +275,18 @@ export function createServer(options: CreateServerOptions): McpServer {
         manager.recordAuditEvent("app_session_rejected", {
           sessionId: args.sessionId,
           reason: "missing_output_confirm_capability",
-          hasAppToken: typeof args.appToken === "string" && args.appToken.length > 0,
+          hasAppToken:
+            typeof args.appToken === "string" && args.appToken.length > 0,
           hasByteCount: args.byteCount !== undefined,
         });
         return {
           isError: true,
-          content: [{ type: "text", text: "Missing quick-shell output confirmation capability." }],
+          content: [
+            {
+              type: "text",
+              text: "Missing quick-shell output confirmation capability.",
+            },
+          ],
         };
       }
       const session = manager.authenticateApp(args.sessionId, args.appToken);
@@ -378,13 +297,17 @@ export function createServer(options: CreateServerOptions): McpServer {
         });
         return {
           isError: true,
-          content: [{ type: "text", text: "Invalid quick-shell app capability." }],
+          content: [
+            { type: "text", text: "Invalid quick-shell app capability." },
+          ],
         };
       }
 
       manager.recordOutputConfirmed(session.id, args.byteCount);
       return {
-        content: [{ type: "text", text: "Quick-shell output confirmation recorded." }],
+        content: [
+          { type: "text", text: "Quick-shell output confirmation recorded." },
+        ],
         structuredContent: { recorded: true },
       };
     },
@@ -395,10 +318,10 @@ export function createServer(options: CreateServerOptions): McpServer {
     "poll_quick_shell_session",
     {
       title: "Poll Quick Shell Session",
-      description: "App-only quick-shell terminal output poll for hosts that cannot reach the WebSocket bridge.",
+      description:
+        "App-only quick-shell terminal output poll for hosts that cannot reach the WebSocket bridge.",
       inputSchema: {
-        sessionId: z.string().optional(),
-        appToken: z.string().optional(),
+        ...appCapabilityInputSchema(),
         afterSeq: z.number().int().min(0).optional(),
       },
       outputSchema: {
@@ -422,11 +345,14 @@ export function createServer(options: CreateServerOptions): McpServer {
         manager.recordAuditEvent("app_session_rejected", {
           sessionId: args.sessionId,
           reason: "missing_poll_capability",
-          hasAppToken: typeof args.appToken === "string" && args.appToken.length > 0,
+          hasAppToken:
+            typeof args.appToken === "string" && args.appToken.length > 0,
         });
         return {
           isError: true,
-          content: [{ type: "text", text: "Missing quick-shell poll capability." }],
+          content: [
+            { type: "text", text: "Missing quick-shell poll capability." },
+          ],
         };
       }
       const session = manager.authenticateApp(args.sessionId, args.appToken);
@@ -437,7 +363,9 @@ export function createServer(options: CreateServerOptions): McpServer {
         });
         return {
           isError: true,
-          content: [{ type: "text", text: "Invalid quick-shell app capability." }],
+          content: [
+            { type: "text", text: "Invalid quick-shell app capability." },
+          ],
         };
       }
       let started;
@@ -454,24 +382,41 @@ export function createServer(options: CreateServerOptions): McpServer {
         });
         return {
           isError: true,
-          content: [{ type: "text", text: `Unable to start quick-shell SSH session for ${session.publicSummary.device}.` }],
+          content: [
+            {
+              type: "text",
+              text: `Unable to start quick-shell SSH session for ${session.publicSummary.device}.`,
+            },
+          ],
         };
       }
       if (!started) {
         return {
           isError: true,
-          content: [{ type: "text", text: "Quick-shell session is no longer available." }],
+          content: [
+            {
+              type: "text",
+              text: "Quick-shell session is no longer available.",
+            },
+          ],
         };
       }
       const poll = manager.pollSession(started.id, args.afterSeq ?? 0);
       if (!poll) {
         return {
           isError: true,
-          content: [{ type: "text", text: "Quick-shell session is no longer available." }],
+          content: [
+            {
+              type: "text",
+              text: "Quick-shell session is no longer available.",
+            },
+          ],
         };
       }
       return {
-        content: [{ type: "text", text: "Quick-shell output is available to the app." }],
+        content: [
+          { type: "text", text: "Quick-shell output is available to the app." },
+        ],
         structuredContent: {
           sessionId: started.id,
           device: started.publicSummary.device,
@@ -490,11 +435,11 @@ export function createServer(options: CreateServerOptions): McpServer {
     "write_quick_shell_input",
     {
       title: "Write Quick Shell Input",
-      description: "App-only quick-shell terminal input for hosts that cannot reach the WebSocket bridge.",
+      description:
+        "App-only quick-shell terminal input for hosts that cannot reach the WebSocket bridge.",
       inputSchema: {
-        sessionId: z.string().optional(),
-        appToken: z.string().optional(),
-        data: z.string().max(config.maxWsPayloadBytes).optional(),
+        ...appCapabilityInputSchema(),
+        data: utf8Max(config.maxInputBytes).optional(),
       },
       outputSchema: {
         written: z.boolean(),
@@ -514,19 +459,24 @@ export function createServer(options: CreateServerOptions): McpServer {
         manager.recordAuditEvent("app_session_rejected", {
           sessionId: args.sessionId,
           reason: "missing_write_capability",
-          hasAppToken: typeof args.appToken === "string" && args.appToken.length > 0,
+          hasAppToken:
+            typeof args.appToken === "string" && args.appToken.length > 0,
           hasData: args.data !== undefined,
         });
         return {
           isError: true,
-          content: [{ type: "text", text: "Missing quick-shell write capability." }],
+          content: [
+            { type: "text", text: "Missing quick-shell write capability." },
+          ],
         };
       }
       const session = manager.authenticateApp(args.sessionId, args.appToken);
       if (!session) {
         return {
           isError: true,
-          content: [{ type: "text", text: "Invalid quick-shell app capability." }],
+          content: [
+            { type: "text", text: "Invalid quick-shell app capability." },
+          ],
         };
       }
       try {
@@ -535,12 +485,21 @@ export function createServer(options: CreateServerOptions): McpServer {
         manager.closeSession(session.id);
         return {
           isError: true,
-          content: [{ type: "text", text: "Unable to start quick-shell SSH session." }],
+          content: [
+            { type: "text", text: "Unable to start quick-shell SSH session." },
+          ],
         };
       }
       const written = manager.writeInput(session.id, args.data);
       return {
-        content: [{ type: "text", text: written ? "Quick-shell input written." : "Quick-shell input ignored." }],
+        content: [
+          {
+            type: "text",
+            text: written
+              ? "Quick-shell input written."
+              : "Quick-shell input ignored.",
+          },
+        ],
         structuredContent: { written },
       };
     },
@@ -551,12 +510,22 @@ export function createServer(options: CreateServerOptions): McpServer {
     "resize_quick_shell_session",
     {
       title: "Resize Quick Shell Session",
-      description: "App-only quick-shell terminal resize for hosts that cannot reach the WebSocket bridge.",
+      description:
+        "App-only quick-shell terminal resize for hosts that cannot reach the WebSocket bridge.",
       inputSchema: {
-        sessionId: z.string().optional(),
-        appToken: z.string().optional(),
-        cols: z.number().int().min(20).max(400).optional(),
-        rows: z.number().int().min(5).max(200).optional(),
+        ...appCapabilityInputSchema(),
+        cols: z
+          .number()
+          .int()
+          .min(MIN_TERMINAL_COLS)
+          .max(MAX_TERMINAL_COLS)
+          .optional(),
+        rows: z
+          .number()
+          .int()
+          .min(MIN_TERMINAL_ROWS)
+          .max(MAX_TERMINAL_ROWS)
+          .optional(),
       },
       outputSchema: {
         resized: z.boolean(),
@@ -572,17 +541,26 @@ export function createServer(options: CreateServerOptions): McpServer {
       }),
     },
     async (args) => {
-      if (!args.sessionId || !args.appToken || args.cols === undefined || args.rows === undefined) {
+      if (
+        !args.sessionId ||
+        !args.appToken ||
+        args.cols === undefined ||
+        args.rows === undefined
+      ) {
         return {
           isError: true,
-          content: [{ type: "text", text: "Missing quick-shell resize capability." }],
+          content: [
+            { type: "text", text: "Missing quick-shell resize capability." },
+          ],
         };
       }
       const session = manager.authenticateApp(args.sessionId, args.appToken);
       if (!session) {
         return {
           isError: true,
-          content: [{ type: "text", text: "Invalid quick-shell app capability." }],
+          content: [
+            { type: "text", text: "Invalid quick-shell app capability." },
+          ],
         };
       }
       try {
@@ -591,12 +569,21 @@ export function createServer(options: CreateServerOptions): McpServer {
         manager.closeSession(session.id);
         return {
           isError: true,
-          content: [{ type: "text", text: "Unable to start quick-shell SSH session." }],
+          content: [
+            { type: "text", text: "Unable to start quick-shell SSH session." },
+          ],
         };
       }
       const resized = manager.resizeSession(session.id, args.cols, args.rows);
       return {
-        content: [{ type: "text", text: resized ? "Quick-shell session resized." : "Quick-shell resize ignored." }],
+        content: [
+          {
+            type: "text",
+            text: resized
+              ? "Quick-shell session resized."
+              : "Quick-shell resize ignored.",
+          },
+        ],
         structuredContent: { resized },
       };
     },
@@ -609,8 +596,7 @@ export function createServer(options: CreateServerOptions): McpServer {
       title: "Close Quick Shell Session",
       description: "App-only quick-shell session close.",
       inputSchema: {
-        sessionId: z.string().optional(),
-        appToken: z.string().optional(),
+        ...appCapabilityInputSchema(),
       },
       outputSchema: {
         closed: z.boolean(),
@@ -630,8 +616,10 @@ export function createServer(options: CreateServerOptions): McpServer {
     async (args) => {
       manager.recordAuditEvent("app_session_close_requested", {
         sessionId: args.sessionId,
-        hasSessionId: typeof args.sessionId === "string" && args.sessionId.length > 0,
-        hasAppToken: typeof args.appToken === "string" && args.appToken.length > 0,
+        hasSessionId:
+          typeof args.sessionId === "string" && args.sessionId.length > 0,
+        hasAppToken:
+          typeof args.appToken === "string" && args.appToken.length > 0,
       });
       if (!args.sessionId || !args.appToken) {
         manager.recordAuditEvent("app_session_rejected", {
@@ -640,13 +628,17 @@ export function createServer(options: CreateServerOptions): McpServer {
         });
         return {
           isError: true,
-          content: [{ type: "text", text: "Missing quick-shell close capability." }],
+          content: [
+            { type: "text", text: "Missing quick-shell close capability." },
+          ],
         };
       }
       const existing = manager.getSession(args.sessionId);
       if (!existing) {
         return {
-          content: [{ type: "text", text: "Quick-shell session already closed." }],
+          content: [
+            { type: "text", text: "Quick-shell session already closed." },
+          ],
           structuredContent: { closed: true, alreadyClosed: true },
         };
       }
@@ -659,13 +651,22 @@ export function createServer(options: CreateServerOptions): McpServer {
         });
         return {
           isError: true,
-          content: [{ type: "text", text: "Invalid quick-shell app capability." }],
+          content: [
+            { type: "text", text: "Invalid quick-shell app capability." },
+          ],
         };
       }
 
       const closed = manager.closeSession(session.id);
       return {
-        content: [{ type: "text", text: closed ? "Quick-shell session closed." : "Quick-shell session already closed." }],
+        content: [
+          {
+            type: "text",
+            text: closed
+              ? "Quick-shell session closed."
+              : "Quick-shell session already closed.",
+          },
+        ],
         structuredContent: { closed },
       };
     },

@@ -1,9 +1,20 @@
 import http from "node:http";
+import type { Duplex } from "node:stream";
 import { WebSocket, WebSocketServer } from "ws";
 import type { RuntimeConfig } from "./config.js";
-import type { Disposable, QuickShellSessionManager, StartedQuickShellSession } from "./session-manager.js";
-import { clientTerminalMessageSchema } from "../shared/protocol.js";
+import type {
+  Disposable,
+  QuickShellSessionManager,
+  StartedQuickShellSession,
+} from "./session-manager.js";
+import {
+  SessionIdSchema,
+  clientTerminalMessageSchema,
+} from "../shared/protocol.js";
 import type { ServerTerminalMessage, SessionId } from "../shared/protocol.js";
+
+const AUTH_TIMEOUT_MS = 5_000;
+const MAX_PENDING_AUTH_CONNECTIONS = 32;
 
 export interface BridgeServer {
   baseUrl: string;
@@ -23,6 +34,11 @@ interface ActiveConnection {
   disposables: Disposable[];
 }
 
+function disposeConnection(connection: ActiveConnection): void {
+  for (const disposable of connection.disposables.splice(0))
+    disposable.dispose();
+}
+
 function sendJson(ws: WebSocket, message: ServerTerminalMessage): void {
   if (ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify(message));
@@ -35,7 +51,10 @@ function sendOutputWithBackpressure(
   bufferedAmountLimitBytes: number,
 ): boolean {
   if (ws.readyState !== WebSocket.OPEN) return false;
-  const payload = JSON.stringify({ type: "output", data } satisfies ServerTerminalMessage);
+  const payload = JSON.stringify({
+    type: "output",
+    data,
+  } satisfies ServerTerminalMessage);
   const payloadBytes = Buffer.byteLength(payload, "utf8");
   if (ws.bufferedAmount + payloadBytes > bufferedAmountLimitBytes) {
     sendJson(ws, { type: "error", message: "terminal client is too slow" });
@@ -56,191 +75,376 @@ function wsOrigin(baseUrl: string): string {
   return url.toString().replace(/\/$/, "");
 }
 
-function parseRequest(url: string | undefined): { sessionId: SessionId; token: string } | undefined {
+function parseRequest(
+  url: string | undefined,
+): { sessionId: SessionId } | undefined {
   if (!url) return undefined;
-  const parsed = new URL(url, "http://127.0.0.1");
+  let parsed: URL;
+  try {
+    parsed = new URL(url, "http://127.0.0.1");
+  } catch {
+    return undefined;
+  }
   if (parsed.pathname !== "/terminal") return undefined;
 
   const sessionId = parsed.searchParams.get("session");
-  const token = parsed.searchParams.get("token");
-  if (!sessionId || !token) return undefined;
-  return { sessionId, token };
+  const validatedSessionId = SessionIdSchema.safeParse(sessionId);
+  if (!validatedSessionId.success) return undefined;
+  return { sessionId: validatedSessionId.data };
 }
 
-export async function startBridgeServer(options: StartBridgeServerOptions): Promise<BridgeServer> {
+function rejectUpgrade(socket: Duplex, status: number, message: string): void {
+  socket.write(
+    `HTTP/1.1 ${status} ${message}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`,
+  );
+  socket.destroy();
+}
+
+interface ErrorEmitter {
+  once(event: "error", listener: (error: Error) => void): unknown;
+  off(event: "error", listener: (error: Error) => void): unknown;
+}
+
+function listenHttpServer(
+  httpServer: http.Server,
+  port: number,
+  host: string,
+  extraErrorEmitter?: ErrorEmitter,
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const handleError = (error: Error) => {
+      httpServer.off("listening", handleListening);
+      httpServer.off("error", handleError);
+      extraErrorEmitter?.off("error", handleError);
+      reject(error);
+    };
+    const handleListening = () => {
+      httpServer.off("error", handleError);
+      extraErrorEmitter?.off("error", handleError);
+      resolve();
+    };
+
+    httpServer.once("error", handleError);
+    extraErrorEmitter?.once("error", handleError);
+    httpServer.once("listening", handleListening);
+    httpServer.listen(port, host);
+  });
+}
+
+export async function startBridgeServer(
+  options: StartBridgeServerOptions,
+): Promise<BridgeServer> {
   const { config, manager } = options;
   const httpServer = http.createServer((_req, res) => {
     res.writeHead(404);
     res.end("not found");
   });
   const wss = new WebSocketServer({
-    server: httpServer,
-    path: "/terminal",
+    noServer: true,
     maxPayload: config.maxWsPayloadBytes,
   });
   const activeConnections = new Map<SessionId, ActiveConnection>();
   let closePromise: Promise<void> | undefined;
-  const schema = clientTerminalMessageSchema(config.maxWsPayloadBytes);
+  let pendingAuthConnections = 0;
+  const schema = clientTerminalMessageSchema({
+    maxInputBytes: config.maxInputBytes,
+    maxSubmitBytes: config.maxSubmitBytes,
+  });
   const sessionClosedSubscription = manager.onSessionClosed((sessionId) => {
     const connection = activeConnections.get(sessionId);
     if (connection) {
-      for (const disposable of connection.disposables) disposable.dispose();
+      disposeConnection(connection);
       connection.socket.close(1000, "session closed");
     }
     activeConnections.delete(sessionId);
   });
 
-  wss.on("connection", (ws, request) => {
-    let activeSessionId: SessionId | undefined;
-    const isCurrent = () => activeSessionId !== undefined && activeConnections.get(activeSessionId)?.socket === ws;
-    ws.on("error", (error) => {
-      console.error("quick-shell bridge websocket error", {
-        sessionId: activeSessionId,
-        message: error instanceof Error ? error.message : String(error),
-      });
-    });
-
+  httpServer.on("upgrade", (request, socket, head) => {
     const requestOrigin = request.headers.origin;
-    if (config.allowedOrigins.length > 0 && (!requestOrigin || !config.allowedOrigins.includes(requestOrigin))) {
+    if (
+      config.allowedOrigins.length > 0 &&
+      (!requestOrigin || !config.allowedOrigins.includes(requestOrigin))
+    ) {
       manager.recordAuditEvent("bridge_connection_rejected", {
         reason: "origin_not_allowed",
         origin: requestOrigin,
       });
-      closeWithPolicy(ws, "origin not allowed");
+      rejectUpgrade(socket, 403, "Forbidden");
       return;
     }
 
     const parsed = parseRequest(request.url);
     if (!parsed) {
-      manager.recordAuditEvent("bridge_connection_rejected", { reason: "missing_session_or_token" });
-      closeWithPolicy(ws, "missing session or token");
-      return;
-    }
-
-    const pendingSession = manager.authenticateWsCapability(parsed.sessionId, parsed.token);
-    if (!pendingSession) {
       manager.recordAuditEvent("bridge_connection_rejected", {
-        sessionId: parsed.sessionId,
-        reason: "invalid_session_or_token",
-      });
-      closeWithPolicy(ws, "invalid session or token");
-      return;
-    }
-
-    let session: StartedQuickShellSession | undefined;
-    try {
-      session = manager.startSession(pendingSession.id);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      manager.recordAuditEvent("bridge_connection_rejected", {
-        sessionId: pendingSession.id,
-        device: pendingSession.publicSummary.device,
-        reason: "ssh_start_failed",
-        error: message,
-      });
-      ws.close(1011, "terminal process unavailable");
-      return;
-    }
-    if (!session) {
-      manager.recordAuditEvent("bridge_connection_rejected", {
-        sessionId: pendingSession.id,
-        device: pendingSession.publicSummary.device,
         reason: "missing_session",
       });
-      closeWithPolicy(ws, "invalid session or token");
+      rejectUpgrade(socket, 400, "Bad Request");
       return;
     }
-    activeSessionId = session.id;
 
-    const prior = activeConnections.get(session.id);
-    if (prior) {
-      for (const disposable of prior.disposables) disposable.dispose();
-      if (prior.socket.readyState === WebSocket.OPEN) {
-        prior.socket.close(1000, "replaced by another quick-shell view");
-      }
-    }
-
-    const disposables = attachSessionForwarding(ws, session, config, manager, isCurrent);
-    activeConnections.set(session.id, { socket: ws, disposables });
-    manager.recordAuditEvent("bridge_connected", { sessionId: session.id, device: session.publicSummary.device });
-    sendJson(ws, { type: "ready", sessionId: session.id, scrollback: session.scrollback.toString() });
-    if (session.exited) {
-      sendJson(ws, { type: "exit", exitCode: session.exitCode });
-    }
-
-    ws.on("message", (data) => {
-      if (!isCurrent()) return;
-      manager.recordActivity(session.id);
-      let raw: unknown;
-      try {
-        raw = JSON.parse(data.toString());
-      } catch {
-        manager.recordAuditEvent("bridge_message_rejected", {
-          sessionId: session.id,
-          device: session.publicSummary.device,
-          reason: "invalid_json",
-        });
-        sendJson(ws, { type: "error", message: "invalid terminal message" });
-        return;
-      }
-
-      const message = schema.safeParse(raw);
-      if (!message.success) {
-        manager.recordAuditEvent("bridge_message_rejected", {
-          sessionId: session.id,
-          device: session.publicSummary.device,
-          reason: "invalid_schema",
-        });
-        sendJson(ws, { type: "error", message: "invalid terminal message" });
-        return;
-      }
-
-      switch (message.data.type) {
-        case "input": {
-          const input = message.data.data;
-          writeToPty(ws, manager, session, () => session.pty.write(input));
-          break;
-        }
-        case "resize": {
-          const { cols, rows } = message.data;
-          writeToPty(ws, manager, session, () => session.pty.resize(cols, rows));
-          break;
-        }
-        case "close":
-          try {
-            manager.closeSession(session.id);
-          } finally {
-            ws.close(1000, "session closed");
-          }
-          break;
-        case "output_confirmed":
-          manager.recordOutputConfirmed(session.id, message.data.byteCount);
-          break;
-        case "ping":
-          break;
-      }
-    });
-
-    ws.once("close", (code, reason) => {
-      for (const disposable of disposables) disposable.dispose();
-      if (activeConnections.get(session.id)?.socket === ws) {
-        activeConnections.delete(session.id);
-      }
-      manager.recordAuditEvent("bridge_disconnected", {
-        sessionId: session.id,
-        device: session.publicSummary.device,
-        code,
-        reason: reason.toString(),
+    if (!manager.getSession(parsed.sessionId)) {
+      manager.recordAuditEvent("bridge_connection_rejected", {
+        sessionId: parsed.sessionId,
+        reason: "invalid_session",
       });
+      rejectUpgrade(socket, 401, "Unauthorized");
+      return;
+    }
+
+    if (pendingAuthConnections >= MAX_PENDING_AUTH_CONNECTIONS) {
+      manager.recordAuditEvent("bridge_connection_rejected", {
+        sessionId: parsed.sessionId,
+        reason: "too_many_pending_auth_connections",
+      });
+      rejectUpgrade(socket, 503, "Service Unavailable");
+      return;
+    }
+
+    pendingAuthConnections += 1;
+    wss.handleUpgrade(request, socket, head, (ws) => {
+      wss.emit("connection", ws, request, parsed.sessionId);
     });
   });
 
-  await new Promise<void>((resolve) => httpServer.listen(config.bridgePort, config.bridgeHost, resolve));
+  wss.on(
+    "connection",
+    (
+      ws: WebSocket,
+      _request: http.IncomingMessage,
+      pendingSessionId: SessionId,
+    ) => {
+      let activeSessionId: SessionId | undefined;
+      let session: StartedQuickShellSession | undefined;
+      let connectionDisposables: Disposable[] = [];
+      let authPending = true;
+      const isCurrent = () =>
+        activeSessionId !== undefined &&
+        activeConnections.get(activeSessionId)?.socket === ws;
+      const disposeThisConnection = () => {
+        for (const disposable of connectionDisposables.splice(0))
+          disposable.dispose();
+      };
+      const settleAuth = () => {
+        if (!authPending) return;
+        authPending = false;
+        pendingAuthConnections = Math.max(0, pendingAuthConnections - 1);
+        clearTimeout(authTimer);
+      };
+      const authTimer = setTimeout(() => {
+        manager.recordAuditEvent("bridge_connection_rejected", {
+          sessionId: pendingSessionId,
+          reason: "auth_timeout",
+        });
+        settleAuth();
+        closeWithPolicy(ws, "authentication timeout");
+      }, AUTH_TIMEOUT_MS);
+      authTimer.unref();
+
+      ws.on("error", (error: Error) => {
+        console.error("quick-shell bridge websocket error", {
+          sessionId: activeSessionId,
+          message: error instanceof Error ? error.message : String(error),
+        });
+      });
+
+      ws.on("message", (data: WebSocket.RawData) => {
+        let raw: unknown;
+        try {
+          raw = JSON.parse(data.toString());
+        } catch {
+          manager.recordAuditEvent("bridge_message_rejected", {
+            sessionId: activeSessionId ?? pendingSessionId,
+            device: session?.publicSummary.device,
+            reason: "invalid_json",
+          });
+          sendJson(ws, { type: "error", message: "invalid terminal message" });
+          return;
+        }
+
+        const message = schema.safeParse(raw);
+        if (!message.success) {
+          manager.recordAuditEvent("bridge_message_rejected", {
+            sessionId: activeSessionId ?? pendingSessionId,
+            device: session?.publicSummary.device,
+            reason: "invalid_schema",
+          });
+          sendJson(ws, { type: "error", message: "invalid terminal message" });
+          return;
+        }
+
+        if (message.data.type === "authenticate") {
+          if (!authPending || session) {
+            manager.recordAuditEvent("bridge_message_rejected", {
+              sessionId: activeSessionId ?? pendingSessionId,
+              device: session?.publicSummary.device,
+              reason: "duplicate_authentication",
+            });
+            sendJson(ws, {
+              type: "error",
+              message: "invalid terminal message",
+            });
+            return;
+          }
+
+          const pendingSession = manager.authenticateWsCapability(
+            pendingSessionId,
+            message.data.token,
+          );
+          if (!pendingSession) {
+            manager.recordAuditEvent("bridge_connection_rejected", {
+              sessionId: pendingSessionId,
+              reason: "invalid_session_or_token",
+            });
+            settleAuth();
+            closeWithPolicy(ws, "invalid session or token");
+            return;
+          }
+
+          try {
+            session = manager.startSession(pendingSession.id);
+          } catch (error) {
+            const errorMessage =
+              error instanceof Error ? error.message : String(error);
+            manager.recordAuditEvent("bridge_connection_rejected", {
+              sessionId: pendingSession.id,
+              device: pendingSession.publicSummary.device,
+              reason: "ssh_start_failed",
+              error: errorMessage,
+            });
+            settleAuth();
+            ws.close(1011, "terminal process unavailable");
+            return;
+          }
+          if (!session) {
+            manager.recordAuditEvent("bridge_connection_rejected", {
+              sessionId: pendingSession.id,
+              device: pendingSession.publicSummary.device,
+              reason: "missing_session",
+            });
+            settleAuth();
+            closeWithPolicy(ws, "invalid session or token");
+            return;
+          }
+          activeSessionId = session.id;
+          settleAuth();
+
+          const prior = activeConnections.get(session.id);
+          if (prior) {
+            disposeConnection(prior);
+            if (prior.socket.readyState === WebSocket.OPEN) {
+              prior.socket.close(1000, "replaced by another quick-shell view");
+            }
+          }
+
+          connectionDisposables = attachSessionForwarding(
+            ws,
+            session,
+            config,
+            manager,
+            isCurrent,
+          );
+          activeConnections.set(session.id, {
+            socket: ws,
+            disposables: connectionDisposables,
+          });
+          manager.recordAuditEvent("bridge_connected", {
+            sessionId: session.id,
+            device: session.publicSummary.device,
+          });
+          sendJson(ws, {
+            type: "ready",
+            sessionId: session.id,
+            scrollback: session.scrollback.toString(),
+          });
+          if (session.exited) {
+            sendJson(ws, { type: "exit", exitCode: session.exitCode });
+          }
+          return;
+        }
+
+        if (!session || !isCurrent()) {
+          manager.recordAuditEvent("bridge_message_rejected", {
+            sessionId: pendingSessionId,
+            reason: "unauthenticated_message",
+          });
+          closeWithPolicy(ws, "authentication required");
+          return;
+        }
+
+        const activeSession = session;
+        manager.recordActivity(activeSession.id);
+        switch (message.data.type) {
+          case "input": {
+            const input = message.data.data;
+            writeToPty(ws, manager, activeSession, () =>
+              activeSession.pty.write(input),
+            );
+            break;
+          }
+          case "resize": {
+            const { cols, rows } = message.data;
+            writeToPty(ws, manager, activeSession, () =>
+              activeSession.pty.resize(cols, rows),
+            );
+            break;
+          }
+          case "close":
+            try {
+              manager.closeSession(activeSession.id);
+            } finally {
+              ws.close(1000, "session closed");
+            }
+            break;
+          case "output_confirmed":
+            manager.recordOutputConfirmed(
+              activeSession.id,
+              message.data.byteCount,
+            );
+            break;
+          case "ping":
+            break;
+        }
+      });
+
+      ws.once("close", (code: number, reason: Buffer) => {
+        settleAuth();
+        disposeThisConnection();
+        if (session) {
+          const connection = activeConnections.get(session.id);
+          if (connection?.socket === ws) {
+            activeConnections.delete(session.id);
+          }
+        }
+        manager.recordAuditEvent("bridge_disconnected", {
+          sessionId: session?.id ?? pendingSessionId,
+          device: session?.publicSummary.device,
+          code,
+          reason: reason.toString(),
+        });
+      });
+    },
+  );
+
+  try {
+    await listenHttpServer(
+      httpServer,
+      config.bridgePort,
+      config.bridgeHost,
+      wss,
+    );
+  } catch (error) {
+    sessionClosedSubscription.dispose();
+    wss.close();
+    throw error;
+  }
   const address = httpServer.address();
   if (address === null || typeof address === "string") {
     throw new Error("bridge server did not bind to a TCP port");
   }
-  const host = config.bridgeHost === "0.0.0.0" || config.bridgeHost === "::" ? "127.0.0.1" : config.bridgeHost;
+  const host =
+    config.bridgeHost === "0.0.0.0" || config.bridgeHost === "::"
+      ? "127.0.0.1"
+      : config.bridgeHost;
   const listenUrl = `http://${host}:${address.port}`;
   const baseUrl = config.bridgePublicUrl ?? listenUrl;
 
@@ -253,11 +457,12 @@ export async function startBridgeServer(options: StartBridgeServerOptions): Prom
       closePromise ??= new Promise<void>((resolve, reject) => {
         sessionClosedSubscription.dispose();
         for (const connection of activeConnections.values()) {
-          for (const disposable of connection.disposables) disposable.dispose();
+          disposeConnection(connection);
           connection.socket.close(1001, "bridge closing");
         }
         const terminateTimer = setTimeout(() => {
-          for (const connection of activeConnections.values()) connection.socket.terminate();
+          for (const connection of activeConnections.values())
+            connection.socket.terminate();
           for (const client of wss.clients) client.terminate();
           activeConnections.clear();
         }, 250);
@@ -270,7 +475,12 @@ export async function startBridgeServer(options: StartBridgeServerOptions): Prom
             return;
           }
           httpServer.close((httpError) => {
-            if (httpError && (httpError as NodeJS.ErrnoException).code !== "ERR_SERVER_NOT_RUNNING") reject(httpError);
+            if (
+              httpError &&
+              (httpError as NodeJS.ErrnoException).code !==
+                "ERR_SERVER_NOT_RUNNING"
+            )
+              reject(httpError);
             else resolve();
           });
         });
@@ -290,14 +500,15 @@ function attachSessionForwarding(
   return [
     session.pty.onData((data) => {
       if (!isCurrent()) return;
-      if (sendOutputWithBackpressure(ws, data, config.wsBufferedAmountLimitBytes)) {
+      if (
+        sendOutputWithBackpressure(ws, data, config.wsBufferedAmountLimitBytes)
+      ) {
         manager.recordActivity(session.id);
       } else {
         manager.recordAuditEvent("bridge_backpressure_closed", {
           sessionId: session.id,
           device: session.publicSummary.device,
         });
-        manager.closeSession(session.id);
       }
     }),
     session.pty.onExit((event) => {
@@ -317,7 +528,10 @@ function writeToPty(
   try {
     action();
   } catch (error) {
-    sendJson(ws, { type: "error", message: "terminal process is no longer available" });
+    sendJson(ws, {
+      type: "error",
+      message: "terminal process is no longer available",
+    });
     console.error("quick-shell bridge PTY I/O failed", {
       sessionId: session.id,
       message: error instanceof Error ? error.message : String(error),

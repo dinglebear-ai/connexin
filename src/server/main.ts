@@ -4,12 +4,19 @@ import express from "express";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { createAuditLogger } from "./audit-log.js";
-import { loadRuntimeConfig, type RuntimeConfig } from "./config.js";
+import {
+  httpPortFromEnv,
+  loadRuntimeConfig,
+  type RuntimeConfig,
+} from "./config.js";
 import { loadDeviceMetadata } from "./device-metadata.js";
 import { loadAllowedSshHosts } from "./ssh-config.js";
 import { createServer } from "./create-server.js";
 import { startBridgeServer, type BridgeServer } from "./bridge-server.js";
-import { QuickShellSessionManager, type PtyFactory } from "./session-manager.js";
+import {
+  QuickShellSessionManager,
+  type PtyFactory,
+} from "./session-manager.js";
 
 export interface PreparedRuntime {
   config: RuntimeConfig;
@@ -31,13 +38,51 @@ export interface HttpMcpServer {
   close(): Promise<void>;
 }
 
-export async function prepareRuntime(options: PrepareRuntimeOptions = {}): Promise<PreparedRuntime> {
+function listenHttpServer(
+  httpServer: http.Server,
+  port: number,
+  host: string,
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const handleError = (error: Error) => {
+      httpServer.off("listening", handleListening);
+      reject(error);
+    };
+    const handleListening = () => {
+      httpServer.off("error", handleError);
+      resolve();
+    };
+
+    httpServer.once("error", handleError);
+    httpServer.once("listening", handleListening);
+    httpServer.listen(port, host);
+  });
+}
+
+function closeHttpServer(httpServer: http.Server): Promise<void> {
+  return new Promise((resolve, reject) => {
+    httpServer.close((error) => {
+      if (
+        error &&
+        (error as NodeJS.ErrnoException).code !== "ERR_SERVER_NOT_RUNNING"
+      )
+        reject(error);
+      else resolve();
+    });
+  });
+}
+
+export async function prepareRuntime(
+  options: PrepareRuntimeOptions = {},
+): Promise<PreparedRuntime> {
   const config = loadRuntimeConfig(options.env ?? process.env);
   const [allowedHosts, deviceMetadata] = await Promise.all([
     loadAllowedSshHosts(config.sshConfigPath),
     loadDeviceMetadata(config.quickShellConfigPath),
   ]);
-  const audit = createAuditLogger(config.auditLogPath ? { path: config.auditLogPath } : {});
+  const audit = createAuditLogger(
+    config.auditLogPath ? { path: config.auditLogPath } : {},
+  );
   const manager = new QuickShellSessionManager({
     config,
     allowedHosts,
@@ -62,7 +107,11 @@ export async function prepareRuntime(options: PrepareRuntimeOptions = {}): Promi
     maxPayloadBytes: config.maxWsPayloadBytes,
     allowedOriginCount: config.allowedOrigins.length,
   });
-  const server = createServer({ bridgeBaseUrl: bridge.baseUrl, config, manager });
+  const server = createServer({
+    bridgeBaseUrl: bridge.baseUrl,
+    config,
+    manager,
+  });
   let closePromise: Promise<void> | undefined;
   const cleanupTimer = setInterval(() => {
     try {
@@ -101,9 +150,15 @@ export async function prepareRuntime(options: PrepareRuntimeOptions = {}): Promi
           errors.push(error);
           console.error("quick-shell bridge close failed", error);
         }
-        manager.recordAuditEvent("runtime_closed", { mode: options.mode ?? "stdio", errorCount: errors.length });
+        manager.recordAuditEvent("runtime_closed", {
+          mode: options.mode ?? "stdio",
+          errorCount: errors.length,
+        });
         if (errors.length > 0) {
-          throw new AggregateError(errors, "quick-shell runtime cleanup failed");
+          throw new AggregateError(
+            errors,
+            "quick-shell runtime cleanup failed",
+          );
         }
       });
       return closePromise;
@@ -128,7 +183,9 @@ export async function startHttpMcpServer(options: {
   const requestClosers = new Set<() => Promise<void>>();
   app.use(express.json({ limit: "1mb" }));
   app.all("/mcp", async (req, res) => {
-    if (!bearerIsValid(req.header("authorization"), runtime.config.httpToken!)) {
+    if (
+      !bearerIsValid(req.header("authorization"), runtime.config.httpToken!)
+    ) {
       res.status(401).json({ error: "missing or invalid bearer token" });
       return;
     }
@@ -138,14 +195,24 @@ export async function startHttpMcpServer(options: {
       config: runtime.config,
       manager: runtime.manager,
     });
-    const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+    const transport = new StreamableHTTPServerTransport({
+      sessionIdGenerator: undefined,
+    });
     let closed = false;
     const closeRequest = async () => {
       if (closed) return;
       closed = true;
       requestClosers.delete(closeRequest);
-      await transport.close().catch((error) => console.error("quick-shell HTTP transport close failed", error));
-      await requestServer.close().catch((error) => console.error("quick-shell HTTP request server close failed", error));
+      await transport
+        .close()
+        .catch((error) =>
+          console.error("quick-shell HTTP transport close failed", error),
+        );
+      await requestServer
+        .close()
+        .catch((error) =>
+          console.error("quick-shell HTTP request server close failed", error),
+        );
     };
     requestClosers.add(closeRequest);
     res.on("close", () => {
@@ -165,7 +232,15 @@ export async function startHttpMcpServer(options: {
   });
 
   const httpServer = http.createServer(app);
-  await new Promise<void>((resolve) => httpServer.listen(options.port ?? 0, "127.0.0.1", resolve));
+  try {
+    await listenHttpServer(httpServer, options.port ?? 0, "127.0.0.1");
+  } catch (error) {
+    await Promise.all(
+      [...requestClosers].map((closeRequest) => closeRequest()),
+    );
+    await closeHttpServer(httpServer).catch(() => undefined);
+    throw error;
+  }
   const address = httpServer.address();
   if (address === null || typeof address === "string") {
     throw new Error("HTTP MCP server did not bind to a TCP port");
@@ -176,13 +251,10 @@ export async function startHttpMcpServer(options: {
     baseUrl: `http://127.0.0.1:${address.port}`,
     close: () => {
       closePromise ??= (async () => {
-        await Promise.all([...requestClosers].map((closeRequest) => closeRequest()));
-        await new Promise<void>((resolve, reject) => {
-          httpServer.close((error) => {
-            if (error && (error as NodeJS.ErrnoException).code !== "ERR_SERVER_NOT_RUNNING") reject(error);
-            else resolve();
-          });
-        });
+        await Promise.all(
+          [...requestClosers].map((closeRequest) => closeRequest()),
+        );
+        await closeHttpServer(httpServer);
       })();
       return closePromise;
     },
@@ -207,20 +279,59 @@ export async function runStdio(): Promise<void> {
   const runtime = await prepareRuntime({ mode: "stdio" });
   registerSignalCleanup(runtime);
   const transport = new StdioServerTransport();
-  await runtime.server.connect(transport);
-  transport.onclose = () => {
-    void runtime.close().catch((error) => console.error("quick-shell runtime cleanup failed", error));
+  let closePromise: Promise<void> | undefined;
+  const closeRuntime = (exitAfterClose = false) => {
+    cleanupStdioListeners();
+    closePromise ??= runtime
+      .close()
+      .catch((error) =>
+        console.error("quick-shell runtime cleanup failed", error),
+      );
+    if (exitAfterClose) {
+      void closePromise.finally(() => process.exit(0));
+    }
   };
+  const cleanupStdioListeners = () => {
+    process.stdin.off("end", closeFromStdin);
+    process.stdin.off("close", closeFromStdin);
+  };
+  const closeFromStdin = () => closeRuntime(true);
+  process.stdin.once("end", closeFromStdin);
+  process.stdin.once("close", closeFromStdin);
+  transport.onclose = () => {
+    closeRuntime();
+  };
+  await runtime.server.connect(transport);
 }
 
-export async function runHttp(): Promise<void> {
-  const runtime = await prepareRuntime({ mode: "http" });
+export async function runHttp(
+  options: Omit<PrepareRuntimeOptions, "mode"> = {},
+): Promise<void> {
+  const env = options.env ?? process.env;
+  const runtime = await prepareRuntime({ ...options, env, mode: "http" });
+  let httpServer: HttpMcpServer;
+  try {
+    httpServer = await startHttpMcpServer({
+      runtime,
+      port: httpPortFromEnv(env),
+    });
+  } catch (error) {
+    await runtime
+      .close()
+      .catch((closeError) =>
+        console.error("quick-shell runtime cleanup failed", closeError),
+      );
+    throw error;
+  }
   registerSignalCleanup(runtime);
-  const httpServer = await startHttpMcpServer({ runtime, port: Number(process.env.QUICK_SHELL_HTTP_PORT) || 0 });
   console.error(`quick-shell HTTP MCP listening at ${httpServer.baseUrl}/mcp`);
-  console.error(`quick-shell terminal bridge listening at ${runtime.bridge.listenUrl}`);
+  console.error(
+    `quick-shell terminal bridge listening at ${runtime.bridge.listenUrl}`,
+  );
   if (runtime.bridge.baseUrl !== runtime.bridge.listenUrl) {
-    console.error(`quick-shell terminal bridge public URL ${runtime.bridge.baseUrl}`);
+    console.error(
+      `quick-shell terminal bridge public URL ${runtime.bridge.baseUrl}`,
+    );
   }
 }
 

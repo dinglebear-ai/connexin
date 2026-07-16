@@ -18,10 +18,11 @@ function emptyConfig(): DeviceMetadataConfig {
 }
 
 function stripComment(line: string): string {
-  let quote: "\"" | undefined;
+  let quote: '"' | undefined;
   for (let index = 0; index < line.length; index += 1) {
     const char = line[index];
-    if (char === "\"" && line[index - 1] !== "\\") quote = quote ? undefined : "\"";
+    if (char === '"' && line[index - 1] !== "\\")
+      quote = quote ? undefined : '"';
     if (!quote && char === "#") return line.slice(0, index);
   }
   return line;
@@ -29,17 +30,24 @@ function stripComment(line: string): string {
 
 function parseStringLiteral(raw: string, lineNumber: number): string {
   const value = raw.trim();
-  if (!value.startsWith("\"") || !value.endsWith("\"")) {
-    throw new Error(`quick-shell.toml line ${lineNumber}: values must be quoted strings`);
+  if (!value.startsWith('"') || !value.endsWith('"')) {
+    throw new Error(
+      `quick-shell.toml line ${lineNumber}: values must be quoted strings`,
+    );
   }
   try {
     return JSON.parse(value) as string;
   } catch {
-    throw new Error(`quick-shell.toml line ${lineNumber}: invalid string literal`);
+    throw new Error(
+      `quick-shell.toml line ${lineNumber}: invalid string literal`,
+    );
   }
 }
 
-function parseDeviceHeader(raw: string, lineNumber: number): string | undefined {
+function parseDeviceHeader(
+  raw: string,
+  lineNumber: number,
+): string | undefined {
   const header = raw.trim();
   if (!header.startsWith("[") || !header.endsWith("]")) return undefined;
 
@@ -47,17 +55,21 @@ function parseDeviceHeader(raw: string, lineNumber: number): string | undefined 
   if (!body.startsWith("devices.")) return undefined;
 
   const alias = body.slice("devices.".length).trim();
-  if (alias.startsWith("\"") && alias.endsWith("\"")) {
+  if (alias.startsWith('"') && alias.endsWith('"')) {
     try {
       const parsed = JSON.parse(alias) as unknown;
       if (typeof parsed !== "string") throw new Error("not a string");
       return parsed;
     } catch {
-      throw new Error(`quick-shell.toml line ${lineNumber}: invalid device table name`);
+      throw new Error(
+        `quick-shell.toml line ${lineNumber}: invalid device table name`,
+      );
     }
   }
   if (/^[A-Za-z0-9_.-]+$/.test(alias)) return alias;
-  throw new Error(`quick-shell.toml line ${lineNumber}: invalid device table name`);
+  throw new Error(
+    `quick-shell.toml line ${lineNumber}: invalid device table name`,
+  );
 }
 
 export function parseQuickShellToml(source: string): DeviceMetadataConfig {
@@ -77,11 +89,16 @@ export function parseQuickShellToml(source: string): DeviceMetadataConfig {
     }
 
     if (!currentAlias) {
-      throw new Error(`quick-shell.toml line ${lineNumber}: expected [devices.<alias>] before key`);
+      throw new Error(
+        `quick-shell.toml line ${lineNumber}: expected [devices.<alias>] before key`,
+      );
     }
 
     const separator = line.indexOf("=");
-    if (separator === -1) throw new Error(`quick-shell.toml line ${lineNumber}: expected key = "value"`);
+    if (separator === -1)
+      throw new Error(
+        `quick-shell.toml line ${lineNumber}: expected key = "value"`,
+      );
 
     const key = line.slice(0, separator).trim();
     const value = parseStringLiteral(line.slice(separator + 1), lineNumber);
@@ -96,19 +113,24 @@ export function parseQuickShellToml(source: string): DeviceMetadataConfig {
       }
       metadata.danger = value;
     } else {
-      throw new Error(`quick-shell.toml line ${lineNumber}: unknown key ${key}`);
+      throw new Error(
+        `quick-shell.toml line ${lineNumber}: unknown key ${key}`,
+      );
     }
   }
 
   return { devices };
 }
 
-export async function loadDeviceMetadata(path: string): Promise<DeviceMetadataConfig> {
+export async function loadDeviceMetadata(
+  path: string,
+): Promise<DeviceMetadataConfig> {
   let source: string;
   try {
     source = await readFile(path, "utf8");
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return emptyConfig();
+    if ((error as NodeJS.ErrnoException).code === "ENOENT")
+      return emptyConfig();
     throw error;
   }
   return parseQuickShellToml(source);

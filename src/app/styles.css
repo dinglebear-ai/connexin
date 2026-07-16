@@ -78,7 +78,10 @@ button:disabled {
   display: grid;
   grid-template-rows: auto auto minmax(280px, 1fr) auto;
   gap: 10px;
-  padding: calc(12px + var(--qs-safe-area-top)) calc(12px + var(--qs-safe-area-right)) calc(12px + var(--qs-safe-area-bottom)) calc(12px + var(--qs-safe-area-left));
+  padding: calc(12px + var(--qs-safe-area-top))
+    calc(12px + var(--qs-safe-area-right))
+    calc(12px + var(--qs-safe-area-bottom))
+    calc(12px + var(--qs-safe-area-left));
   background: transparent;
 }
 
@@ -163,7 +166,14 @@ button:disabled {
   min-height: 180px;
   resize: vertical;
   padding: 10px;
-  font-family: var(--font-mono, "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-family: var(
+    --font-mono,
+    "JetBrains Mono",
+    ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    monospace
+  );
   font-size: 13px;
   line-height: 1.45;
 }

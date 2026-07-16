@@ -8,7 +8,9 @@ import {
 
 describe("normalizeTerminalOutput", () => {
   it("removes common ANSI SGR sequences and normalizes CRLF", () => {
-    expect(normalizeTerminalOutput("\u001b[31mred\u001b[0m\r\nnext\rline")).toBe("red\nnext\nline");
+    expect(
+      normalizeTerminalOutput("\u001b[31mred\u001b[0m\r\nnext\rline"),
+    ).toBe("red\nnext\nline");
   });
 
   it("removes OSC clipboard, hyperlink, CSI control, BEL, and C1/C0 controls", () => {

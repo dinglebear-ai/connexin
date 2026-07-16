@@ -42,7 +42,8 @@ export interface AuditLogger {
   flush?(): Promise<void>;
 }
 
-const REDACTED_FIELD_PATTERN = /token|output|suggestedcommand|suggested_command/i;
+const REDACTED_FIELD_PATTERN =
+  /token|output|suggestedcommand|suggested_command/i;
 
 function redact(fields: AuditFields): AuditFields {
   const safe: AuditFields = {};
@@ -66,7 +67,9 @@ function redactValue(value: unknown): unknown {
   return safe;
 }
 
-export function createMemoryAuditSink(): AuditSink & { records: AuditRecord[] } {
+export function createMemoryAuditSink(): AuditSink & {
+  records: AuditRecord[];
+} {
   const records: AuditRecord[] = [];
   return {
     records,
@@ -80,7 +83,10 @@ function createFileSink(path: string): AuditSink {
   mkdirSync(dirname(path), { recursive: true });
   return {
     write(record) {
-      appendFileSync(path, `${JSON.stringify(record)}\n`, { encoding: "utf8", mode: 0o600 });
+      appendFileSync(path, `${JSON.stringify(record)}\n`, {
+        encoding: "utf8",
+        mode: 0o600,
+      });
     },
     async flush() {},
   };
@@ -94,8 +100,12 @@ function createStderrSink(): AuditSink {
   };
 }
 
-export function createAuditLogger(options: { sink?: AuditSink; path?: string } = {}): AuditLogger {
-  const sink = options.sink ?? (options.path ? createFileSink(options.path) : createStderrSink());
+export function createAuditLogger(
+  options: { sink?: AuditSink; path?: string } = {},
+): AuditLogger {
+  const sink =
+    options.sink ??
+    (options.path ? createFileSink(options.path) : createStderrSink());
   return {
     record(event, fields = {}) {
       sink.write({

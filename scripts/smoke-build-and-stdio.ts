@@ -9,7 +9,10 @@ const APP_RESOURCE_URI = "ui://quick-shell/mcp-app.v2.html";
 
 const tempDir = await mkdtemp(join(tmpdir(), "quick-shell-smoke-"));
 const sshConfigPath = join(tempDir, "config");
-await writeFile(sshConfigPath, "Host test-device\n  HostName 127.0.0.1\n  ConnectTimeout 1\n");
+await writeFile(
+  sshConfigPath,
+  "Host test-device\n  HostName 127.0.0.1\n  ConnectTimeout 1\n",
+);
 
 const env: Record<string, string> = {};
 for (const [key, value] of Object.entries(process.env)) {
@@ -30,7 +33,8 @@ transport.stderr?.on("data", (chunk) => {
 });
 
 function requireString(value: unknown, name: string): string {
-  if (typeof value !== "string" || value.length === 0) throw new Error(`${name} missing`);
+  if (typeof value !== "string" || value.length === 0)
+    throw new Error(`${name} missing`);
   return value;
 }
 
@@ -65,11 +69,22 @@ try {
   }
 
   const resource = await client.readResource({ uri: APP_RESOURCE_URI });
-  if (!resource.contents.some((content) => "text" in content && String(content.text).includes("quick-shell"))) {
+  if (
+    !resource.contents.some(
+      (content) =>
+        "text" in content && String(content.text).includes("quick-shell"),
+    )
+  ) {
     throw new Error("quick-shell app resource did not load");
   }
-  const appHtml = resource.contents.find((content) => "text" in content && typeof content.text === "string");
-  if (!appHtml || !("text" in appHtml) || !appHtml.text.includes("data:application/wasm;base64,")) {
+  const appHtml = resource.contents.find(
+    (content) => "text" in content && typeof content.text === "string",
+  );
+  if (
+    !appHtml ||
+    !("text" in appHtml) ||
+    !appHtml.text.includes("data:application/wasm;base64,")
+  ) {
     throw new Error("quick-shell app resource did not inline Ghostty WASM");
   }
   const emittedAppFiles = await readdir("dist/app", { recursive: true });
@@ -77,16 +92,26 @@ try {
     throw new Error("quick-shell app emitted a sidecar WASM file");
   }
 
-  const opened = await client.callTool({ name: "open_quick_shell", arguments: { device: "test-device" } });
-  const quickShell = (opened._meta as Record<string, unknown> | undefined)?.quickShell as
-    | Record<string, unknown>
-    | undefined;
+  const opened = await client.callTool({
+    name: "open_quick_shell",
+    arguments: { device: "test-device" },
+  });
+  const quickShell = (opened._meta as Record<string, unknown> | undefined)
+    ?.quickShell as Record<string, unknown> | undefined;
   const sessionId = requireString(quickShell?.sessionId, "sessionId");
   const appToken = requireString(quickShell?.appToken, "appToken");
 
-  const modelVisible = JSON.stringify([opened.content, opened.structuredContent]);
-  if (/appToken|wsToken/.test(modelVisible) || modelVisible.includes(appToken)) {
-    throw new Error("open_quick_shell leaked token material into model-visible fields");
+  const modelVisible = JSON.stringify([
+    opened.content,
+    opened.structuredContent,
+  ]);
+  if (
+    /appToken|wsToken/.test(modelVisible) ||
+    modelVisible.includes(appToken)
+  ) {
+    throw new Error(
+      "open_quick_shell leaked token material into model-visible fields",
+    );
   }
 
   const details = await client.callTool({
@@ -94,20 +119,30 @@ try {
     arguments: { sessionId, appToken },
   });
   if (JSON.stringify(details.structuredContent).includes("wsUrl")) {
-    throw new Error("get_quick_shell_session leaked WebSocket details into structured content");
+    throw new Error(
+      "get_quick_shell_session leaked WebSocket details into structured content",
+    );
   }
-  const appSession = (details._meta as Record<string, unknown> | undefined)?.quickShellSession as
-    | Record<string, unknown>
-    | undefined;
+  const appSession = (details._meta as Record<string, unknown> | undefined)
+    ?.quickShellSession as Record<string, unknown> | undefined;
   const wsUrl = requireString(appSession?.wsUrl, "wsUrl");
-  const wsToken = requireString(new URL(wsUrl).searchParams.get("token"), "wsToken");
-  if (JSON.stringify(details.content).includes(appToken) || JSON.stringify(details.content).includes(wsToken)) {
-    throw new Error("get_quick_shell_session leaked token material into text content");
+  const wsToken = requireString(appSession?.wsToken, "wsToken");
+  if (wsUrl.includes("token=")) {
+    throw new Error("get_quick_shell_session embedded token material in wsUrl");
+  }
+  if (
+    JSON.stringify(details.content).includes(appToken) ||
+    JSON.stringify(details.content).includes(wsToken)
+  ) {
+    throw new Error(
+      "get_quick_shell_session leaked token material into text content",
+    );
   }
 
   const ws = new WebSocket(wsUrl);
   const ready = nextMessage(ws);
   await waitForOpen(ws);
+  ws.send(JSON.stringify({ type: "authenticate", token: wsToken }));
   const readyMessage = await ready;
   if (
     !readyMessage ||
@@ -122,18 +157,33 @@ try {
     name: "close_quick_shell_session",
     arguments: { sessionId, appToken },
   });
-  if ((closeResult.structuredContent as Record<string, unknown> | undefined)?.closed !== true) {
+  if (
+    (closeResult.structuredContent as Record<string, unknown> | undefined)
+      ?.closed !== true
+  ) {
     throw new Error("close_quick_shell_session did not close session");
   }
   await closed;
 
-  if (stderr.includes(appToken) || stderr.includes(wsToken) || /appToken|wsToken/.test(stderr)) {
+  if (
+    stderr.includes(appToken) ||
+    stderr.includes(wsToken) ||
+    /appToken|wsToken/.test(stderr)
+  ) {
     throw new Error("stdio smoke stderr included quick-shell token material");
   }
 
   console.log("stdio smoke passed");
 } finally {
-  await client.close().catch((error) => console.error("quick-shell smoke client close failed", error));
-  await transport.close().catch((error) => console.error("quick-shell smoke transport close failed", error));
+  await client
+    .close()
+    .catch((error) =>
+      console.error("quick-shell smoke client close failed", error),
+    );
+  await transport
+    .close()
+    .catch((error) =>
+      console.error("quick-shell smoke transport close failed", error),
+    );
   await rm(tempDir, { recursive: true, force: true });
 }

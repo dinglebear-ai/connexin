@@ -18,7 +18,9 @@ async function sshConfigPath(): Promise<string> {
 
 function nextMessage(ws: WebSocket): Promise<ServerTerminalMessage> {
   return new Promise((resolve) => {
-    ws.once("message", (data) => resolve(JSON.parse(data.toString()) as ServerTerminalMessage));
+    ws.once("message", (data) =>
+      resolve(JSON.parse(data.toString()) as ServerTerminalMessage),
+    );
   });
 }
 
@@ -48,31 +50,47 @@ describe("quick-shell fake PTY E2E", () => {
         return pty;
       },
     });
-    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    const [clientTransport, serverTransport] =
+      InMemoryTransport.createLinkedPair();
     const client = new Client({ name: "e2e-client", version: "0.1.0" });
 
     try {
-      await Promise.all([runtime.server.connect(serverTransport), client.connect(clientTransport)]);
+      await Promise.all([
+        runtime.server.connect(serverTransport),
+        client.connect(clientTransport),
+      ]);
       const opened = await client.callTool({
         name: "open_quick_shell",
         arguments: { device: "test-device", suggested_command: "uptime" },
       });
 
       expect(JSON.stringify(opened.content)).not.toMatch(/appToken|wsToken/);
-      expect(JSON.stringify(opened.structuredContent)).not.toMatch(/appToken|wsToken/);
+      expect(JSON.stringify(opened.structuredContent)).not.toMatch(
+        /appToken|wsToken/,
+      );
 
-      const quickShell = opened._meta?.quickShell as { sessionId: string; appToken: string };
+      const quickShell = opened._meta?.quickShell as {
+        sessionId: string;
+        appToken: string;
+      };
       expect(ptys).toHaveLength(0);
       const details = await client.callTool({
         name: "get_quick_shell_session",
         arguments: quickShell,
       });
       expect(ptys).toHaveLength(1);
-      expect(JSON.stringify(details.structuredContent)).not.toMatch(/wsUrl|wsToken|token=/);
-      const { wsUrl } = details._meta?.quickShellSession as { wsUrl: string };
+      expect(JSON.stringify(details.structuredContent)).not.toMatch(
+        /wsUrl|wsToken|token=/,
+      );
+      const { wsToken, wsUrl } = details._meta?.quickShellSession as {
+        wsToken: string;
+        wsUrl: string;
+      };
+      expect(wsUrl).not.toContain("token=");
       const ws = new WebSocket(wsUrl);
       const ready = nextMessage(ws);
       await waitForOpen(ws);
+      ws.send(JSON.stringify({ type: "authenticate", token: wsToken }));
       await expect(ready).resolves.toMatchObject({ type: "ready" });
 
       ws.send(JSON.stringify({ type: "input", data: "whoami" }));
@@ -80,7 +98,10 @@ describe("quick-shell fake PTY E2E", () => {
       expect(ptys[0]?.writes).toEqual(["whoami"]);
 
       ptys[0]?.emitData("agent\n");
-      await expect(nextMessage(ws)).resolves.toEqual({ type: "output", data: "agent\n" });
+      await expect(nextMessage(ws)).resolves.toEqual({
+        type: "output",
+        data: "agent\n",
+      });
 
       ws.send(JSON.stringify({ type: "close" }));
       await new Promise((resolve) => ws.once("close", resolve));

@@ -19,7 +19,8 @@ const STRING_CONTROL_SEQUENCE = /\u001b[PX^_][\s\S]*?\u001b\\/g;
 const CSI_SEQUENCE = /\u001b\[[0-?]*[ -/]*[@-~]/g;
 const C1_CSI_SEQUENCE = /\u009b[0-?]*[ -/]*[@-~]/g;
 const ESCAPE_SEQUENCE = /\u001b[ -/]*[@-~]/g;
-const CONTROL_CHARACTERS_EXCEPT_TAB_AND_LF = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g;
+const CONTROL_CHARACTERS_EXCEPT_TAB_AND_LF =
+  /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g;
 
 export function normalizeTerminalOutput(output: string): string {
   return output
@@ -33,7 +34,10 @@ export function normalizeTerminalOutput(output: string): string {
     .replace(CONTROL_CHARACTERS_EXCEPT_TAB_AND_LF, "");
 }
 
-export function truncateForSubmit(output: string, maxBytes: number): SubmitText {
+export function truncateForSubmit(
+  output: string,
+  maxBytes: number,
+): SubmitText {
   const bytes = utf8ByteLength(output);
   if (bytes <= maxBytes) {
     return { text: output, bytes, truncated: false };
@@ -43,7 +47,9 @@ export function truncateForSubmit(output: string, maxBytes: number): SubmitText 
 }
 
 export function findSecretWarnings(output: string): string[] {
-  return SECRET_PATTERNS.flatMap(([pattern, warning]) => (pattern.test(output) ? [warning] : []));
+  return SECRET_PATTERNS.flatMap(([pattern, warning]) =>
+    pattern.test(output) ? [warning] : [],
+  );
 }
 
 export function buildInsertPayload(command: string): string {

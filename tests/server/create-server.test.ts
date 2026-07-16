@@ -4,21 +4,58 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { describe, expect, it } from "vitest";
 import type { RuntimeConfig } from "../../src/server/config.js";
-import { createServer, resetAppHtmlCacheForTests } from "../../src/server/create-server.js";
+import {
+  createServer,
+  resetAppHtmlCacheForTests,
+} from "../../src/server/create-server.js";
 import { QuickShellSessionManager } from "../../src/server/session-manager.js";
 import { FakePty } from "./helpers/fake-pty.js";
 import { testRuntimeConfig } from "./helpers/runtime-config.js";
 
 const APP_RESOURCE_URI = "ui://quick-shell/mcp-app.v2.html";
+const APP_HTML_PATH = resolve("dist/app/mcp-app.html");
+
+async function withBuiltAppHtml<T>(
+  html: string,
+  run: () => Promise<T>,
+): Promise<T> {
+  let originalHtml: string | undefined;
+  try {
+    originalHtml = await readFile(APP_HTML_PATH, "utf8");
+  } catch {
+    originalHtml = undefined;
+  }
+
+  await mkdir(resolve("dist/app"), { recursive: true });
+  await writeFile(APP_HTML_PATH, html);
+  resetAppHtmlCacheForTests();
+  try {
+    return await run();
+  } finally {
+    resetAppHtmlCacheForTests();
+    if (originalHtml === undefined) {
+      await rm(APP_HTML_PATH, { force: true });
+    } else {
+      await writeFile(APP_HTML_PATH, originalHtml);
+    }
+  }
+}
 
 async function connectClient(server = createTestServer().server) {
-  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  const [clientTransport, serverTransport] =
+    InMemoryTransport.createLinkedPair();
   const client = new Client({ name: "test-client", version: "0.1.0" });
-  await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+  await Promise.all([
+    server.connect(serverTransport),
+    client.connect(clientTransport),
+  ]);
   return { client, server };
 }
 
-function createTestServer(bridgeBaseUrl = "http://127.0.0.1:34567", overrides: Partial<RuntimeConfig> = {}) {
+function createTestServer(
+  bridgeBaseUrl = "http://127.0.0.1:34567",
+  overrides: Partial<RuntimeConfig> = {},
+) {
   const ptys: FakePty[] = [];
   const runtimeConfig = testRuntimeConfig(overrides);
   const manager = new QuickShellSessionManager({
@@ -30,11 +67,19 @@ function createTestServer(bridgeBaseUrl = "http://127.0.0.1:34567", overrides: P
       return pty;
     },
   });
-  return { server: createServer({ bridgeBaseUrl, config: runtimeConfig, manager }), manager, ptys };
+  return {
+    server: createServer({ bridgeBaseUrl, config: runtimeConfig, manager }),
+    manager,
+    ptys,
+  };
 }
 
 async function connectTestClient(fixture = createTestServer()) {
-  return { ...(await connectClient(fixture.server)), manager: fixture.manager, ptys: fixture.ptys };
+  return {
+    ...(await connectClient(fixture.server)),
+    manager: fixture.manager,
+    ptys: fixture.ptys,
+  };
 }
 
 describe("createServer", () => {
@@ -43,22 +88,51 @@ describe("createServer", () => {
     try {
       const result = await client.callTool({
         name: "open_quick_shell",
-        arguments: { device: "test-device", reason: "debug", suggested_command: "uptime" },
+        arguments: {
+          device: "test-device",
+          reason: "debug",
+          suggested_command: "uptime",
+        },
       });
 
       expect(JSON.stringify(result.content)).not.toMatch(/appToken|wsToken/);
-      expect(JSON.stringify(result.structuredContent)).not.toMatch(/appToken|wsToken/);
-      expect(result.structuredContent).toMatchObject({ device: "test-device", suggestedCommand: "uptime" });
-      const quickShell = result._meta?.quickShell as { sessionId: string; appToken: string };
-      expect(quickShell).toMatchObject({ sessionId: expect.any(String), appToken: expect.any(String) });
-      const appSession = result._meta?.quickShellSession as { sessionId: string; wsUrl: string };
-      expect(appSession).toMatchObject({ sessionId: quickShell.sessionId, wsUrl: expect.stringContaining("/terminal?session=") });
-      expect(JSON.stringify(result._meta)).not.toMatch(/wsToken/);
+      expect(JSON.stringify(result.structuredContent)).not.toMatch(
+        /appToken|wsToken/,
+      );
+      expect(result.structuredContent).toMatchObject({
+        device: "test-device",
+        suggestedCommand: "uptime",
+      });
+      const quickShell = result._meta?.quickShell as {
+        sessionId: string;
+        appToken: string;
+      };
+      expect(quickShell).toMatchObject({
+        sessionId: expect.any(String),
+        appToken: expect.any(String),
+      });
+      const appSession = result._meta?.quickShellSession as {
+        sessionId: string;
+        wsUrl: string;
+        wsToken: string;
+        maxInputBytes: number;
+      };
+      expect(appSession).toMatchObject({
+        sessionId: quickShell.sessionId,
+        wsUrl: expect.stringContaining("/terminal?session="),
+        wsToken: expect.any(String),
+        maxInputBytes: 16_384,
+      });
+      expect(appSession.wsUrl).not.toContain("token=");
 
       expect(JSON.stringify(result.content)).not.toContain(quickShell.appToken);
-      expect(JSON.stringify(result.structuredContent)).not.toContain(quickShell.appToken);
-      expect(JSON.stringify(result.content)).not.toContain(new URL(appSession.wsUrl).searchParams.get("token") ?? "__missing__");
-      expect(JSON.stringify(result.structuredContent)).not.toContain(new URL(appSession.wsUrl).searchParams.get("token") ?? "__missing__");
+      expect(JSON.stringify(result.structuredContent)).not.toContain(
+        quickShell.appToken,
+      );
+      expect(JSON.stringify(result.content)).not.toContain(appSession.wsToken);
+      expect(JSON.stringify(result.structuredContent)).not.toContain(
+        appSession.wsToken,
+      );
       expect(manager.getSession(quickShell.sessionId)?.pty).toBeUndefined();
       expect(ptys).toEqual([]);
     } finally {
@@ -68,43 +142,64 @@ describe("createServer", () => {
   });
 
   it("uses wss URLs and CSP domains for an https public bridge", async () => {
-    const { client, server } = await connectTestClient(createTestServer("https://quick-shell.example"));
-    try {
-      const result = await client.callTool({
-        name: "open_quick_shell",
-        arguments: { device: "test-device" },
-      });
-      const appSession = result._meta?.quickShellSession as { wsUrl: string };
-      expect(appSession.wsUrl).toMatch(/^wss:\/\/quick-shell\.example\/terminal\?/);
+    await withBuiltAppHtml("<html>fixture</html>", async () => {
+      const { client, server } = await connectTestClient(
+        createTestServer("https://quick-shell.example"),
+      );
+      try {
+        const result = await client.callTool({
+          name: "open_quick_shell",
+          arguments: { device: "test-device" },
+        });
+        const appSession = result._meta?.quickShellSession as { wsUrl: string };
+        expect(appSession.wsUrl).toMatch(
+          /^wss:\/\/quick-shell\.example\/terminal\?/,
+        );
 
-      const resource = await client.readResource({ uri: APP_RESOURCE_URI });
-      expect(resource.contents[0]?._meta).toMatchObject({
-        ui: {
-          csp: {
-            connectDomains: ["https://quick-shell.example", "wss://quick-shell.example"],
+        const resource = await client.readResource({ uri: APP_RESOURCE_URI });
+        expect(resource.contents[0]?._meta).toMatchObject({
+          ui: {
+            csp: {
+              connectDomains: [
+                "https://quick-shell.example",
+                "wss://quick-shell.example",
+              ],
+            },
           },
-        },
-      });
-    } finally {
-      await server.close();
-      await client.close();
-    }
+        });
+      } finally {
+        await server.close();
+        await client.close();
+      }
+    });
   });
 
   it("serves a side-effect-free health check and tool errors for invalid opens", async () => {
     const { client, server } = await connectTestClient();
     try {
-      const health = await client.callTool({ name: "check_quick_shell", arguments: {} });
+      const health = await client.callTool({
+        name: "check_quick_shell",
+        arguments: {},
+      });
       expect(health.structuredContent).toMatchObject({ ok: true });
 
-      const invalid = await client.callTool({ name: "open_quick_shell", arguments: { device: "unknown" } });
+      const invalid = await client.callTool({
+        name: "open_quick_shell",
+        arguments: { device: "unknown" },
+      });
       expect(invalid.isError).toBe(true);
-      expect(JSON.stringify(invalid.content)).toContain("not listed in SSH config");
+      expect(JSON.stringify(invalid.content)).toContain(
+        "not listed in SSH config",
+      );
 
       const listed = await client.listTools();
-      const healthTool = listed.tools.find((tool) => tool.name === "check_quick_shell");
+      const healthTool = listed.tools.find(
+        (tool) => tool.name === "check_quick_shell",
+      );
       expect(healthTool?._meta?.ui).toBeUndefined();
-      expect(healthTool?.outputSchema).toMatchObject({ properties: { ok: { type: "boolean" } } });
+      expect(healthTool?.outputSchema).toMatchObject({
+        properties: { ok: { type: "boolean" } },
+      });
       expect(healthTool?.annotations).toMatchObject({
         readOnlyHint: true,
         destructiveHint: false,
@@ -120,11 +215,17 @@ describe("createServer", () => {
   it("exposes server instructions and portable MCP App tool metadata", async () => {
     const { client, server } = await connectTestClient();
     try {
-      expect(client.getInstructions()).toContain("human-controlled SSH terminal");
+      expect(client.getInstructions()).toContain(
+        "human-controlled SSH terminal",
+      );
 
       const listed = await client.listTools();
-      const openTool = listed.tools.find((tool) => tool.name === "open_quick_shell");
-      const appOnly = listed.tools.find((tool) => tool.name === "get_quick_shell_session");
+      const openTool = listed.tools.find(
+        (tool) => tool.name === "open_quick_shell",
+      );
+      const appOnly = listed.tools.find(
+        (tool) => tool.name === "get_quick_shell_session",
+      );
 
       expect(openTool?.outputSchema).toMatchObject({
         properties: {
@@ -170,7 +271,10 @@ describe("createServer", () => {
         name: "open_quick_shell",
         arguments: { device: "test-device" },
       });
-      const quickShell = opened._meta?.quickShell as { sessionId: string; appToken: string };
+      const quickShell = opened._meta?.quickShell as {
+        sessionId: string;
+        appToken: string;
+      };
 
       const denied = await client.callTool({
         name: "get_quick_shell_session",
@@ -182,13 +286,22 @@ describe("createServer", () => {
         name: "get_quick_shell_session",
         arguments: quickShell,
       });
-      expect(JSON.stringify(details.structuredContent)).not.toMatch(/wsUrl|wsToken|token=/);
-      const appSession = (details._meta?.quickShellSession ?? {}) as { wsUrl: string };
-      expect(appSession.wsUrl).toContain(`/terminal?session=${quickShell.sessionId}&token=`);
-      expect(JSON.stringify(details.structuredContent)).not.toMatch(quickShell.appToken);
-      const wsToken = new URL(appSession.wsUrl).searchParams.get("token");
-      expect(wsToken).toBeTruthy();
-      expect(JSON.stringify(details.content)).not.toContain(wsToken);
+      expect(JSON.stringify(details.structuredContent)).not.toMatch(
+        /wsUrl|wsToken|token=/,
+      );
+      const appSession = (details._meta?.quickShellSession ?? {}) as {
+        wsUrl: string;
+        wsToken: string;
+      };
+      expect(appSession.wsUrl).toContain(
+        `/terminal?session=${quickShell.sessionId}`,
+      );
+      expect(appSession.wsUrl).not.toContain("token=");
+      expect(JSON.stringify(details.structuredContent)).not.toMatch(
+        quickShell.appToken,
+      );
+      expect(appSession.wsToken).toEqual(expect.any(String));
+      expect(JSON.stringify(details.content)).not.toContain(appSession.wsToken);
       expect(manager.getSession(quickShell.sessionId)?.pty).toBeDefined();
       expect(ptys).toHaveLength(1);
     } finally {
@@ -204,7 +317,10 @@ describe("createServer", () => {
         name: "open_quick_shell",
         arguments: { device: "test-device" },
       });
-      const quickShell = opened._meta?.quickShell as { sessionId: string; appToken: string };
+      const quickShell = opened._meta?.quickShell as {
+        sessionId: string;
+        appToken: string;
+      };
 
       const details = await client.callTool({
         name: "get_quick_shell_session",
@@ -234,9 +350,16 @@ describe("createServer", () => {
         arguments: { ...quickShell, afterSeq: 0 },
       });
 
-      expect(JSON.stringify(poll.content)).not.toContain("secret terminal output");
-      expect(JSON.stringify(poll.structuredContent)).not.toContain("secret terminal output");
-      expect(poll.structuredContent).toMatchObject({ sessionId: quickShell.sessionId, device: "test-device" });
+      expect(JSON.stringify(poll.content)).not.toContain(
+        "secret terminal output",
+      );
+      expect(JSON.stringify(poll.structuredContent)).not.toContain(
+        "secret terminal output",
+      );
+      expect(poll.structuredContent).toMatchObject({
+        sessionId: quickShell.sessionId,
+        device: "test-device",
+      });
       expect(poll._meta?.quickShellPoll).toMatchObject({
         sessionId: quickShell.sessionId,
         chunks: [{ seq: 1, data: "secret terminal output" }],
@@ -248,12 +371,44 @@ describe("createServer", () => {
     }
   });
 
+  it("rejects app-only terminal input above the configured UTF-8 byte limit", async () => {
+    const { client, server, ptys } = await connectTestClient(
+      createTestServer("http://127.0.0.1:34567", { maxInputBytes: 4 }),
+    );
+    try {
+      const opened = await client.callTool({
+        name: "open_quick_shell",
+        arguments: { device: "test-device" },
+      });
+      const quickShell = opened._meta?.quickShell as {
+        sessionId: string;
+        appToken: string;
+      };
+
+      const write = await client.callTool({
+        name: "write_quick_shell_input",
+        arguments: { ...quickShell, data: "🙂x" },
+      });
+
+      expect(write.isError).toBe(true);
+      expect(JSON.stringify(write.content)).toContain("Input validation error");
+      expect(ptys[0]?.writes ?? []).toEqual([]);
+    } finally {
+      await server.close();
+      await client.close();
+    }
+  });
+
   it("marks get_quick_shell_session app-only in tools/list", async () => {
     const { client, server } = await connectTestClient();
     try {
       const listed = await client.listTools();
-      const appOnly = listed.tools.find((tool) => tool.name === "get_quick_shell_session");
-      const closeOnly = listed.tools.find((tool) => tool.name === "close_quick_shell_session");
+      const appOnly = listed.tools.find(
+        (tool) => tool.name === "get_quick_shell_session",
+      );
+      const closeOnly = listed.tools.find(
+        (tool) => tool.name === "close_quick_shell_session",
+      );
       expect(appOnly?._meta?.ui).toMatchObject({ visibility: ["app"] });
       expect(closeOnly?._meta?.ui).toMatchObject({ visibility: ["app"] });
     } finally {
@@ -265,8 +420,14 @@ describe("createServer", () => {
   it("closes sessions through an app-only capability", async () => {
     const { client, server } = await connectTestClient();
     try {
-      const opened = await client.callTool({ name: "open_quick_shell", arguments: { device: "test-device" } });
-      const quickShell = opened._meta?.quickShell as { sessionId: string; appToken: string };
+      const opened = await client.callTool({
+        name: "open_quick_shell",
+        arguments: { device: "test-device" },
+      });
+      const quickShell = opened._meta?.quickShell as {
+        sessionId: string;
+        appToken: string;
+      };
 
       const denied = await client.callTool({
         name: "close_quick_shell_session",
@@ -274,10 +435,16 @@ describe("createServer", () => {
       });
       expect(denied.isError).toBe(true);
 
-      const closed = await client.callTool({ name: "close_quick_shell_session", arguments: quickShell });
+      const closed = await client.callTool({
+        name: "close_quick_shell_session",
+        arguments: quickShell,
+      });
       expect(closed.structuredContent).toMatchObject({ closed: true });
 
-      const details = await client.callTool({ name: "get_quick_shell_session", arguments: quickShell });
+      const details = await client.callTool({
+        name: "get_quick_shell_session",
+        arguments: quickShell,
+      });
       expect(details.isError).toBe(true);
     } finally {
       await server.close();
@@ -288,14 +455,26 @@ describe("createServer", () => {
   it("treats a missing app-owned session as already closed", async () => {
     const { client, server, manager } = await connectTestClient();
     try {
-      const opened = await client.callTool({ name: "open_quick_shell", arguments: { device: "test-device" } });
-      const quickShell = opened._meta?.quickShell as { sessionId: string; appToken: string };
+      const opened = await client.callTool({
+        name: "open_quick_shell",
+        arguments: { device: "test-device" },
+      });
+      const quickShell = opened._meta?.quickShell as {
+        sessionId: string;
+        appToken: string;
+      };
       manager.closeSession(quickShell.sessionId);
 
-      const closed = await client.callTool({ name: "close_quick_shell_session", arguments: quickShell });
+      const closed = await client.callTool({
+        name: "close_quick_shell_session",
+        arguments: quickShell,
+      });
 
       expect(closed.isError).not.toBe(true);
-      expect(closed.structuredContent).toMatchObject({ closed: true, alreadyClosed: true });
+      expect(closed.structuredContent).toMatchObject({
+        closed: true,
+        alreadyClosed: true,
+      });
     } finally {
       await server.close();
       await client.close();
@@ -311,15 +490,32 @@ describe("createServer", () => {
         throw new Error("ssh binary missing");
       },
     });
-    const { client, server } = await connectClient(createServer({ bridgeBaseUrl: "http://127.0.0.1:34567", config: runtimeConfig, manager }));
+    const { client, server } = await connectClient(
+      createServer({
+        bridgeBaseUrl: "http://127.0.0.1:34567",
+        config: runtimeConfig,
+        manager,
+      }),
+    );
     try {
-      const opened = await client.callTool({ name: "open_quick_shell", arguments: { device: "test-device" } });
-      const quickShell = opened._meta?.quickShell as { sessionId: string; appToken: string };
+      const opened = await client.callTool({
+        name: "open_quick_shell",
+        arguments: { device: "test-device" },
+      });
+      const quickShell = opened._meta?.quickShell as {
+        sessionId: string;
+        appToken: string;
+      };
 
-      const details = await client.callTool({ name: "get_quick_shell_session", arguments: quickShell });
+      const details = await client.callTool({
+        name: "get_quick_shell_session",
+        arguments: quickShell,
+      });
 
       expect(details.isError).toBe(true);
-      expect(JSON.stringify(details.content)).toContain("Unable to start quick-shell SSH session for test-device: ssh binary missing");
+      expect(JSON.stringify(details.content)).toContain(
+        "Unable to start quick-shell SSH session for test-device: ssh binary missing",
+      );
       expect(manager.getSession(quickShell.sessionId)).toBeUndefined();
     } finally {
       await server.close();
@@ -328,11 +524,18 @@ describe("createServer", () => {
   });
 
   it("rejects tool arguments above configured limits", async () => {
-    const { client, server } = await connectClient(createTestServer("http://127.0.0.1:34567", { maxDeviceLength: 4 }).server);
+    const { client, server } = await connectClient(
+      createTestServer("http://127.0.0.1:34567", { maxDeviceLength: 4 }).server,
+    );
     try {
-      const result = await client.callTool({ name: "open_quick_shell", arguments: { device: "test-device" } });
+      const result = await client.callTool({
+        name: "open_quick_shell",
+        arguments: { device: "test-device" },
+      });
       expect(result.isError).toBe(true);
-      expect(JSON.stringify(result.content)).toContain("Input validation error");
+      expect(JSON.stringify(result.content)).toContain(
+        "Input validation error",
+      );
     } finally {
       await server.close();
       await client.close();
@@ -340,24 +543,25 @@ describe("createServer", () => {
   });
 
   it("returns app resource CSP with bridge origins and reloads built HTML", async () => {
-    const appPath = resolve("dist/app/mcp-app.html");
     let originalHtml: string | undefined;
     let client: Client | undefined;
     let server: ReturnType<typeof createServer> | undefined;
     try {
       try {
-        originalHtml = await readFile(appPath, "utf8");
+        originalHtml = await readFile(APP_HTML_PATH, "utf8");
       } catch {
         originalHtml = undefined;
       }
 
       await mkdir(resolve("dist/app"), { recursive: true });
-      await writeFile(appPath, "<html>first</html>");
+      await writeFile(APP_HTML_PATH, "<html>first</html>");
       resetAppHtmlCacheForTests();
 
-      ({ client, server } = await connectClient(createTestServer("http://127.0.0.1:45678").server));
+      ({ client, server } = await connectClient(
+        createTestServer("http://127.0.0.1:45678").server,
+      ));
       const first = await client.readResource({ uri: APP_RESOURCE_URI });
-      await writeFile(appPath, "<html>second</html>");
+      await writeFile(APP_HTML_PATH, "<html>second</html>");
       resetAppHtmlCacheForTests();
       const second = await client.readResource({ uri: APP_RESOURCE_URI });
 
@@ -367,7 +571,10 @@ describe("createServer", () => {
         _meta: {
           ui: {
             csp: {
-              connectDomains: ["http://127.0.0.1:45678", "ws://127.0.0.1:45678"],
+              connectDomains: [
+                "http://127.0.0.1:45678",
+                "ws://127.0.0.1:45678",
+              ],
               resourceDomains: [],
               frameDomains: [],
               baseUriDomains: [],
@@ -382,9 +589,9 @@ describe("createServer", () => {
       await server?.close();
       await client?.close();
       if (originalHtml === undefined) {
-        await rm(appPath, { force: true });
+        await rm(APP_HTML_PATH, { force: true });
       } else {
-        await writeFile(appPath, originalHtml);
+        await writeFile(APP_HTML_PATH, originalHtml);
       }
     }
   });

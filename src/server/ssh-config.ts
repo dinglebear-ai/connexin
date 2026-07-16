@@ -4,19 +4,24 @@ import { dirname, isAbsolute, parse, resolve, sep } from "node:path";
 const MAX_INCLUDE_DEPTH = 16;
 
 function isExplicitAlias(alias: string): boolean {
-  return alias !== "*" && !alias.includes("*") && !alias.includes("?") && !alias.startsWith("!");
+  return (
+    alias !== "*" &&
+    !alias.includes("*") &&
+    !alias.includes("?") &&
+    !alias.startsWith("!")
+  );
 }
 
 function tokenizeOpenSshLine(line: string): string[] {
   const tokens: string[] = [];
   let current = "";
-  let quote: "\"" | "'" | undefined;
+  let quote: '"' | "'" | undefined;
 
   for (let index = 0; index < line.length; index += 1) {
     const char = line[index]!;
 
     if (!quote && char === "#") break;
-    if (quote === undefined && (char === "\"" || char === "'")) {
+    if (quote === undefined && (char === '"' || char === "'")) {
       quote = char;
       continue;
     }
@@ -36,7 +41,22 @@ function tokenizeOpenSshLine(line: string): string[] {
   }
 
   if (current.length > 0) tokens.push(current);
+  if (tokens[0]?.includes("=")) {
+    const [keyword, ...rest] = tokens[0].split("=");
+    if (keyword) {
+      const value = rest.join("=");
+      tokens.splice(0, 1, keyword, ...(value.length > 0 ? [value] : []));
+    }
+  }
+  if (tokens[1] === "=") tokens.splice(1, 1);
   return tokens;
+}
+
+export function buildSshCommandArgs(
+  configPath: string,
+  device: string,
+): string[] {
+  return ["-F", configPath, device];
 }
 
 export function parseSshConfigHosts(source: string): string[] {
@@ -48,7 +68,9 @@ export function parseSshConfigHosts(source: string): string[] {
 
   const flushHostBlock = () => {
     if (currentUnsafeDirective && currentPatterns.length > 0) {
-      throw new Error(`SSH config Host ${currentPatterns.join(" ")} uses unsupported ${currentUnsafeDirective}`);
+      throw new Error(
+        `SSH config Host ${currentPatterns.join(" ")} uses unsupported ${currentUnsafeDirective}`,
+      );
     }
     for (const alias of currentAliases) {
       if (seen.has(alias)) continue;
@@ -76,14 +98,18 @@ export function parseSshConfigHosts(source: string): string[] {
     if (normalizedKeyword === "match") {
       flushHostBlock();
       if (args.some((arg) => arg.toLowerCase() === "exec")) {
-        throw new Error("SSH config Match exec is unsupported because it can execute local commands");
+        throw new Error(
+          "SSH config Match exec is unsupported because it can execute local commands",
+        );
       }
       continue;
     }
 
-    const unsafeDirective = unsafeLocalExecutionDirective(normalizedKeyword, args);
+    const unsafeDirective = unsafeExecutionDirective(normalizedKeyword, args);
     if (unsafeDirective && currentPatterns.length === 0) {
-      throw new Error(`SSH config global scope uses unsupported ${unsafeDirective}`);
+      throw new Error(
+        `SSH config global scope uses unsupported ${unsafeDirective}`,
+      );
     }
     currentUnsafeDirective ??= unsafeDirective;
   }
@@ -92,10 +118,24 @@ export function parseSshConfigHosts(source: string): string[] {
   return hosts;
 }
 
-function unsafeLocalExecutionDirective(keyword: string | undefined, args: string[]): string | undefined {
-  if (keyword === "proxycommand" && args.join(" ").toLowerCase() !== "none") return "ProxyCommand";
+function unsafeExecutionDirective(
+  keyword: string | undefined,
+  args: string[],
+): string | undefined {
+  if (keyword === "proxycommand" && args.join(" ").toLowerCase() !== "none")
+    return "ProxyCommand";
+  if (
+    keyword === "knownhostscommand" &&
+    args.join(" ").toLowerCase() !== "none"
+  )
+    return "KnownHostsCommand";
   if (keyword === "localcommand") return "LocalCommand";
-  if (keyword === "permitlocalcommand" && ["yes", "true", "1"].includes(args[0]?.toLowerCase() ?? "")) {
+  if (keyword === "remotecommand" && args.join(" ").toLowerCase() !== "none")
+    return "RemoteCommand";
+  if (
+    keyword === "permitlocalcommand" &&
+    ["yes", "true", "1"].includes(args[0]?.toLowerCase() ?? "")
+  ) {
     return "PermitLocalCommand";
   }
   return undefined;
@@ -118,7 +158,8 @@ function includePatterns(source: string): string[] {
 
 function expandHome(path: string): string {
   if (path === "~") return process.env.HOME ?? path;
-  if (path.startsWith("~/")) return resolve(process.env.HOME ?? ".", path.slice(2));
+  if (path.startsWith("~/"))
+    return resolve(process.env.HOME ?? ".", path.slice(2));
   return path;
 }
 
@@ -128,7 +169,10 @@ function resolveIncludePattern(pattern: string, basePath: string): string {
 }
 
 function globSegmentToRegExp(segment: string): RegExp {
-  const escaped = segment.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, "[^/]*").replace(/\?/g, "[^/]");
+  const escaped = segment
+    .replace(/[.+^${}()|[\]\\]/g, "\\$&")
+    .replace(/\*/g, "[^/]*")
+    .replace(/\?/g, "[^/]");
   return new RegExp(`^${escaped}$`);
 }
 
@@ -155,7 +199,10 @@ async function expandIncludePath(pattern: string): Promise<string[]> {
       return;
     }
 
-    const entries = await readdir(base, { withFileTypes: true, encoding: "utf8" }).catch(() => undefined);
+    const entries = await readdir(base, {
+      withFileTypes: true,
+      encoding: "utf8",
+    }).catch(() => undefined);
     if (!entries) return;
 
     const pattern = globSegmentToRegExp(segment);
@@ -176,7 +223,8 @@ async function collectSshConfigHosts(
   depth: number,
   required: boolean,
 ): Promise<string[]> {
-  if (depth > MAX_INCLUDE_DEPTH) throw new Error("SSH config Include depth exceeded");
+  if (depth > MAX_INCLUDE_DEPTH)
+    throw new Error("SSH config Include depth exceeded");
 
   const path = resolve(configPath);
   if (seenFiles.has(path)) return [];
@@ -197,13 +245,22 @@ async function collectSshConfigHosts(
   for (const include of includePatterns(source)) {
     const pattern = resolveIncludePattern(include, path);
     for (const includedPath of await expandIncludePath(pattern)) {
-      hosts.push(...(await collectSshConfigHosts(includedPath, seenFiles, depth + 1, false)));
+      hosts.push(
+        ...(await collectSshConfigHosts(
+          includedPath,
+          seenFiles,
+          depth + 1,
+          false,
+        )),
+      );
     }
   }
 
   return hosts;
 }
 
-export async function loadAllowedSshHosts(configPath: string): Promise<Set<string>> {
+export async function loadAllowedSshHosts(
+  configPath: string,
+): Promise<Set<string>> {
   return new Set(await collectSshConfigHosts(configPath, new Set(), 0, true));
 }
