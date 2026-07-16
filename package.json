@@ -1,0 +1,44 @@
+{
+  "name": "quick-shell",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "description": "Human-approved quick shell MCP App for SSH-backed unblock commands",
+  "main": "dist/server/server/main.js",
+  "bin": {
+    "quick-shell": "dist/server/cli/main.js"
+  },
+  "scripts": {
+    "build": "npm run typecheck && cross-env INPUT=mcp-app.html vite build && tsc -p tsconfig.server.json && node scripts/write-build-manifest.mjs",
+    "dev": "cross-env NODE_ENV=development QUICK_SHELL_HTTP_TOKEN=dev-local-token concurrently \"cross-env INPUT=mcp-app.html vite build --watch\" \"tsx watch src/server/main.ts --http\"",
+    "serve": "node dist/server/server/main.js --http",
+    "serve:stdio": "node dist/server/server/main.js --stdio",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "check": "npm run build && npm test",
+    "smoke:stdio": "npm run build && tsx scripts/smoke-build-and-stdio.ts",
+    "verify:deployment": "tsx scripts/verify-deployment.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/ext-apps": "^1.7.4",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "express": "^5.2.1",
+    "ghostty-web": "^0.4.0",
+    "node-pty": "^1.1.0",
+    "ws": "^8.21.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.6",
+    "@types/node": "^26.1.1",
+    "@types/ws": "^8.18.1",
+    "concurrently": "^10.0.3",
+    "cross-env": "^10.1.0",
+    "happy-dom": "^20.10.6",
+    "tsx": "^4.23.0",
+    "typescript": "^7.0.2",
+    "vite": "^8.1.4",
+    "vite-plugin-singlefile": "^2.3.3",
+    "vitest": "^4.1.10"
+  }
+}
