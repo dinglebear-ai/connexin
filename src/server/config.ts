@@ -21,6 +21,15 @@ export interface RuntimeConfig {
   bridgeHost: string;
   bridgePort: number;
   bridgePublicUrl?: string;
+  sftpHelperPath: string;
+  maxFileEntries: number;
+  maxFilePathBytes: number;
+  maxFileComponentBytes: number;
+  maxFilePathDepth: number;
+  maxFileQueuedOperations: number;
+  maxTransferBytes: number;
+  maxEmbeddedDownloadBytes: number;
+  fileOperationLeaseTtlMs: number;
 }
 
 const DEFAULTS = {
@@ -36,6 +45,14 @@ const DEFAULTS = {
   maxSessionAgeMs: 30 * 60_000,
   idleGraceMs: 5 * 60_000,
   cleanupIntervalMs: 30_000,
+  maxFileEntries: 1000,
+  maxFilePathBytes: 4096,
+  maxFileComponentBytes: 255,
+  maxFilePathDepth: 64,
+  maxFileQueuedOperations: 8,
+  maxTransferBytes: 512 * 1024 * 1024,
+  maxEmbeddedDownloadBytes: 8 * 1024 * 1024,
+  fileOperationLeaseTtlMs: 60_000,
 } as const;
 
 function numberFromEnv(
@@ -285,5 +302,48 @@ export function loadRuntimeConfig(
     bridgeHost: env.QUICK_SHELL_BRIDGE_HOST?.trim() || "127.0.0.1",
     bridgePort: portFromEnv(env, "QUICK_SHELL_BRIDGE_PORT", 0),
     bridgePublicUrl,
+    sftpHelperPath:
+      env.QUICK_SHELL_SFTP_HELPER?.trim() ||
+      join(process.cwd(), "dist", "bin", "quick-shell-sftp"),
+    maxFileEntries: numberFromEnv(
+      env,
+      "QUICK_SHELL_MAX_FILE_ENTRIES",
+      DEFAULTS.maxFileEntries,
+    ),
+    maxFilePathBytes: numberFromEnv(
+      env,
+      "QUICK_SHELL_MAX_FILE_PATH_BYTES",
+      DEFAULTS.maxFilePathBytes,
+    ),
+    maxFileComponentBytes: numberFromEnv(
+      env,
+      "QUICK_SHELL_MAX_FILE_COMPONENT_BYTES",
+      DEFAULTS.maxFileComponentBytes,
+    ),
+    maxFilePathDepth: numberFromEnv(
+      env,
+      "QUICK_SHELL_MAX_FILE_PATH_DEPTH",
+      DEFAULTS.maxFilePathDepth,
+    ),
+    maxFileQueuedOperations: numberFromEnv(
+      env,
+      "QUICK_SHELL_MAX_FILE_QUEUED_OPERATIONS",
+      DEFAULTS.maxFileQueuedOperations,
+    ),
+    maxTransferBytes: numberFromEnv(
+      env,
+      "QUICK_SHELL_MAX_TRANSFER_BYTES",
+      DEFAULTS.maxTransferBytes,
+    ),
+    maxEmbeddedDownloadBytes: numberFromEnv(
+      env,
+      "QUICK_SHELL_MAX_EMBEDDED_DOWNLOAD_BYTES",
+      DEFAULTS.maxEmbeddedDownloadBytes,
+    ),
+    fileOperationLeaseTtlMs: numberFromEnv(
+      env,
+      "QUICK_SHELL_FILE_OPERATION_LEASE_TTL_MS",
+      DEFAULTS.fileOperationLeaseTtlMs,
+    ),
   };
 }

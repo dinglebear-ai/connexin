@@ -23,6 +23,15 @@ export function testRuntimeConfig(
     bridgeHost: "127.0.0.1",
     bridgePort: 0,
     bridgePublicUrl: undefined,
+    sftpHelperPath: "/tmp/quick-shell-sftp",
+    maxFileEntries: 1000,
+    maxFilePathBytes: 4096,
+    maxFileComponentBytes: 255,
+    maxFilePathDepth: 64,
+    maxFileQueuedOperations: 8,
+    maxTransferBytes: 512 * 1024 * 1024,
+    maxEmbeddedDownloadBytes: 8 * 1024 * 1024,
+    fileOperationLeaseTtlMs: 60_000,
     ...overrides,
   };
 }

@@ -20,6 +20,8 @@ import {
 } from "../shared/terminal-defaults.js";
 import { BoundedTextBuffer } from "../shared/bounded-text-buffer.js";
 import { takeLastUtf8Bytes, utf8ByteLength } from "../shared/utf8.js";
+import { FileSession, type FileHelperFactory } from "./file-session.js";
+import { spawnSftpHelper } from "./sftp-helper.js";
 
 export interface Disposable {
   dispose(): void;
@@ -55,6 +57,8 @@ export interface QuickShellSession {
   id: SessionId;
   appToken: string;
   wsToken: string;
+  fileToken: string;
+  fileSession?: FileSession;
   pty?: PtyProcess;
   publicSummary: QuickShellPublicSession;
   createdAt: number;
@@ -96,6 +100,7 @@ export interface QuickShellSessionManagerOptions {
   deviceMetadata?: DeviceMetadataConfig;
   audit?: AuditLogger;
   ptyFactory?: PtyFactory;
+  fileHelperFactory?: (session: QuickShellSession) => FileHelperFactory;
 }
 
 const ENV_ALLOWLIST = [
@@ -141,6 +146,9 @@ export class QuickShellSessionManager {
   private readonly deviceMetadata: DeviceMetadataConfig;
   private readonly audit: AuditLogger;
   private readonly ptyFactory: PtyFactory;
+  private readonly fileHelperFactory: (
+    session: QuickShellSession,
+  ) => FileHelperFactory;
   private readonly sessions = new Map<SessionId, QuickShellSession>();
   private readonly closedListeners = new Set<(sessionId: SessionId) => void>();
   private droppedAuditRecords = 0;
@@ -152,6 +160,17 @@ export class QuickShellSessionManager {
     this.deviceMetadata = options.deviceMetadata ?? { devices: new Map() };
     this.audit = options.audit ?? noopAuditLogger;
     this.ptyFactory = options.ptyFactory ?? defaultPtyFactory();
+    this.fileHelperFactory =
+      options.fileHelperFactory ??
+      ((session) => () =>
+        spawnSftpHelper({
+          helperPath: this.config.sftpHelperPath,
+          sshConfigPath: this.config.sshConfigPath,
+          device: session.publicSummary.device,
+          cwd: process.env.HOME,
+          env: buildPtyEnv(),
+          maxPending: this.config.maxFileQueuedOperations,
+        }));
   }
 
   async createSession(
@@ -188,6 +207,7 @@ export class QuickShellSessionManager {
       id,
       appToken: token(),
       wsToken: token(),
+      fileToken: token(),
       publicSummary,
       createdAt: now,
       lastActivityAt: now,
@@ -322,6 +342,17 @@ export class QuickShellSessionManager {
     if (!session || session.wsToken !== wsToken) return undefined;
     this.recordActivity(sessionId);
     return session;
+  }
+
+  getFileSession(sessionId: SessionId): FileSession | undefined {
+    const session = this.sessions.get(sessionId);
+    if (!session || session.closing) return undefined;
+    session.fileSession ??= new FileSession(
+      this.config,
+      this.fileHelperFactory(session),
+    );
+    this.recordActivity(sessionId);
+    return session.fileSession;
   }
 
   recordActivity(sessionId: SessionId): boolean {
@@ -546,6 +577,7 @@ export class QuickShellSessionManager {
   } {
     const failures: LifecycleFailure[] = [];
     session.closing = true;
+    session.fileSession?.dispose();
     this.disposeRegisteredListeners(
       session.id,
       session.disposables.splice(0),
