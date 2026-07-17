@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -183,8 +184,9 @@ func (h *handler) handle(ctx context.Context, req request) (any, error) {
 		return map[string]bool{"ok": true}, err
 	case "upload":
 		params, err := decodeParams[struct {
-			Path  string `json:"path"`
-			Bytes int64  `json:"bytes"`
+			Path      string `json:"path"`
+			Bytes     int64  `json:"bytes"`
+			Overwrite bool   `json:"overwrite"`
 		}](req.Params)
 		if err != nil || params.Bytes < 0 {
 			return nil, errors.New("invalid_request")
@@ -193,15 +195,48 @@ func (h *handler) handle(ctx context.Context, req request) (any, error) {
 		if fd == nil {
 			return nil, errors.New("transfer_unavailable")
 		}
-		file, err := h.client.OpenFile(params.Path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC)
+		if info, statErr := h.client.Lstat(params.Path); statErr == nil {
+			if !params.Overwrite || info.Mode()&os.ModeSymlink != 0 || info.IsDir() {
+				return nil, errors.New("already_exists")
+			}
+		} else if !errors.Is(statErr, os.ErrNotExist) {
+			return nil, statErr
+		}
+		tempPath, err := siblingTempPath(params.Path)
 		if err != nil {
 			return nil, err
 		}
-		defer file.Close()
+		file, err := h.client.OpenFile(tempPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL)
+		if err != nil {
+			return nil, err
+		}
+		committed := false
+		defer func() {
+			if !committed {
+				_ = h.client.Remove(tempPath)
+			}
+		}()
+		if err := file.Chmod(0o600); err != nil {
+			_ = file.Close()
+			return nil, err
+		}
 		n, err := io.CopyN(file, fd, params.Bytes)
 		if err != nil {
+			_ = file.Close()
 			return nil, err
 		}
+		if err := file.Close(); err != nil {
+			return nil, err
+		}
+		if params.Overwrite {
+			err = h.client.PosixRename(tempPath, params.Path)
+		} else {
+			err = h.client.Rename(tempPath, params.Path)
+		}
+		if err != nil {
+			return nil, err
+		}
+		committed = true
 		return map[string]int64{"bytes": n}, nil
 	case "download":
 		params, err := decodeParams[struct {
@@ -270,6 +305,9 @@ func serve(client *sftp.Client, input io.Reader, output io.Writer) error {
 			if strings.Contains(callErr.Error(), "too_large") {
 				res.Code = "too_large"
 			}
+			if strings.Contains(callErr.Error(), "already_exists") {
+				res.Code = "already_exists"
+			}
 		}
 		if err := encoder.Encode(res); err != nil {
 			return err
@@ -279,3 +317,11 @@ func serve(client *sftp.Client, input io.Reader, output io.Writer) error {
 }
 
 func usageError(message string) error { return fmt.Errorf("quick-shell-sftp: %s", message) }
+
+func siblingTempPath(target string) (string, error) {
+	var suffix [12]byte
+	if _, err := rand.Read(suffix[:]); err != nil {
+		return "", err
+	}
+	return path.Join(path.Dir(target), fmt.Sprintf(".%s.quick-shell-%x", path.Base(target), suffix[:])), nil
+}

@@ -151,6 +151,7 @@ export class QuickShellSessionManager {
   ) => FileHelperFactory;
   private readonly sessions = new Map<SessionId, QuickShellSession>();
   private readonly closedListeners = new Set<(sessionId: SessionId) => void>();
+  private readonly fileClosePromises = new Set<Promise<void>>();
   private droppedAuditRecords = 0;
   private lastAuditError: unknown;
 
@@ -170,6 +171,10 @@ export class QuickShellSessionManager {
           cwd: process.env.HOME,
           env: buildPtyEnv(),
           maxPending: this.config.maxFileQueuedOperations,
+          connectTimeoutSeconds: Math.max(
+            1,
+            Math.ceil(this.config.fileMetadataTimeoutMs / 1000),
+          ),
         }));
   }
 
@@ -329,7 +334,8 @@ export class QuickShellSessionManager {
     appToken: string,
   ): QuickShellSession | undefined {
     const session = this.sessions.get(sessionId);
-    if (!session || session.appToken !== appToken) return undefined;
+    if (!session || session.closing || session.appToken !== appToken)
+      return undefined;
     this.recordActivity(sessionId);
     return session;
   }
@@ -503,6 +509,11 @@ export class QuickShellSessionManager {
     this.logLifecycleFailures("quick-shell closeAll cleanup failed", failures);
   }
 
+  async closeAllAndDrain(): Promise<void> {
+    this.closeAll();
+    await Promise.allSettled([...this.fileClosePromises]);
+  }
+
   listSessions(): QuickShellSession[] {
     return [...this.sessions.values()];
   }
@@ -594,6 +605,12 @@ export class QuickShellSessionManager {
     const failures: LifecycleFailure[] = [];
     session.closing = true;
     session.fileSession?.dispose();
+    if (session.fileSession) {
+      const drain = session.fileSession
+        .drain(this.config.fileShutdownTimeoutMs)
+        .finally(() => this.fileClosePromises.delete(drain));
+      this.fileClosePromises.add(drain);
+    }
     this.disposeRegisteredListeners(
       session.id,
       session.disposables.splice(0),

@@ -25,6 +25,7 @@ export function testRuntimeConfig(
     bridgePublicUrl: undefined,
     sftpHelperPath: "/tmp/quick-shell-sftp",
     maxFileEntries: 1000,
+    maxFileMetadataBytes: 512 * 1024,
     maxFilePathBytes: 4096,
     maxFileComponentBytes: 255,
     maxFilePathDepth: 64,
@@ -32,6 +33,10 @@ export function testRuntimeConfig(
     maxTransferBytes: 512 * 1024 * 1024,
     maxEmbeddedDownloadBytes: 8 * 1024 * 1024,
     fileOperationLeaseTtlMs: 60_000,
+    maxFileOperationLeases: 16,
+    fileMetadataTimeoutMs: 30_000,
+    fileTransferMaxDurationMs: 30 * 60_000,
+    fileShutdownTimeoutMs: 5_000,
     ...overrides,
   };
 }

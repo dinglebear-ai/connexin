@@ -1,12 +1,13 @@
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { ChildSftpHelper } from "../../src/server/sftp-helper.js";
 
 function child() {
   const process = new EventEmitter() as any;
   process.stdin = new PassThrough();
   process.stdout = new PassThrough();
+  process.stderr = new PassThrough();
   process.stdio = [
     process.stdin,
     process.stdout,
@@ -16,7 +17,7 @@ function child() {
   ];
   process.exitCode = null;
   process.signalCode = null;
-  process.kill = () => true;
+  process.kill = vi.fn(() => true);
   return process;
 }
 
@@ -41,5 +42,29 @@ describe("ChildSftpHelper", () => {
     const helper = new ChildSftpHelper(child(), 1);
     void helper.request("hello", {});
     await expect(helper.request("hello", {})).rejects.toThrow("queue_full");
+  });
+
+  it("drains bounded stderr without blocking protocol readiness", async () => {
+    const process = child();
+    const helper = new ChildSftpHelper(process);
+    process.stderr.write(Buffer.alloc(256 * 1024, 1));
+    const pending = helper.request("hello", {});
+    process.stdout.write('{"version":1,"id":1,"data":{"protocol":1}}\n');
+    await expect(pending).resolves.toEqual({ protocol: 1 });
+  });
+
+  it("poisons the helper when an active transfer aborts", async () => {
+    const process = child();
+    const helper = new ChildSftpHelper(process);
+    const controller = new AbortController();
+    const pending = helper.upload(
+      new PassThrough(),
+      { path: "/tmp/a", bytes: 1, overwrite: false },
+      controller.signal,
+    );
+    controller.abort();
+    await expect(pending).rejects.toThrow("aborted");
+    expect(process.kill).toHaveBeenCalledWith("SIGTERM");
+    await expect(helper.request("hello", {})).rejects.toThrow("helper_closed");
   });
 });

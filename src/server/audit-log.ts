@@ -24,6 +24,12 @@ export type AuditEvent =
   | "app_session_close_requested"
   | "output_confirmed"
   | "ssh_start_failed"
+  | "file_operation_prepared"
+  | "file_operation_completed"
+  | "file_operation_failed"
+  | "file_request_rejected"
+  | "file_transfer_completed"
+  | "file_transfer_failed"
   | "audit_sink_recovered";
 
 export type AuditFields = Record<string, unknown>;

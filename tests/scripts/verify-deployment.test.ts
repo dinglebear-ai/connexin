@@ -21,6 +21,11 @@ describe("runVerifyDeployment", () => {
     "resize_quick_shell_session",
     "close_quick_shell_session",
     "record_quick_shell_output_confirmed",
+    "list_quick_shell_files",
+    "prepare_quick_shell_file_operation",
+    "mkdir_quick_shell_path",
+    "rename_quick_shell_path",
+    "delete_quick_shell_path",
   ];
   const manifest: BuildManifest = {
     version: 1,
@@ -35,6 +40,7 @@ describe("runVerifyDeployment", () => {
       "dist/app/mcp-app.html": "d".repeat(64),
       "dist/server/server/main.js": "e".repeat(64),
       "dist/server/cli/main.js": "f".repeat(64),
+      "dist/bin/quick-shell-sftp": "0".repeat(64),
     },
   };
 

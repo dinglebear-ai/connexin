@@ -1,4 +1,5 @@
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 export interface RuntimeConfig {
   maxSessions: number;
@@ -23,6 +24,7 @@ export interface RuntimeConfig {
   bridgePublicUrl?: string;
   sftpHelperPath: string;
   maxFileEntries: number;
+  maxFileMetadataBytes: number;
   maxFilePathBytes: number;
   maxFileComponentBytes: number;
   maxFilePathDepth: number;
@@ -30,6 +32,10 @@ export interface RuntimeConfig {
   maxTransferBytes: number;
   maxEmbeddedDownloadBytes: number;
   fileOperationLeaseTtlMs: number;
+  maxFileOperationLeases: number;
+  fileMetadataTimeoutMs: number;
+  fileTransferMaxDurationMs: number;
+  fileShutdownTimeoutMs: number;
 }
 
 const DEFAULTS = {
@@ -46,6 +52,7 @@ const DEFAULTS = {
   idleGraceMs: 5 * 60_000,
   cleanupIntervalMs: 30_000,
   maxFileEntries: 1000,
+  maxFileMetadataBytes: 512 * 1024,
   maxFilePathBytes: 4096,
   maxFileComponentBytes: 255,
   maxFilePathDepth: 64,
@@ -53,6 +60,10 @@ const DEFAULTS = {
   maxTransferBytes: 512 * 1024 * 1024,
   maxEmbeddedDownloadBytes: 8 * 1024 * 1024,
   fileOperationLeaseTtlMs: 60_000,
+  maxFileOperationLeases: 16,
+  fileMetadataTimeoutMs: 30_000,
+  fileTransferMaxDurationMs: 30 * 60_000,
+  fileShutdownTimeoutMs: 5_000,
 } as const;
 
 function numberFromEnv(
@@ -218,6 +229,15 @@ function defaultQuickShellConfigPath(env: NodeJS.ProcessEnv): string {
   );
 }
 
+function defaultSftpHelperPath(env: NodeJS.ProcessEnv): string {
+  if (env.QUICK_SHELL_SFTP_HELPER?.trim())
+    return env.QUICK_SHELL_SFTP_HELPER.trim();
+  const moduleDir = dirname(fileURLToPath(import.meta.url));
+  return moduleDir.includes(`${join("dist", "server", "server")}`)
+    ? resolve(moduleDir, "../../bin/quick-shell-sftp")
+    : resolve(moduleDir, "../../dist/bin/quick-shell-sftp");
+}
+
 export function httpPortFromEnv(env: NodeJS.ProcessEnv = process.env): number {
   return portFromEnv(env, "QUICK_SHELL_HTTP_PORT", 0);
 }
@@ -302,13 +322,16 @@ export function loadRuntimeConfig(
     bridgeHost: env.QUICK_SHELL_BRIDGE_HOST?.trim() || "127.0.0.1",
     bridgePort: portFromEnv(env, "QUICK_SHELL_BRIDGE_PORT", 0),
     bridgePublicUrl,
-    sftpHelperPath:
-      env.QUICK_SHELL_SFTP_HELPER?.trim() ||
-      join(process.cwd(), "dist", "bin", "quick-shell-sftp"),
+    sftpHelperPath: defaultSftpHelperPath(env),
     maxFileEntries: numberFromEnv(
       env,
       "QUICK_SHELL_MAX_FILE_ENTRIES",
       DEFAULTS.maxFileEntries,
+    ),
+    maxFileMetadataBytes: numberFromEnv(
+      env,
+      "QUICK_SHELL_MAX_FILE_METADATA_BYTES",
+      DEFAULTS.maxFileMetadataBytes,
     ),
     maxFilePathBytes: numberFromEnv(
       env,
@@ -344,6 +367,26 @@ export function loadRuntimeConfig(
       env,
       "QUICK_SHELL_FILE_OPERATION_LEASE_TTL_MS",
       DEFAULTS.fileOperationLeaseTtlMs,
+    ),
+    maxFileOperationLeases: numberFromEnv(
+      env,
+      "QUICK_SHELL_MAX_FILE_OPERATION_LEASES",
+      DEFAULTS.maxFileOperationLeases,
+    ),
+    fileMetadataTimeoutMs: numberFromEnv(
+      env,
+      "QUICK_SHELL_FILE_METADATA_TIMEOUT_MS",
+      DEFAULTS.fileMetadataTimeoutMs,
+    ),
+    fileTransferMaxDurationMs: numberFromEnv(
+      env,
+      "QUICK_SHELL_FILE_TRANSFER_MAX_DURATION_MS",
+      DEFAULTS.fileTransferMaxDurationMs,
+    ),
+    fileShutdownTimeoutMs: numberFromEnv(
+      env,
+      "QUICK_SHELL_FILE_SHUTDOWN_TIMEOUT_MS",
+      DEFAULTS.fileShutdownTimeoutMs,
     ),
   };
 }

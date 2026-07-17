@@ -5,15 +5,14 @@ export class FileExplorerController {
   private generation = 0;
   private abort?: AbortController;
   private entries: FileEntry[] = [];
+  private actionActive = false;
+  private lifecycleGeneration = 0;
 
   constructor(
     private readonly mount: HTMLElement,
     private readonly api: FileApi,
     private readonly setStatus: (value: string) => void,
-    private readonly download?: (
-      name: string,
-      bytes: ArrayBuffer,
-    ) => Promise<void>,
+    private download?: (name: string, bytes: ArrayBuffer) => Promise<void>,
   ) {
     this.renderShell();
   }
@@ -44,9 +43,17 @@ export class FileExplorerController {
   }
 
   dispose(): void {
+    this.lifecycleGeneration += 1;
     this.generation += 1;
     this.abort?.abort();
     this.mount.replaceChildren();
+  }
+
+  setDownload(
+    download?: (name: string, bytes: ArrayBuffer) => Promise<void>,
+  ): void {
+    this.download = download;
+    if (this.mount.dataset.state === "ready") this.renderList();
   }
 
   private renderShell(): void {
@@ -55,7 +62,7 @@ export class FileExplorerController {
     for (const [label, action] of [
       ["Up", () => void this.load(parentPath(this.path))],
       ["Refresh", () => void this.load()],
-      ["New folder", () => void this.createFolder()],
+      ["New folder", () => void this.runAction(() => this.createFolder())],
       ["Upload", () => this.chooseUpload()],
     ] as const) {
       const button = document.createElement("button");
@@ -105,11 +112,20 @@ export class FileExplorerController {
       actions.className = "files__row-actions";
       if (entry.kind === "file" && this.download)
         actions.append(
-          this.actionButton("Download", () => void this.downloadEntry(entry)),
+          this.actionButton(
+            "Download",
+            () => void this.runAction(() => this.downloadEntry(entry), false),
+          ),
         );
       actions.append(
-        this.actionButton("Rename", () => void this.renameEntry(entry)),
-        this.actionButton("Delete", () => void this.deleteEntry(entry)),
+        this.actionButton(
+          "Rename",
+          () => void this.runAction(() => this.renameEntry(entry)),
+        ),
+        this.actionButton(
+          "Delete",
+          () => void this.runAction(() => this.deleteEntry(entry)),
+        ),
       );
       row.append(name, kind, size, actions);
       list.append(row);
@@ -135,19 +151,26 @@ export class FileExplorerController {
   private async createFolder(): Promise<void> {
     const name = window.prompt("Folder name")?.trim();
     if (!name) return;
-    await this.api.mutate("mkdir", [joinPath(this.path, name)]);
-    await this.load();
+    await this.api.mutate("mkdir", { path: joinPath(this.path, name) });
   }
   private async renameEntry(entry: FileEntry): Promise<void> {
     const name = window.prompt("New name", entry.name)?.trim();
     if (!name || name === entry.name) return;
-    await this.api.mutate("rename", [entry.path, joinPath(this.path, name)]);
-    await this.load();
+    await this.api.mutate("rename", {
+      from: entry.path,
+      to: joinPath(this.path, name),
+      expectedFingerprint: entry.fingerprint,
+      overwrite: false,
+    });
   }
   private async deleteEntry(entry: FileEntry): Promise<void> {
     if (!window.confirm(`Delete ${entry.name}?`)) return;
-    await this.api.mutate("delete", [entry.path]);
-    await this.load();
+    if (entry.kind === "other") throw new Error("Unsupported file type");
+    await this.api.mutate("delete", {
+      path: entry.path,
+      expectedFingerprint: entry.fingerprint,
+      kind: entry.kind,
+    });
   }
   private chooseUpload(): void {
     const input = document.createElement("input");
@@ -156,7 +179,7 @@ export class FileExplorerController {
       "change",
       () => {
         const file = input.files?.[0];
-        if (file) void this.upload(file);
+        if (file) void this.runAction(() => this.upload(file));
       },
       { once: true },
     );
@@ -165,12 +188,14 @@ export class FileExplorerController {
   private async upload(file: File): Promise<void> {
     const controller = new AbortController();
     this.abort = controller;
+    const existing = this.entries.find((entry) => entry.name === file.name);
+    if (existing && !window.confirm(`Overwrite ${file.name}?`)) return;
     await this.api.upload(
       joinPath(this.path, file.name),
       file,
       controller.signal,
+      existing,
     );
-    await this.load();
   }
   private async downloadEntry(entry: FileEntry): Promise<void> {
     if (!this.download) return;
@@ -178,8 +203,35 @@ export class FileExplorerController {
     this.abort = controller;
     await this.download(
       entry.name,
-      await this.api.download(entry.path, controller.signal),
+      await this.api.download(entry, controller.signal),
     );
+  }
+
+  private async runAction(
+    operation: () => Promise<void>,
+    refresh = true,
+  ): Promise<void> {
+    if (this.actionActive) return;
+    const generation = this.lifecycleGeneration;
+    this.actionActive = true;
+    for (const button of this.mount.querySelectorAll("button"))
+      button.disabled = true;
+    try {
+      await operation();
+      if (generation !== this.lifecycleGeneration) return;
+      if (refresh) await this.load();
+    } catch (error) {
+      if (generation !== this.lifecycleGeneration) return;
+      this.setStatus(
+        error instanceof Error ? error.message : "File action failed",
+      );
+    } finally {
+      if (generation === this.lifecycleGeneration) {
+        this.actionActive = false;
+        for (const button of this.mount.querySelectorAll("button"))
+          button.disabled = false;
+      }
+    }
   }
 }
 

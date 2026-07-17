@@ -51,12 +51,11 @@ export class FileApi {
 
   async mutate(
     operation: "mkdir" | "rename" | "delete",
-    paths: string[],
-    overwrite = false,
+    request: Record<string, unknown>,
   ): Promise<void> {
     const prepared = await this.client.callServerTool({
       name: "prepare_quick_shell_file_operation",
-      arguments: { ...this.capability, operation, paths, overwrite },
+      arguments: { ...this.capability, operation, ...request },
     });
     const lease = (
       prepared._meta?.quickShellFiles as { lease?: string } | undefined
@@ -76,8 +75,19 @@ export class FileApi {
       throw new Error(result.content?.[0]?.text ?? "File operation failed");
   }
 
-  async upload(path: string, file: File, signal: AbortSignal): Promise<void> {
-    const lease = await this.prepareTransfer("upload", path);
+  async upload(
+    path: string,
+    file: File,
+    signal: AbortSignal,
+    target?: FileEntry,
+  ): Promise<void> {
+    const lease = await this.prepare({
+      operation: "upload",
+      path,
+      bytes: file.size,
+      overwrite: Boolean(target),
+      expectedFingerprint: target?.fingerprint,
+    });
     const response = await fetch(new URL("/files/upload", this.fileBaseUrl), {
       method: "PUT",
       headers: {
@@ -91,8 +101,13 @@ export class FileApi {
     if (!response.ok) throw new Error("Upload failed");
   }
 
-  async download(path: string, signal: AbortSignal): Promise<ArrayBuffer> {
-    const lease = await this.prepareTransfer("download", path);
+  async download(entry: FileEntry, signal: AbortSignal): Promise<ArrayBuffer> {
+    const lease = await this.prepare({
+      operation: "download",
+      path: entry.path,
+      expectedFingerprint: entry.fingerprint,
+      bytes: entry.size,
+    });
     const response = await fetch(new URL("/files/download", this.fileBaseUrl), {
       method: "POST",
       headers: {
@@ -102,16 +117,18 @@ export class FileApi {
       signal,
     });
     if (!response.ok) throw new Error("Download failed");
-    return response.arrayBuffer();
+    const declared = Number(response.headers.get("content-length"));
+    if (!Number.isSafeInteger(declared) || declared !== entry.size)
+      throw new Error("Download size changed");
+    const body = await response.arrayBuffer();
+    if (body.byteLength !== entry.size) throw new Error("Download truncated");
+    return body;
   }
 
-  private async prepareTransfer(
-    operation: "upload" | "download",
-    path: string,
-  ): Promise<string> {
+  private async prepare(request: Record<string, unknown>): Promise<string> {
     const result = await this.client.callServerTool({
       name: "prepare_quick_shell_file_operation",
-      arguments: { ...this.capability, operation, paths: [path] },
+      arguments: { ...this.capability, ...request },
     });
     const lease = (
       result._meta?.quickShellFiles as { lease?: string } | undefined

@@ -37,6 +37,18 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: Real OpenSSH SFTP integration
+        run: |
+          mkdir -p "$HOME/.ssh" /tmp/quick-shell-sshd
+          ssh-keygen -q -t ed25519 -N '' -f /tmp/quick-shell-sshd/id
+          cat /tmp/quick-shell-sshd/id.pub >> "$HOME/.ssh/authorized_keys"
+          chmod 700 "$HOME/.ssh"
+          chmod 600 "$HOME/.ssh/authorized_keys"
+          sudo mkdir -p /run/sshd
+          sudo /usr/sbin/sshd -p 22229
+          printf 'Host quick-shell-ci\n  HostName 127.0.0.1\n  Port 22229\n  User %s\n  IdentityFile /tmp/quick-shell-sshd/id\n  StrictHostKeyChecking no\n  UserKnownHostsFile /dev/null\n' "$USER" > /tmp/quick-shell-sshd/config
+          npm run test:sftp-integration -- "$PWD/dist/bin/quick-shell-sftp" /tmp/quick-shell-sshd/config quick-shell-ci
+
       - name: Lint
         run: npm run lint
 

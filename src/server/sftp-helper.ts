@@ -33,7 +33,7 @@ export interface SftpHelper {
   ): Promise<T>;
   upload(
     source: Readable,
-    request: { path: string; bytes: number },
+    request: { path: string; bytes: number; overwrite: boolean },
     signal: AbortSignal,
   ): Promise<TransferResult>;
   download(
@@ -58,6 +58,7 @@ export interface SpawnSftpHelperOptions {
   cwd?: string;
   env: Record<string, string>;
   maxPending?: number;
+  connectTimeoutSeconds?: number;
   spawnProcess?: typeof spawn;
 }
 
@@ -73,7 +74,13 @@ export function spawnSftpHelper(options: SpawnSftpHelperOptions): SftpHelper {
     [options.sshConfigPath, options.device],
     {
       cwd: options.cwd,
-      env: options.env,
+      env: {
+        ...options.env,
+        QUICK_SHELL_SFTP_CONNECT_TIMEOUT_SECONDS: String(
+          options.connectTimeoutSeconds ?? 15,
+        ),
+      },
+      detached: true,
       stdio: ["pipe", "pipe", "pipe", "pipe", "pipe"],
     },
   );
@@ -83,6 +90,8 @@ export function spawnSftpHelper(options: SpawnSftpHelperOptions): SftpHelper {
 export class ChildSftpHelper implements SftpHelper {
   private nextId = 1;
   private disposed = false;
+  private transferTail: Promise<void> = Promise.resolve();
+  private stderrBytes = 0;
   private readonly pending = new Map<number, Pending>();
   readonly closed: Promise<SftpCloseReason>;
 
@@ -104,6 +113,18 @@ export class ChildSftpHelper implements SftpHelper {
     child.once("error", () =>
       this.rejectPending(protocolError("helper_unavailable")),
     );
+    for (const stream of child.stdio) {
+      stream?.on?.("error", () => {
+        if (!this.disposed)
+          this.rejectPending(protocolError("helper_unavailable"));
+      });
+    }
+    child.stderr?.on("data", (chunk: Buffer | string) => {
+      this.stderrBytes = Math.min(
+        64 * 1024,
+        this.stderrBytes + Buffer.byteLength(chunk),
+      );
+    });
   }
 
   request<T>(
@@ -143,22 +164,21 @@ export class ChildSftpHelper implements SftpHelper {
 
   async upload(
     source: Readable,
-    request: { path: string; bytes: number },
+    request: { path: string; bytes: number; overwrite: boolean },
     signal: AbortSignal,
   ): Promise<TransferResult> {
-    const stream = this.child.stdio[3];
-    if (!stream || !("write" in stream))
-      throw protocolError("transfer_unavailable");
-    const result = this.request<TransferResult>("upload", request, signal);
-    source.pipe(stream as Writable, { end: false });
-    const abort = () => source.unpipe(stream as Writable);
-    signal.addEventListener("abort", abort, { once: true });
-    try {
-      return await result;
-    } finally {
-      signal.removeEventListener("abort", abort);
-      source.unpipe(stream as Writable);
-    }
+    return this.exclusiveTransfer(signal, async () => {
+      const stream = this.child.stdio[3];
+      if (!stream || !("write" in stream))
+        throw protocolError("transfer_unavailable");
+      const result = this.request<TransferResult>("upload", request, signal);
+      source.pipe(stream as Writable, { end: false });
+      try {
+        return await result;
+      } finally {
+        source.unpipe(stream as Writable);
+      }
+    });
   }
 
   async download(
@@ -166,25 +186,24 @@ export class ChildSftpHelper implements SftpHelper {
     request: { path: string; maxBytes: number },
     signal: AbortSignal,
   ): Promise<TransferResult> {
-    const stream = this.child.stdio[4];
-    if (!stream || !("pipe" in stream))
-      throw protocolError("transfer_unavailable");
-    (stream as Readable).pipe(target, { end: false });
-    const abort = () => (stream as Readable).unpipe(target);
-    signal.addEventListener("abort", abort, { once: true });
-    try {
-      return await this.request<TransferResult>("download", request, signal);
-    } finally {
-      signal.removeEventListener("abort", abort);
-      (stream as Readable).unpipe(target);
-    }
+    return this.exclusiveTransfer(signal, async () => {
+      const stream = this.child.stdio[4];
+      if (!stream || !("pipe" in stream))
+        throw protocolError("transfer_unavailable");
+      (stream as Readable).pipe(target, { end: false });
+      try {
+        return await this.request<TransferResult>("download", request, signal);
+      } finally {
+        (stream as Readable).unpipe(target);
+      }
+    });
   }
 
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
     this.rejectPending(protocolError("helper_closed"));
-    this.child.kill("SIGTERM");
+    this.kill("SIGTERM");
   }
 
   async drain(timeoutMs: number): Promise<void> {
@@ -193,7 +212,7 @@ export class ChildSftpHelper implements SftpHelper {
       new Promise<void>((resolve) => setTimeout(resolve, timeoutMs)),
     ]);
     if (this.child.exitCode === null && this.child.signalCode === null)
-      this.child.kill("SIGKILL");
+      this.kill("SIGKILL");
   }
 
   private handleLine(line: string): void {
@@ -222,5 +241,50 @@ export class ChildSftpHelper implements SftpHelper {
       pending.reject(error);
     }
     this.pending.clear();
+  }
+
+  private async exclusiveTransfer<T>(
+    signal: AbortSignal,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    const previous = this.transferTail;
+    let release!: () => void;
+    this.transferTail = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    try {
+      await Promise.race([
+        previous,
+        new Promise<never>((_, reject) =>
+          signal.addEventListener(
+            "abort",
+            () => reject(protocolError("aborted")),
+            { once: true },
+          ),
+        ),
+      ]);
+      if (signal.aborted) {
+        this.dispose();
+        throw protocolError("aborted");
+      }
+      const abort = () => this.dispose();
+      signal.addEventListener("abort", abort, { once: true });
+      try {
+        return await operation();
+      } finally {
+        signal.removeEventListener("abort", abort);
+      }
+    } finally {
+      release();
+    }
+  }
+
+  private kill(signal: NodeJS.Signals): void {
+    try {
+      if (this.child.pid) process.kill(-this.child.pid, signal);
+      else this.child.kill(signal);
+    } catch {
+      this.child.kill(signal);
+    }
   }
 }

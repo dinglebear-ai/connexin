@@ -675,9 +675,10 @@ export function createServer(options: CreateServerOptions): McpServer {
         };
       }
 
-      const capability = requireAppCapability(manager, args, closeCapability);
-      if ("error" in capability) return capability.error;
-      const session = capability.session;
+      if (existing.appToken !== args.appToken) {
+        return toolError("Invalid quick-shell app capability.");
+      }
+      const session = existing;
 
       const closed = manager.closeSession(session.id);
       return {
@@ -760,7 +761,13 @@ export function createServer(options: CreateServerOptions): McpServer {
       inputSchema: {
         ...appCapabilityInputSchema(),
         operation: z.enum(["mkdir", "rename", "delete", "upload", "download"]),
-        paths: z.array(utf8Max(config.maxFilePathBytes)).min(1).max(2),
+        path: utf8Max(config.maxFilePathBytes).optional(),
+        from: utf8Max(config.maxFilePathBytes).optional(),
+        to: utf8Max(config.maxFilePathBytes).optional(),
+        expectedFingerprint: z.string().min(16).max(128).optional(),
+        targetFingerprint: z.string().min(16).max(128).optional(),
+        kind: z.enum(["file", "directory", "symlink"]).optional(),
+        bytes: z.number().int().min(0).max(config.maxTransferBytes).optional(),
         overwrite: z.boolean().optional(),
       },
       outputSchema: { prepared: z.boolean() },
@@ -782,9 +789,15 @@ export function createServer(options: CreateServerOptions): McpServer {
       });
       if ("error" in capability) return capability.error;
       try {
-        const lease = manager
+        const lease = await manager
           .getFileSession(capability.session.id)!
-          .prepare(args.operation, args.paths, args.overwrite);
+          .prepare(parsePrepareOperation(args));
+        manager.recordAuditEvent("file_operation_prepared", {
+          sessionId: capability.session.id,
+          device: capability.session.publicSummary.device,
+          operation: args.operation,
+          outcome: "prepared",
+        });
         return {
           content: [
             {
@@ -796,6 +809,13 @@ export function createServer(options: CreateServerOptions): McpServer {
           _meta: { quickShellFiles: { lease } },
         };
       } catch (error) {
+        manager.recordAuditEvent("file_operation_failed", {
+          sessionId: capability.session.id,
+          device: capability.session.publicSummary.device,
+          operation: args.operation,
+          outcome: "failed",
+          errorCode: safeFileError(error),
+        });
         return toolError(
           `Unable to prepare quick-shell file operation: ${safeFileError(error)}.`,
         );
@@ -839,7 +859,13 @@ export function createServer(options: CreateServerOptions): McpServer {
         try {
           await manager
             .getFileSession(capability.session.id)!
-            .mutate(args.lease);
+            .mutate(args.lease, operation);
+          manager.recordAuditEvent("file_operation_completed", {
+            sessionId: capability.session.id,
+            device: capability.session.publicSummary.device,
+            operation,
+            outcome: "completed",
+          });
           return {
             content: [
               { type: "text", text: "Quick-shell file operation completed." },
@@ -847,6 +873,13 @@ export function createServer(options: CreateServerOptions): McpServer {
             structuredContent: { completed: true },
           };
         } catch (error) {
+          manager.recordAuditEvent("file_operation_failed", {
+            sessionId: capability.session.id,
+            device: capability.session.publicSummary.device,
+            operation,
+            outcome: "failed",
+            errorCode: safeFileError(error),
+          });
           return toolError(
             `Quick-shell file operation failed: ${safeFileError(error)}.`,
           );
@@ -898,4 +931,69 @@ export function createServer(options: CreateServerOptions): McpServer {
 function safeFileError(error: unknown): string {
   const code = error instanceof Error ? error.message : "operation_failed";
   return /^[a-z_]+$/.test(code) ? code : "operation_failed";
+}
+
+function parsePrepareOperation(args: Record<string, unknown>) {
+  const operation = args.operation;
+  if (operation === "mkdir" && typeof args.path === "string")
+    return { operation, path: args.path } as const;
+  if (
+    operation === "rename" &&
+    typeof args.from === "string" &&
+    typeof args.to === "string" &&
+    typeof args.expectedFingerprint === "string"
+  )
+    return {
+      operation,
+      from: args.from,
+      to: args.to,
+      expectedFingerprint: args.expectedFingerprint,
+      overwrite: args.overwrite === true,
+      targetFingerprint:
+        typeof args.targetFingerprint === "string"
+          ? args.targetFingerprint
+          : undefined,
+    } as const;
+  if (
+    operation === "delete" &&
+    typeof args.path === "string" &&
+    typeof args.expectedFingerprint === "string" &&
+    (args.kind === "file" ||
+      args.kind === "directory" ||
+      args.kind === "symlink")
+  )
+    return {
+      operation,
+      path: args.path,
+      expectedFingerprint: args.expectedFingerprint,
+      kind: args.kind,
+    } as const;
+  if (
+    operation === "upload" &&
+    typeof args.path === "string" &&
+    typeof args.bytes === "number"
+  )
+    return {
+      operation,
+      path: args.path,
+      bytes: args.bytes,
+      overwrite: args.overwrite === true,
+      expectedFingerprint:
+        typeof args.expectedFingerprint === "string"
+          ? args.expectedFingerprint
+          : undefined,
+    } as const;
+  if (
+    operation === "download" &&
+    typeof args.path === "string" &&
+    typeof args.expectedFingerprint === "string" &&
+    typeof args.bytes === "number"
+  )
+    return {
+      operation,
+      path: args.path,
+      expectedFingerprint: args.expectedFingerprint,
+      bytes: args.bytes,
+    } as const;
+  throw new Error("invalid_operation");
 }

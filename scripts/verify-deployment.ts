@@ -169,6 +169,11 @@ const APP_ONLY_TOOLS = [
   "resize_quick_shell_session",
   "close_quick_shell_session",
   "record_quick_shell_output_confirmed",
+  "list_quick_shell_files",
+  "prepare_quick_shell_file_operation",
+  "mkdir_quick_shell_path",
+  "rename_quick_shell_path",
+  "delete_quick_shell_path",
 ].map(qualifiedTool);
 const REQUIRED_RUNTIME_TOOLS = [...REQUIRED_MODEL_TOOLS, ...APP_ONLY_TOOLS];
 const REQUIRED_RUNTIME_TOOL_NAMES = REQUIRED_RUNTIME_TOOLS.map((tool) =>

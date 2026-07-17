@@ -110,6 +110,8 @@ let terminalDataDisposable: { dispose(): void } | undefined;
 let pingTimer: number | undefined;
 let pollTimer: number | undefined;
 let fallbackTimer: number | undefined;
+let reconnectTimer: number | undefined;
+let reconnectAttempts = 0;
 let resizeFrame: number | undefined;
 let transcriptFrame: number | undefined;
 let publicSession: QuickShellPublicSession | undefined;
@@ -476,6 +478,7 @@ async function connectTerminal(
   socket.addEventListener("message", (event) => {
     if (handleTerminalMessage(binding, event.data)) {
       binding.ready = true;
+      reconnectAttempts = 0;
       clearFallbackTimer();
     }
   });
@@ -489,12 +492,7 @@ async function connectTerminal(
       setStatus(`${disconnectStatus(event)}; reconnecting`);
       updateModelContext("reconnecting");
       updateControls();
-      void connectTerminal(details, generation).catch((error) => {
-        if (!isCurrentGeneration(generation, details.sessionId)) return;
-        disposeTerminal();
-        session = undefined;
-        handleConnectFailure(error, generation, capability);
-      });
+      scheduleTerminalReconnect(details, generation, capability);
     }
   });
   socket.addEventListener("error", () => {
@@ -691,6 +689,10 @@ async function startAppToolTransport(
   stopPing();
   appToolTransport = true;
   clearFallbackTimer();
+  if (reconnectTimer !== undefined) {
+    window.clearTimeout(reconnectTimer);
+    reconnectTimer = undefined;
+  }
   pollingGeneration = undefined;
   pollSeq = 0;
   fallbackInputQueue = undefined;
@@ -1132,6 +1134,31 @@ function clearFallbackTimer(): void {
   }
 }
 
+function scheduleTerminalReconnect(
+  details: QuickShellAppSession,
+  generation: number,
+  capability: QuickShellHiddenMeta["quickShell"],
+): void {
+  if (reconnectTimer !== undefined) return;
+  const delay = Math.min(4_000, 250 * 2 ** Math.min(reconnectAttempts, 4));
+  reconnectAttempts += 1;
+  reconnectTimer = window.setTimeout(() => {
+    reconnectTimer = undefined;
+    if (!isCurrentGeneration(generation, details.sessionId)) return;
+    void connectTerminal(details, generation).catch((error) => {
+      if (!isCurrentGeneration(generation, details.sessionId)) return;
+      if (reconnectAttempts >= 5) {
+        void startAppToolTransport(details, generation).catch((fallbackError) =>
+          handleConnectFailure(fallbackError, generation, capability),
+        );
+        return;
+      }
+      console.error("quick-shell reconnect failed", error);
+      scheduleTerminalReconnect(details, generation, capability);
+    });
+  }, delay);
+}
+
 function stopPolling(): void {
   if (pollTimer !== undefined) {
     window.clearInterval(pollTimer);
@@ -1160,6 +1187,7 @@ async function cleanup(
 
   if (ownsCurrentSession) {
     activeGeneration += 1;
+    reconnectAttempts = 0;
     disposeTerminal();
     publicSession = undefined;
     session = undefined;
@@ -1474,6 +1502,9 @@ function applyHostContext(ctx: HostContext | undefined): void {
     document.documentElement.dataset.platform = hostContext.platform;
   }
   if (shouldRefreshTerminalTheme) rebuildTerminalTheme();
+  fileExplorer?.setDownload(
+    app.getHostCapabilities()?.downloadFile ? downloadRemoteFile : undefined,
+  );
   updateControls();
 }
 

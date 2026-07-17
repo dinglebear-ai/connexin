@@ -7,8 +7,9 @@ import { dirname, relative } from "node:path";
 const manifestPath = "dist/quick-shell-build-manifest.json";
 const rootFiles = ["package.json", "package-lock.json", "mcp-app.html"];
 const appFiles = ["dist/app/mcp-app.html"];
+const helperFiles = ["dist/bin/quick-shell-sftp"];
 const serverSourceRoots = ["src/server", "src/shared", "src/cli"];
-const buildRoots = ["dist/app", "dist/server"];
+const buildRoots = ["dist/app", "dist/server", "dist/bin"];
 
 async function collectFiles(root) {
   const files = [];
@@ -79,10 +80,15 @@ const gitDirty = git(["status", "--porcelain"]).length > 0;
 const expectedFiles = new Set([
   ...rootFiles,
   ...appFiles,
+  ...helperFiles,
   ...(await collectExpectedServerFiles()),
 ]);
 const actualBuildFiles = (
-  await Promise.all(buildRoots.map((root) => collectFiles(root)))
+  await Promise.all(
+    buildRoots.map(async (root) =>
+      (await exists(root)) ? collectFiles(root) : [],
+    ),
+  )
 )
   .flat()
   .sort();

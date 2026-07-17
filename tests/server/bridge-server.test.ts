@@ -884,3 +884,125 @@ describe("startBridgeServer", () => {
     }
   });
 });
+
+describe("file transfer bridge", () => {
+  async function fileBridge(downloadBytes = 4) {
+    const entry = {
+      name: "sample.bin",
+      kind: "file" as const,
+      size: 4,
+      modified: 1,
+      mode: 0o600,
+    };
+    const helper = {
+      closed: new Promise(() => {}),
+      request: vi.fn(async (action: string, params: { path?: string }) => {
+        if (action === "hello") return { protocol: 1 };
+        if (action === "root") return { path: "/home/me" };
+        if (action === "realpath") return { path: params.path };
+        if (action === "lstat")
+          return params.path === "/home/me"
+            ? { ...entry, name: "me", kind: "directory", size: 0, mode: 0o700 }
+            : entry;
+        if (action === "list") return { entries: [entry] };
+        throw new Error("unsupported_action");
+      }),
+      upload: vi.fn(),
+      download: vi.fn(async (target: NodeJS.WritableStream) => {
+        target.write(Buffer.alloc(downloadBytes, 7));
+        return { bytes: downloadBytes };
+      }),
+      dispose: vi.fn(),
+      drain: vi.fn(),
+    } as any;
+    const config = testRuntimeConfig({
+      allowedOrigins: ["https://app.example"],
+    });
+    const manager = new QuickShellSessionManager({
+      config,
+      allowedHosts: new Set(["test-device"]),
+      ptyFactory: () => new FakePty(),
+      fileHelperFactory: () => () => helper,
+    });
+    const session = await manager.createSession({ device: "test-device" });
+    const files = manager.getFileSession(session.id)!;
+    const listed = (await files.list("."))[0]!;
+    const lease = await files.prepare({
+      operation: "download",
+      path: listed.path,
+      expectedFingerprint: listed.fingerprint,
+      bytes: listed.size,
+    });
+    const bridge = await startBridgeServer({ config, manager });
+    return { bridge, manager, session, lease, listed };
+  }
+
+  it("validates complete bounded download before committing success headers", async () => {
+    const { bridge, manager, session, lease } = await fileBridge();
+    try {
+      const response = await fetch(`${bridge.baseUrl}/files/download`, {
+        method: "POST",
+        headers: {
+          Origin: "https://app.example",
+          Authorization: `Bearer ${session.fileToken}`,
+          "X-Quick-Shell-File-Lease": lease,
+        },
+      });
+      expect(response.status).toBe(200);
+      expect(response.headers.get("content-length")).toBe("4");
+      expect(response.headers.get("cache-control")).toBe("no-store");
+      expect(response.headers.get("x-content-type-options")).toBe("nosniff");
+      expect(Buffer.from(await response.arrayBuffer())).toEqual(
+        Buffer.alloc(4, 7),
+      );
+    } finally {
+      manager.closeAll();
+      await bridge.close();
+    }
+  });
+
+  it("returns an error status without partial binary content when download truncates", async () => {
+    const { bridge, manager, session, lease } = await fileBridge(3);
+    try {
+      const response = await fetch(`${bridge.baseUrl}/files/download`, {
+        method: "POST",
+        headers: {
+          Origin: "https://app.example",
+          Authorization: `Bearer ${session.fileToken}`,
+          "X-Quick-Shell-File-Lease": lease,
+        },
+      });
+      expect(response.status).toBe(409);
+      expect(response.headers.get("content-type")).toContain(
+        "application/problem+json",
+      );
+      expect(await response.json()).toMatchObject({
+        code: "transfer_size_mismatch",
+      });
+    } finally {
+      manager.closeAll();
+      await bridge.close();
+    }
+  });
+
+  it("allows an Origin on a local-only bridge and hardens rejection responses", async () => {
+    const config = testRuntimeConfig({ allowedOrigins: [] });
+    const manager = new QuickShellSessionManager({
+      config,
+      allowedHosts: new Set(["test-device"]),
+      ptyFactory: () => new FakePty(),
+    });
+    const bridge = await startBridgeServer({ config, manager });
+    try {
+      const response = await fetch(`${bridge.baseUrl}/files/download`, {
+        method: "POST",
+        headers: { Origin: "https://local-app.example" },
+      });
+      expect(response.status).toBe(401);
+      expect(response.headers.get("cache-control")).toBe("no-store");
+      expect(response.headers.get("x-content-type-options")).toBe("nosniff");
+    } finally {
+      await bridge.close();
+    }
+  });
+});
