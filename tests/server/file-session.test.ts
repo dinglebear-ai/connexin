@@ -264,4 +264,67 @@ describe("FileSession", () => {
       session.downloadBuffer(lease, new AbortController().signal),
     ).resolves.toEqual(Buffer.from([1]));
   });
+
+  it("releases the transfer queue when helper startup fails", async () => {
+    let closeInitial!: () => void;
+    const initial = helper({
+      entries: { "/home/me/one": file("one"), "/home/me/two": file("two") },
+    });
+    initial.closed = new Promise<void>((resolve) => {
+      closeInitial = resolve;
+    });
+    const failing = {
+      ...helper(),
+      request: vi.fn(async () => {
+        throw new Error("helper_unavailable");
+      }),
+    };
+    const replacement = helper({
+      entries: { "/home/me/one": file("one"), "/home/me/two": file("two") },
+    });
+    const factory = vi
+      .fn()
+      .mockReturnValueOnce(initial)
+      .mockReturnValueOnce(failing)
+      .mockReturnValueOnce(replacement);
+    const session = new FileSession(testRuntimeConfig(), factory);
+    const first = await session.prepare({
+      operation: "upload",
+      path: "one",
+      bytes: 1,
+      overwrite: true,
+      expectedFingerprint: (await listed(session, "one")).fingerprint,
+    });
+    const second = await session.prepare({
+      operation: "upload",
+      path: "two",
+      bytes: 1,
+      overwrite: true,
+      expectedFingerprint: (await listed(session, "two")).fingerprint,
+    });
+    closeInitial();
+    await Promise.resolve();
+
+    await expect(
+      session.upload(
+        first,
+        Readable.from("x"),
+        1,
+        new AbortController().signal,
+      ),
+    ).rejects.toThrow("helper_unavailable");
+    await expect(
+      Promise.race([
+        session.upload(
+          second,
+          Readable.from("y"),
+          1,
+          new AbortController().signal,
+        ),
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error("transfer_queue_stuck")), 100),
+        ),
+      ]),
+    ).resolves.toBe(1);
+  });
 });

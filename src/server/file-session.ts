@@ -524,14 +524,18 @@ export class FileSession {
       release();
       throw new Error("aborted");
     }
-    const helper = await this.getHelper();
-    const timeout = AbortSignal.timeout(this.config.fileTransferMaxDurationMs);
-    const combined = AbortSignal.any([signal, timeout]);
+    let helper: SftpHelper | undefined;
+    let combined: AbortSignal | undefined;
     try {
+      helper = await this.getHelper();
+      const timeout = AbortSignal.timeout(
+        this.config.fileTransferMaxDurationMs,
+      );
+      combined = AbortSignal.any([signal, timeout]);
       return await operation(helper, combined);
     } finally {
       release();
-      if (combined.aborted) {
+      if (helper && combined?.aborted) {
         this.poison(helper);
         await helper.drain(this.config.fileShutdownTimeoutMs);
       }
