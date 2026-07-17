@@ -15,7 +15,7 @@
   },
   "scripts": {
     "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
-    "build": "npm run clean && npm run typecheck && cross-env INPUT=mcp-app.html vite build && tsc -p tsconfig.server.json && node scripts/write-build-manifest.mjs",
+    "build": "npm run clean && npm run typecheck && cross-env INPUT=mcp-app.html vite build && tsc -p tsconfig.server.json && mkdir -p dist/bin && go build -o dist/bin/quick-shell-sftp ./cmd/quick-shell-sftp && node scripts/write-build-manifest.mjs",
     "dev": "cross-env NODE_ENV=development QUICK_SHELL_HTTP_TOKEN=dev-local-token concurrently \"cross-env INPUT=mcp-app.html vite build --watch\" \"tsx watch src/server/main.ts --http\"",
     "serve": "node dist/server/server/main.js --http",
     "serve:stdio": "node dist/server/server/main.js --stdio",

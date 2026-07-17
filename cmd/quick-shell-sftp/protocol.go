@@ -1,0 +1,281 @@
+package main
+
+import (
+	"bufio"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"path"
+	"strings"
+	"time"
+
+	"github.com/pkg/sftp"
+)
+
+const protocolVersion = 1
+const maxControlLine = 256 * 1024
+
+type request struct {
+	Version int             `json:"version"`
+	ID      uint64          `json:"id"`
+	Action  string          `json:"action"`
+	Params  json.RawMessage `json:"params"`
+}
+
+type response struct {
+	Version int    `json:"version"`
+	ID      uint64 `json:"id"`
+	Data    any    `json:"data,omitempty"`
+	Code    string `json:"code,omitempty"`
+}
+
+type fileEntry struct {
+	Name     string `json:"name"`
+	Kind     string `json:"kind"`
+	Size     int64  `json:"size"`
+	Modified int64  `json:"modified"`
+	Mode     uint32 `json:"mode"`
+}
+
+type handler struct {
+	client *sftp.Client
+	root   string
+}
+
+func decodeRequest(line []byte) (request, error) {
+	var req request
+	if len(line) == 0 || len(line) > maxControlLine {
+		return req, errors.New("invalid_request")
+	}
+	if err := json.Unmarshal(line, &req); err != nil || req.Version != protocolVersion || req.ID == 0 || req.Action == "" {
+		return request{}, errors.New("invalid_request")
+	}
+	return req, nil
+}
+
+func stableCode(err error) string {
+	if err == nil {
+		return ""
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		return "not_found"
+	}
+	if errors.Is(err, os.ErrPermission) {
+		return "permission_denied"
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "timeout"
+	}
+	return "operation_failed"
+}
+
+func decodeParams[T any](raw json.RawMessage) (T, error) {
+	var value T
+	if len(raw) == 0 {
+		raw = []byte(`{}`)
+	}
+	err := json.Unmarshal(raw, &value)
+	return value, err
+}
+
+func kind(info os.FileInfo) string {
+	if info.Mode()&os.ModeSymlink != 0 {
+		return "symlink"
+	}
+	if info.IsDir() {
+		return "directory"
+	}
+	if info.Mode().IsRegular() {
+		return "file"
+	}
+	return "other"
+}
+
+func (h *handler) handle(ctx context.Context, req request) (any, error) {
+	switch req.Action {
+	case "hello":
+		return map[string]any{"protocol": protocolVersion}, nil
+	case "root":
+		return map[string]string{"path": h.root}, nil
+	case "list":
+		params, err := decodeParams[struct {
+			Path  string `json:"path"`
+			Limit int    `json:"limit"`
+		}](req.Params)
+		if err != nil || params.Limit < 1 || params.Limit > 10000 {
+			return nil, errors.New("invalid_request")
+		}
+		entries, err := h.client.ReadDirContext(ctx, params.Path)
+		if err != nil {
+			return nil, err
+		}
+		if len(entries) > params.Limit {
+			entries = entries[:params.Limit]
+		}
+		out := make([]fileEntry, 0, len(entries))
+		for _, entry := range entries {
+			out = append(out, fileEntry{Name: entry.Name(), Kind: kind(entry), Size: entry.Size(), Modified: entry.ModTime().UnixMilli(), Mode: uint32(entry.Mode())})
+		}
+		return map[string]any{"entries": out}, nil
+	case "lstat":
+		params, err := decodeParams[struct {
+			Path string `json:"path"`
+		}](req.Params)
+		if err != nil {
+			return nil, errors.New("invalid_request")
+		}
+		entry, err := h.client.Lstat(params.Path)
+		if err != nil {
+			return nil, err
+		}
+		return fileEntry{Name: path.Base(params.Path), Kind: kind(entry), Size: entry.Size(), Modified: entry.ModTime().UnixMilli(), Mode: uint32(entry.Mode())}, nil
+	case "realpath":
+		params, err := decodeParams[struct {
+			Path string `json:"path"`
+		}](req.Params)
+		if err != nil {
+			return nil, errors.New("invalid_request")
+		}
+		value, err := h.client.RealPath(params.Path)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]string{"path": value}, nil
+	case "mkdir":
+		params, err := decodeParams[struct {
+			Path string `json:"path"`
+		}](req.Params)
+		if err != nil {
+			return nil, errors.New("invalid_request")
+		}
+		return map[string]bool{"ok": true}, h.client.Mkdir(params.Path)
+	case "rename":
+		params, err := decodeParams[struct {
+			From      string `json:"from"`
+			To        string `json:"to"`
+			Overwrite bool   `json:"overwrite"`
+		}](req.Params)
+		if err != nil {
+			return nil, errors.New("invalid_request")
+		}
+		if params.Overwrite {
+			err = h.client.PosixRename(params.From, params.To)
+		} else {
+			err = h.client.Rename(params.From, params.To)
+		}
+		return map[string]bool{"ok": true}, err
+	case "remove":
+		params, err := decodeParams[struct {
+			Path      string `json:"path"`
+			Directory bool   `json:"directory"`
+		}](req.Params)
+		if err != nil {
+			return nil, errors.New("invalid_request")
+		}
+		if params.Directory {
+			err = h.client.RemoveDirectory(params.Path)
+		} else {
+			err = h.client.Remove(params.Path)
+		}
+		return map[string]bool{"ok": true}, err
+	case "upload":
+		params, err := decodeParams[struct {
+			Path  string `json:"path"`
+			Bytes int64  `json:"bytes"`
+		}](req.Params)
+		if err != nil || params.Bytes < 0 {
+			return nil, errors.New("invalid_request")
+		}
+		fd := os.NewFile(3, "upload")
+		if fd == nil {
+			return nil, errors.New("transfer_unavailable")
+		}
+		file, err := h.client.OpenFile(params.Path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC)
+		if err != nil {
+			return nil, err
+		}
+		defer file.Close()
+		n, err := io.CopyN(file, fd, params.Bytes)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]int64{"bytes": n}, nil
+	case "download":
+		params, err := decodeParams[struct {
+			Path     string `json:"path"`
+			MaxBytes int64  `json:"maxBytes"`
+		}](req.Params)
+		if err != nil || params.MaxBytes < 0 {
+			return nil, errors.New("invalid_request")
+		}
+		fd := os.NewFile(4, "download")
+		if fd == nil {
+			return nil, errors.New("transfer_unavailable")
+		}
+		file, err := h.client.Open(params.Path)
+		if err != nil {
+			return nil, err
+		}
+		defer file.Close()
+		n, err := io.Copy(fd, io.LimitReader(file, params.MaxBytes+1))
+		if err != nil {
+			return nil, err
+		}
+		if n > params.MaxBytes {
+			return nil, errors.New("too_large")
+		}
+		return map[string]int64{"bytes": n}, nil
+	case "close":
+		return map[string]bool{"ok": true}, io.EOF
+	default:
+		return nil, errors.New("unsupported_action")
+	}
+}
+
+func serve(client *sftp.Client, input io.Reader, output io.Writer) error {
+	root, err := client.RealPath(".")
+	if err != nil {
+		return err
+	}
+	h := &handler{client: client, root: root}
+	scanner := bufio.NewScanner(input)
+	scanner.Buffer(make([]byte, 4096), maxControlLine)
+	encoder := json.NewEncoder(output)
+	for scanner.Scan() {
+		req, err := decodeRequest(scanner.Bytes())
+		if err != nil {
+			_ = encoder.Encode(response{Version: protocolVersion, Code: "invalid_request"})
+			continue
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		data, callErr := h.handle(ctx, req)
+		cancel()
+		if errors.Is(callErr, io.EOF) {
+			_ = encoder.Encode(response{Version: protocolVersion, ID: req.ID, Data: data})
+			return nil
+		}
+		res := response{Version: protocolVersion, ID: req.ID, Data: data}
+		if callErr != nil {
+			res.Data = nil
+			res.Code = stableCode(callErr)
+			if strings.Contains(callErr.Error(), "unsupported_action") {
+				res.Code = "unsupported_action"
+			}
+			if strings.Contains(callErr.Error(), "invalid_request") {
+				res.Code = "invalid_request"
+			}
+			if strings.Contains(callErr.Error(), "too_large") {
+				res.Code = "too_large"
+			}
+		}
+		if err := encoder.Encode(res); err != nil {
+			return err
+		}
+	}
+	return scanner.Err()
+}
+
+func usageError(message string) error { return fmt.Errorf("quick-shell-sftp: %s", message) }
