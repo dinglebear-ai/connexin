@@ -2,6 +2,7 @@ import http from "node:http";
 import type { Duplex } from "node:stream";
 import { WebSocket, WebSocketServer } from "ws";
 import { createAuditRateLimiter } from "./audit-log.js";
+import { isOriginAllowed } from "./config.js";
 import type { RuntimeConfig } from "./config.js";
 import type {
   Disposable,
@@ -20,6 +21,176 @@ const MAX_PENDING_AUTH_CONNECTIONS = 32;
 const MAX_WS_CLOSE_REASON_BYTES = 123;
 const REJECTION_AUDIT_LIMIT = 10;
 const REJECTION_AUDIT_WINDOW_MS = 60_000;
+
+async function handleFileRequest(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  config: RuntimeConfig,
+  manager: QuickShellSessionManager,
+): Promise<void> {
+  const origin = req.headers.origin;
+  res.setHeader("Cache-Control", "no-store");
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  const localOriginMode =
+    config.allowedOrigins.length === 0 &&
+    config.bridgePublicUrl === undefined &&
+    ["127.0.0.1", "localhost", "::1"].includes(config.bridgeHost);
+  if (
+    !origin ||
+    (!localOriginMode && !isOriginAllowed(config.allowedOrigins, origin))
+  ) {
+    manager.recordAuditEvent("file_request_rejected", {
+      operation: "unknown",
+      outcome: "rejected",
+      errorCode: "origin_not_allowed",
+    });
+    res.writeHead(403, { "Content-Type": "application/problem+json" });
+    res.end('{"code":"origin_not_allowed"}');
+    return;
+  }
+  const pathname = new URL(req.url ?? "/", "http://127.0.0.1").pathname;
+  const methodAllowed =
+    (pathname === "/files/upload" && req.method === "PUT") ||
+    (pathname === "/files/download" && req.method === "POST");
+  if (req.method === "OPTIONS") {
+    const requestedMethod = req.headers["access-control-request-method"];
+    if (
+      (pathname !== "/files/upload" && pathname !== "/files/download") ||
+      !["PUT", "POST"].includes(String(requestedMethod))
+    ) {
+      manager.recordAuditEvent("file_request_rejected", {
+        operation: "preflight",
+        outcome: "rejected",
+        errorCode: "invalid_preflight",
+      });
+      res.writeHead(403);
+      res.end();
+      return;
+    }
+    res.writeHead(204, {
+      "Access-Control-Allow-Origin": origin,
+      "Access-Control-Allow-Methods": String(requestedMethod),
+      "Access-Control-Allow-Headers":
+        "Authorization, X-Quick-Shell-File-Lease, Content-Type",
+      "Access-Control-Max-Age": "300",
+      Vary: "Origin",
+    });
+    res.end();
+    return;
+  }
+  if (!methodAllowed) {
+    res.writeHead(404);
+    res.end("not found");
+    return;
+  }
+  if (
+    req.headers.expect ||
+    (req.headers["content-length"] && req.headers["transfer-encoding"])
+  ) {
+    manager.recordAuditEvent("file_request_rejected", {
+      operation: pathname.endsWith("upload") ? "upload" : "download",
+      outcome: "rejected",
+      errorCode: "invalid_framing",
+    });
+    res.writeHead(417, { "Content-Type": "application/problem+json" });
+    res.end('{"code":"invalid_framing"}');
+    return;
+  }
+  const auth = req.headers.authorization;
+  const session = auth?.startsWith("Bearer ")
+    ? manager.authenticateFileCapability(auth.slice(7))
+    : undefined;
+  const lease = req.headers["x-quick-shell-file-lease"];
+  if (!session || typeof lease !== "string") {
+    manager.recordAuditEvent("file_request_rejected", {
+      operation: pathname.endsWith("upload") ? "upload" : "download",
+      outcome: "rejected",
+      errorCode: "unauthorized",
+    });
+    res.writeHead(401, { "Content-Type": "application/problem+json" });
+    res.end('{"code":"unauthorized"}');
+    return;
+  }
+  const fileSession = manager.getFileSession(session.id);
+  if (!fileSession) {
+    res.writeHead(410);
+    res.end();
+    return;
+  }
+  const controller = new AbortController();
+  req.once("aborted", () => controller.abort());
+  res.once("close", () => {
+    if (!res.writableEnded) controller.abort();
+  });
+  res.setHeader("Access-Control-Allow-Origin", origin);
+  res.setHeader("Vary", "Origin");
+  try {
+    if (pathname === "/files/upload") {
+      const length = Number(req.headers["content-length"]);
+      if (
+        !Number.isSafeInteger(length) ||
+        length < 0 ||
+        length > config.maxTransferBytes
+      )
+        throw new Error("too_large");
+      const bytes = await fileSession.upload(
+        lease,
+        req,
+        length,
+        controller.signal,
+      );
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ bytes }));
+      manager.recordAuditEvent("file_transfer_completed", {
+        sessionId: session.id,
+        device: session.publicSummary.device,
+        operation: "upload",
+        byteCount: bytes,
+        outcome: "completed",
+      });
+    } else {
+      const body = await fileSession.downloadBuffer(lease, controller.signal);
+      res.writeHead(200, {
+        "Content-Type": "application/octet-stream",
+        "Content-Length": String(body.length),
+        "Content-Disposition": 'attachment; filename="quick-shell-download"',
+      });
+      res.end(body);
+      manager.recordAuditEvent("file_transfer_completed", {
+        sessionId: session.id,
+        device: session.publicSummary.device,
+        operation: "download",
+        byteCount: body.length,
+        outcome: "completed",
+      });
+    }
+  } catch (error) {
+    manager.recordAuditEvent("file_transfer_failed", {
+      sessionId: session.id,
+      device: session.publicSummary.device,
+      operation: pathname.endsWith("upload") ? "upload" : "download",
+      outcome: "failed",
+      errorCode:
+        error instanceof Error && /^[a-z_]+$/.test(error.message)
+          ? error.message
+          : "operation_failed",
+    });
+    if (!res.headersSent)
+      res.writeHead(
+        error instanceof Error && error.message === "too_large" ? 413 : 409,
+        { "Content-Type": "application/problem+json" },
+      );
+    if (!res.writableEnded)
+      res.end(
+        JSON.stringify({
+          code:
+            error instanceof Error && /^[a-z_]+$/.test(error.message)
+              ? error.message
+              : "operation_failed",
+        }),
+      );
+  }
+}
 
 export interface BridgeServer {
   baseUrl: string;
@@ -191,9 +362,8 @@ export async function startBridgeServer(
   options: StartBridgeServerOptions,
 ): Promise<BridgeServer> {
   const { config, manager } = options;
-  const httpServer = http.createServer((_req, res) => {
-    res.writeHead(404);
-    res.end("not found");
+  const httpServer = http.createServer((req, res) => {
+    void handleFileRequest(req, res, config, manager);
   });
   const wss = new WebSocketServer({
     noServer: true,
@@ -264,7 +434,7 @@ export async function startBridgeServer(
     const requestOrigin = request.headers.origin;
     if (
       config.allowedOrigins.length > 0 &&
-      (!requestOrigin || !config.allowedOrigins.includes(requestOrigin))
+      (!requestOrigin || !isOriginAllowed(config.allowedOrigins, requestOrigin))
     ) {
       recordUnauthenticatedRejection({
         reason: "origin_not_allowed",
@@ -382,6 +552,7 @@ export async function startBridgeServer(
             reason: "invalid_json",
           });
           sendJson(ws, { type: "error", message: "invalid terminal message" });
+          settleAuth();
           closeWithPolicy(ws, "invalid terminal message");
           return;
         }
@@ -394,6 +565,7 @@ export async function startBridgeServer(
             reason: "invalid_schema",
           });
           sendJson(ws, { type: "error", message: "invalid terminal message" });
+          settleAuth();
           closeWithPolicy(ws, "invalid terminal message");
           return;
         }
@@ -499,6 +671,7 @@ export async function startBridgeServer(
             sessionId: pendingSessionId,
             reason: "unauthenticated_message",
           });
+          settleAuth();
           closeWithPolicy(ws, "authentication required");
           return;
         }

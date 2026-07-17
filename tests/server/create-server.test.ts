@@ -17,7 +17,9 @@ import { QuickShellPublicSessionSchema } from "../../src/shared/protocol.js";
 import { FakePty } from "./helpers/fake-pty.js";
 import { testRuntimeConfig } from "./helpers/runtime-config.js";
 
-const APP_RESOURCE_URI = "ui://quick-shell/mcp-app.v2.html";
+const APP_RESOURCE_URI = "ui://quick-shell/mcp-app.v3.html";
+const V2_APP_RESOURCE_URI = "ui://quick-shell/mcp-app.v2.html";
+const LEGACY_APP_RESOURCE_URI = "ui://quick-shell/mcp-app.html";
 const APP_HTML_PATH = resolve("dist/app/mcp-app.html");
 
 async function withBuiltAppHtml<T>(
@@ -386,13 +388,13 @@ describe("createServer", () => {
 
       expect(appOnly?._meta).toMatchObject({
         ui: {
-          resourceUri: APP_RESOURCE_URI,
           visibility: ["app"],
         },
-        "openai/outputTemplate": APP_RESOURCE_URI,
         "openai/widgetAccessible": true,
         "openai/visibility": "private",
       });
+      expect(appOnly?._meta?.ui).not.toHaveProperty("resourceUri");
+      expect(appOnly?._meta).not.toHaveProperty("openai/outputTemplate");
     } finally {
       await server.close();
       await client.close();
@@ -546,6 +548,10 @@ describe("createServer", () => {
       );
       expect(appOnly?._meta?.ui).toMatchObject({ visibility: ["app"] });
       expect(closeOnly?._meta?.ui).toMatchObject({ visibility: ["app"] });
+      expect(appOnly?._meta?.ui).not.toHaveProperty("resourceUri");
+      expect(closeOnly?._meta?.ui).not.toHaveProperty("resourceUri");
+      expect(appOnly?._meta).not.toHaveProperty("openai/outputTemplate");
+      expect(closeOnly?._meta).not.toHaveProperty("openai/outputTemplate");
     } finally {
       await server.close();
       await client.close();
@@ -782,6 +788,10 @@ describe("createServer", () => {
         createTestServer("http://127.0.0.1:45678").server,
       ));
       const first = await client.readResource({ uri: APP_RESOURCE_URI });
+      const legacy = await client.readResource({
+        uri: LEGACY_APP_RESOURCE_URI,
+      });
+      const v2 = await client.readResource({ uri: V2_APP_RESOURCE_URI });
       await writeFile(APP_HTML_PATH, "<html>second</html>");
       resetAppHtmlCacheForTests();
       const second = await client.readResource({ uri: APP_RESOURCE_URI });
@@ -804,6 +814,12 @@ describe("createServer", () => {
           },
         },
       });
+      expect(legacy.contents[0]).toMatchObject({
+        uri: LEGACY_APP_RESOURCE_URI,
+        mimeType: "text/html;profile=mcp-app",
+        text: "<html>first</html>",
+      });
+      expect(v2.contents[0]).toMatchObject({ uri: V2_APP_RESOURCE_URI });
       expect(second.contents[0]).toMatchObject({ text: "<html>second</html>" });
     } finally {
       resetAppHtmlCacheForTests();

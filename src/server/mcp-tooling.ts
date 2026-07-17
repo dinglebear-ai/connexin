@@ -16,7 +16,9 @@ import type {
 } from "../shared/protocol.js";
 import { utf8ByteLength } from "../shared/utf8.js";
 
-export const APP_RESOURCE_URI = "ui://quick-shell/mcp-app.v2.html";
+export const APP_RESOURCE_URI = "ui://quick-shell/mcp-app.v3.html";
+export const V2_APP_RESOURCE_URI = "ui://quick-shell/mcp-app.v2.html";
+export const LEGACY_APP_RESOURCE_URI = "ui://quick-shell/mcp-app.html";
 export const SERVER_INSTRUCTIONS =
   "quick-shell opens a human-controlled SSH terminal for an allowlisted SSH config host alias. Use open_quick_shell only when a remote agent is blocked by a one-off command; suggested_command is prefilled only, and the user must run commands, review output, and explicitly send output back.";
 
@@ -45,10 +47,10 @@ export function toolMeta(
   const modelVisible = visibility.includes("model");
   return {
     ui: {
-      resourceUri: APP_RESOURCE_URI,
+      ...(modelVisible ? { resourceUri: APP_RESOURCE_URI } : {}),
       visibility,
     },
-    "openai/outputTemplate": APP_RESOURCE_URI,
+    ...(modelVisible ? { "openai/outputTemplate": APP_RESOURCE_URI } : {}),
     "openai/widgetAccessible": appVisible,
     "openai/visibility": modelVisible ? "public" : "private",
     ...(status?.invoking
@@ -114,6 +116,9 @@ export function appSessionFor(
     maxSubmitBytes: config.maxSubmitBytes,
     maxWsPayloadBytes: config.maxWsPayloadBytes,
     pingIntervalMs: pingIntervalMs(config),
+    fileBaseUrl: bridgeBaseUrl,
+    fileToken: session.fileToken,
+    maxEmbeddedDownloadBytes: config.maxEmbeddedDownloadBytes,
   };
 }
 

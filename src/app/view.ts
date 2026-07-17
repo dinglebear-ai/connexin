@@ -1,11 +1,14 @@
 export interface ShellElements {
   container: HTMLElement;
   status: HTMLParagraphElement;
+  terminalTab: HTMLButtonElement;
+  filesTab: HTMLButtonElement;
   sessionSummary: HTMLDivElement;
   commandStrip: HTMLFormElement;
   commandInput: HTMLInputElement;
   insertButton: HTMLButtonElement;
   terminalMount: HTMLDivElement;
+  filesMount: HTMLDivElement;
   transcript: HTMLPreElement;
   actions: HTMLDivElement;
   connectButton: HTMLButtonElement;
@@ -29,16 +32,43 @@ export function buildShell(): ShellElements {
 
   const header = document.createElement("header");
   header.className = "shell__header";
+  const identity = document.createElement("div");
+  identity.className = "shell__identity";
+  const mark = document.createElement("span");
+  mark.className = "shell__mark";
+  mark.setAttribute("aria-hidden", "true");
+  mark.textContent = ">_";
   const title = document.createElement("h1");
   title.id = "quick-shell-title";
-  title.textContent = "quick-shell";
+  title.className = "shell__product";
+  title.textContent = "Quick Shell";
+  const descriptor = document.createElement("span");
+  descriptor.className = "shell__descriptor";
+  descriptor.textContent = "SSH terminal";
+  identity.append(mark, title, descriptor);
   const status = document.createElement("p");
   status.className = "shell__status";
   status.setAttribute("role", "status");
   status.setAttribute("aria-live", "polite");
   status.setAttribute("aria-atomic", "true");
   status.textContent = "Waiting";
-  header.append(title, status);
+  status.dataset.tone = "neutral";
+  header.append(identity, status);
+
+  const tabs = document.createElement("div");
+  tabs.className = "shell__tabs";
+  tabs.setAttribute("role", "tablist");
+  const terminalTab = document.createElement("button");
+  terminalTab.type = "button";
+  terminalTab.textContent = "Terminal";
+  terminalTab.setAttribute("role", "tab");
+  terminalTab.setAttribute("aria-selected", "true");
+  const filesTab = document.createElement("button");
+  filesTab.type = "button";
+  filesTab.textContent = "Files";
+  filesTab.setAttribute("role", "tab");
+  filesTab.setAttribute("aria-selected", "false");
+  tabs.append(terminalTab, filesTab);
 
   const sessionSummary = document.createElement("div");
   sessionSummary.className = "shell__summary";
@@ -56,6 +86,7 @@ export function buildShell(): ShellElements {
   const insertButton = document.createElement("button");
   insertButton.type = "submit";
   insertButton.textContent = "Insert";
+  insertButton.dataset.variant = "primary";
   insertButton.disabled = true;
   commandStrip.append(commandInput, insertButton);
 
@@ -67,6 +98,12 @@ export function buildShell(): ShellElements {
   transcript.className = "terminal-transcript sr-only";
   transcript.setAttribute("aria-label", "Terminal transcript");
   transcript.setAttribute("aria-live", "polite");
+
+  const filesMount = document.createElement("div");
+  filesMount.className = "files";
+  filesMount.hidden = true;
+  filesMount.setAttribute("role", "tabpanel");
+  filesMount.setAttribute("aria-label", "Remote files");
 
   const actions = document.createElement("div");
   actions.className = "actions";
@@ -83,6 +120,7 @@ export function buildShell(): ShellElements {
   const sendButton = document.createElement("button");
   sendButton.type = "button";
   sendButton.textContent = "Send output";
+  sendButton.dataset.variant = "primary";
   sendButton.disabled = true;
   const downloadButton = document.createElement("button");
   downloadButton.type = "button";
@@ -92,6 +130,7 @@ export function buildShell(): ShellElements {
   const closeButton = document.createElement("button");
   closeButton.type = "button";
   closeButton.textContent = "Close";
+  closeButton.dataset.variant = "danger";
   closeButton.disabled = true;
   actions.append(
     connectButton,
@@ -135,14 +174,17 @@ export function buildShell(): ShellElements {
   const confirmButton = document.createElement("button");
   confirmButton.type = "button";
   confirmButton.textContent = "Confirm";
+  confirmButton.dataset.variant = "primary";
   dialogActions.append(cancelButton, confirmButton);
   dialog.append(dialogTitle, textarea, meta, warnings, fallback, dialogActions);
 
   container.append(
     header,
+    tabs,
     sessionSummary,
     commandStrip,
     terminalMount,
+    filesMount,
     transcript,
     actions,
     dialog,
@@ -151,11 +193,14 @@ export function buildShell(): ShellElements {
   return {
     container,
     status,
+    terminalTab,
+    filesTab,
     sessionSummary,
     commandStrip,
     commandInput,
     insertButton,
     terminalMount,
+    filesMount,
     transcript,
     actions,
     connectButton,

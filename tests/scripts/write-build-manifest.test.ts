@@ -72,6 +72,7 @@ async function writeManifestFixture(root: string): Promise<void> {
     "dist/server/shared/protocol.d.ts": "export declare const protocol = 1;\n",
     "dist/server/cli/main.js": "export const cli = 1;\n",
     "dist/server/cli/main.d.ts": "export declare const cli = 1;\n",
+    "dist/bin/quick-shell-sftp": "helper\n",
   };
   await Promise.all(
     Object.entries(files).map(([path, contents]) =>

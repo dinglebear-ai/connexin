@@ -24,6 +24,12 @@ export type AuditEvent =
   | "app_session_close_requested"
   | "output_confirmed"
   | "ssh_start_failed"
+  | "file_operation_prepared"
+  | "file_operation_completed"
+  | "file_operation_failed"
+  | "file_request_rejected"
+  | "file_transfer_completed"
+  | "file_transfer_failed"
   | "audit_sink_recovered";
 
 export type AuditFields = Record<string, unknown>;
@@ -90,7 +96,7 @@ export function createAuditRateLimiter(options: {
 }
 
 const REDACTED_FIELD_PATTERN =
-  /token|output|suggestedcommand|suggested_command/i;
+  /token|output|suggestedcommand|suggested_command|path|filename|url|authorization|headers|nonce|lease|capability|secret|contents/i;
 
 /**
  * Keys that match REDACTED_FIELD_PATTERN by substring but carry no secret. The

@@ -1,11 +1,13 @@
 # quick-shell
 
-quick-shell is a local MCP App for short, human-approved SSH terminal sessions. An agent can request `open_quick_shell` for an SSH-configured device alias, but the user controls the terminal, decides whether to insert any suggested command, runs commands manually, reviews output, and explicitly confirms anything sent back to the conversation.
+quick-shell is a local MCP App for short, human-approved SSH terminal sessions and confined SFTP file operations. An agent can request `open_quick_shell` for an SSH-configured device alias, but the user controls the terminal and file explorer.
 
 ## Developer Setup
 
 ```bash
 npm install
+go test ./...
+go vet ./...
 npm run lint
 npm run format:check
 npm run typecheck
@@ -23,6 +25,7 @@ npm run dev              # rebuild the MCP app and run the HTTP server with a de
 npm run serve:stdio      # run the built stdio MCP server
 npm run serve            # run the built localhost HTTP MCP server
 npm run verify:deployment
+npm run test:sftp-integration -- dist/bin/quick-shell-sftp /path/to/ssh_config host-alias
 ```
 
 Stdio is the recommended production transport:
@@ -58,30 +61,32 @@ The local CLI does not accept `--reason`. Use the MCP API `reason` field when th
 
 ## Configuration
 
-| Variable                                     | Default                                      | Purpose                                                                                                                                                 |
-| -------------------------------------------- | -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `QUICK_SHELL_SSH_CONFIG`                     | `$HOME/.ssh/config`                          | Primary SSH config file. This file is required.                                                                                                         |
-| `QUICK_SHELL_CONFIG`                         | `$HOME/.config/quick-shell/quick-shell.toml` | Optional device metadata file. Missing file is treated as empty metadata.                                                                               |
-| `QUICK_SHELL_AUDIT_LOG`                      | stderr audit output                          | JSONL audit log path.                                                                                                                                   |
-| `QUICK_SHELL_HTTP_TOKEN`                     | unset                                        | Required bearer token for `--http` mode.                                                                                                                |
-| `QUICK_SHELL_HTTP_PORT`                      | random port                                  | Localhost HTTP MCP port for `--http` mode.                                                                                                              |
-| `QUICK_SHELL_ALLOWED_ORIGINS`                | empty                                        | Comma-separated exact WebSocket `Origin` allowlist for `/terminal`. Empty means no origin filter. Required when `QUICK_SHELL_BRIDGE_PUBLIC_URL` is set. |
-| `QUICK_SHELL_BRIDGE_HOST`                    | `127.0.0.1`                                  | Terminal bridge bind host. Use `0.0.0.0` only behind a trusted TLS reverse proxy.                                                                       |
-| `QUICK_SHELL_BRIDGE_PORT`                    | `0`                                          | Terminal bridge bind port. `0` asks the OS for a free port.                                                                                             |
-| `QUICK_SHELL_BRIDGE_PUBLIC_URL`              | bridge listen URL                            | Public origin advertised to the MCP App. Paths are rejected; non-loopback URLs require HTTPS.                                                           |
-| `QUICK_SHELL_ALLOW_INSECURE_PUBLIC_BRIDGE`   | unset                                        | Set to `1` only for local development if a non-loopback public bridge URL must use HTTP.                                                                |
-| `QUICK_SHELL_MAX_SESSIONS`                   | `4`                                          | Maximum live sessions in one server process.                                                                                                            |
-| `QUICK_SHELL_MAX_DEVICE_LENGTH`              | `128`                                        | Maximum device alias length.                                                                                                                            |
-| `QUICK_SHELL_MAX_REASON_LENGTH`              | `1000`                                       | Maximum MCP API reason length.                                                                                                                          |
-| `QUICK_SHELL_MAX_SUGGESTED_COMMAND_LENGTH`   | `4000`                                       | Maximum suggested command length.                                                                                                                       |
-| `QUICK_SHELL_MAX_SCROLLBACK_BYTES`           | `128000`                                     | Bounded scrollback and app-only poll buffer size.                                                                                                       |
-| `QUICK_SHELL_MAX_INPUT_BYTES`                | `16384`                                      | Maximum terminal input message size.                                                                                                                    |
-| `QUICK_SHELL_MAX_SUBMIT_BYTES`               | `64000`                                      | Maximum user-approved output submission size.                                                                                                           |
-| `QUICK_SHELL_MAX_WS_PAYLOAD_BYTES`           | `16384`                                      | Maximum bridge WebSocket payload size.                                                                                                                  |
-| `QUICK_SHELL_WS_BUFFERED_AMOUNT_LIMIT_BYTES` | `1000000`                                    | Backpressure limit before closing a slow terminal client.                                                                                               |
-| `QUICK_SHELL_MAX_SESSION_AGE_MS`             | `1800000`                                    | Absolute session lifetime.                                                                                                                              |
-| `QUICK_SHELL_IDLE_GRACE_MS`                  | `300000`                                     | Idle lifetime before cleanup.                                                                                                                           |
-| `QUICK_SHELL_CLEANUP_INTERVAL_MS`            | `30000`                                      | Session cleanup interval.                                                                                                                               |
+| Variable                                     | Default                                      | Purpose                                                                                                                                                                                                                                                |
+| -------------------------------------------- | -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `QUICK_SHELL_SSH_CONFIG`                     | `$HOME/.ssh/config`                          | Primary SSH config file. This file is required.                                                                                                                                                                                                        |
+| `QUICK_SHELL_CONFIG`                         | `$HOME/.config/quick-shell/quick-shell.toml` | Optional device metadata file. Missing file is treated as empty metadata.                                                                                                                                                                              |
+| `QUICK_SHELL_AUDIT_LOG`                      | stderr audit output                          | JSONL audit log path.                                                                                                                                                                                                                                  |
+| `QUICK_SHELL_HTTP_TOKEN`                     | unset                                        | Required bearer token for `--http` mode.                                                                                                                                                                                                               |
+| `QUICK_SHELL_HTTP_PORT`                      | random port                                  | Localhost HTTP MCP port for `--http` mode.                                                                                                                                                                                                             |
+| `QUICK_SHELL_ALLOWED_ORIGINS`                | empty                                        | Comma-separated WebSocket `Origin` allowlist for `/terminal`. Entries are exact origins or `https://*.example.com` wildcards matching exactly one subdomain label. Empty means no origin filter. Required when `QUICK_SHELL_BRIDGE_PUBLIC_URL` is set. |
+| `QUICK_SHELL_BRIDGE_HOST`                    | `127.0.0.1`                                  | Terminal bridge bind host. Use `0.0.0.0` only behind a trusted TLS reverse proxy.                                                                                                                                                                      |
+| `QUICK_SHELL_BRIDGE_PORT`                    | `0`                                          | Terminal bridge bind port. `0` asks the OS for a free port.                                                                                                                                                                                            |
+| `QUICK_SHELL_BRIDGE_PUBLIC_URL`              | bridge listen URL                            | Public origin advertised to the MCP App. Paths are rejected; non-loopback URLs require HTTPS.                                                                                                                                                          |
+| `QUICK_SHELL_ALLOW_INSECURE_PUBLIC_BRIDGE`   | unset                                        | Set to `1` only for local development if a non-loopback public bridge URL must use HTTP.                                                                                                                                                               |
+| `QUICK_SHELL_MAX_SESSIONS`                   | `4`                                          | Maximum live sessions in one server process.                                                                                                                                                                                                           |
+| `QUICK_SHELL_MAX_DEVICE_LENGTH`              | `128`                                        | Maximum device alias length.                                                                                                                                                                                                                           |
+| `QUICK_SHELL_MAX_REASON_LENGTH`              | `1000`                                       | Maximum MCP API reason length.                                                                                                                                                                                                                         |
+| `QUICK_SHELL_MAX_SUGGESTED_COMMAND_LENGTH`   | `4000`                                       | Maximum suggested command length.                                                                                                                                                                                                                      |
+| `QUICK_SHELL_MAX_SCROLLBACK_BYTES`           | `128000`                                     | Bounded scrollback and app-only poll buffer size.                                                                                                                                                                                                      |
+| `QUICK_SHELL_MAX_INPUT_BYTES`                | `16384`                                      | Maximum terminal input message size.                                                                                                                                                                                                                   |
+| `QUICK_SHELL_MAX_SUBMIT_BYTES`               | `64000`                                      | Maximum user-approved output submission size.                                                                                                                                                                                                          |
+| `QUICK_SHELL_MAX_WS_PAYLOAD_BYTES`           | `16384`                                      | Maximum bridge WebSocket payload size.                                                                                                                                                                                                                 |
+| `QUICK_SHELL_WS_BUFFERED_AMOUNT_LIMIT_BYTES` | `1000000`                                    | Backpressure limit before closing a slow terminal client.                                                                                                                                                                                              |
+| `QUICK_SHELL_MAX_SESSION_AGE_MS`             | `1800000`                                    | Absolute session lifetime.                                                                                                                                                                                                                             |
+| `QUICK_SHELL_IDLE_GRACE_MS`                  | `300000`                                     | Idle lifetime before cleanup.                                                                                                                                                                                                                          |
+| `QUICK_SHELL_CLEANUP_INTERVAL_MS`            | `30000`                                      | Session cleanup interval.                                                                                                                                                                                                                              |
+
+File explorer limits use `QUICK_SHELL_MAX_FILE_ENTRIES=1000`, `QUICK_SHELL_MAX_FILE_METADATA_BYTES=524288`, `QUICK_SHELL_MAX_FILE_PATH_BYTES=4096`, `QUICK_SHELL_MAX_FILE_COMPONENT_BYTES=255`, `QUICK_SHELL_MAX_FILE_PATH_DEPTH=64`, `QUICK_SHELL_MAX_FILE_QUEUED_OPERATIONS=8`, `QUICK_SHELL_MAX_TRANSFER_BYTES=536870912`, `QUICK_SHELL_MAX_EMBEDDED_DOWNLOAD_BYTES=8388608`, `QUICK_SHELL_FILE_OPERATION_LEASE_TTL_MS=60000`, `QUICK_SHELL_MAX_FILE_OPERATION_LEASES=16`, `QUICK_SHELL_FILE_METADATA_TIMEOUT_MS=30000`, `QUICK_SHELL_FILE_TRANSFER_MAX_DURATION_MS=1800000`, and `QUICK_SHELL_FILE_SHUTDOWN_TIMEOUT_MS=5000`. `QUICK_SHELL_SFTP_HELPER` may override the bundled `dist/bin/quick-shell-sftp` path.
 
 ## Devices
 
@@ -128,7 +133,7 @@ Metadata supports only `[devices.<alias>]` tables with quoted string values for 
 
 ## Secure Remote Bridge
 
-The terminal bridge is localhost-only by default. For remote MCP App hosts, expose only `/terminal` through a TLS reverse proxy and advertise that public base URL:
+The bridge is localhost-only by default. For remote MCP App hosts, expose `/terminal`, `/files/upload`, and `/files/download` through a TLS reverse proxy and advertise that public base URL:
 
 ```bash
 QUICK_SHELL_BRIDGE_HOST=0.0.0.0 \
@@ -140,11 +145,12 @@ node dist/server/server/main.js --stdio
 
 Remote bridge requirements:
 
-- Proxy only the bridge path needed by the app: `/terminal`.
-- Set `QUICK_SHELL_BRIDGE_PUBLIC_URL` to an origin with no path prefix; v1 serves `/terminal` at that origin's root.
+- Proxy only the bridge paths needed by the app: `/terminal`, `/files/upload`, and `/files/download`.
+- Set `QUICK_SHELL_BRIDGE_PUBLIC_URL` to an origin with no path prefix; v1 serves `/terminal`, `/files/upload`, and `/files/download` at that origin's root.
 - Preserve WebSocket upgrade headers.
+- Disable proxy buffering on file routes and enforce compatible body and timeout limits.
 - Use HTTPS for `QUICK_SHELL_BRIDGE_PUBLIC_URL`; the app receives a `wss://` terminal URL.
-- Set `QUICK_SHELL_ALLOWED_ORIGINS` to the exact MCP App host origin or a comma-separated list of exact origins. When the list is non-empty, requests without a matching `Origin` are rejected before WebSocket upgrade.
+- Set `QUICK_SHELL_ALLOWED_ORIGINS` to the MCP App host origin or a comma-separated list. When the list is non-empty, requests without a matching `Origin` are rejected before WebSocket upgrade. Hosts that sandbox app iframes on rotating per-connector origins (Claude uses `{hash}.claudemcpcontent.com`) need a wildcard entry such as `https://*.claudemcpcontent.com`; wildcards match exactly one subdomain label, and the per-session WebSocket token remains the actual authentication.
 - Keep `QUICK_SHELL_ALLOWED_ORIGINS` empty only for local-only deployments. It is required whenever `QUICK_SHELL_BRIDGE_PUBLIC_URL` is set: the server refuses to start on that combination, even if a proxy in front of it already enforces origins.
 - Keep tool-result `_meta` hidden from the model. App tokens and WebSocket tokens are capabilities and must remain app-only.
 
@@ -152,13 +158,15 @@ The WebSocket URL contains only the session id. The app authenticates with a per
 
 ## API and Capability Model
 
-quick-shell follows the MCP Apps standard first. `open_quick_shell` declares `_meta.ui.resourceUri`, the app resource is served as `text/html;profile=mcp-app`, and the iframe talks to the host through the standard `ui/*` bridge. ChatGPT/OpenAI compatibility aliases are also present, including `openai/outputTemplate`, widget visibility, and status metadata.
+quick-shell follows the MCP Apps standard first. `open_quick_shell` declares `_meta.ui.resourceUri`, the app resource is served as `text/html;profile=mcp-app`, and the iframe talks to the host through the standard `ui/*` bridge. ChatGPT/OpenAI compatibility aliases are also present, including `openai/outputTemplate`, widget visibility, and status metadata. App-only sibling tools are private, token-gated callbacks; they do not bind their own app resource or output template.
 
 App resource:
 
-| Resource                           | MIME type                   | Notes                                                                |
-| ---------------------------------- | --------------------------- | -------------------------------------------------------------------- |
-| `ui://quick-shell/mcp-app.v2.html` | `text/html;profile=mcp-app` | Includes CSP metadata with bridge HTTP(S) and WS(S) connect domains. |
+| Resource                           | MIME type                   | Notes                                                      |
+| ---------------------------------- | --------------------------- | ---------------------------------------------------------- |
+| `ui://quick-shell/mcp-app.v3.html` | `text/html;profile=mcp-app` | Canonical terminal and Files app with bridge CSP metadata. |
+| `ui://quick-shell/mcp-app.v2.html` | `text/html;profile=mcp-app` | Legacy compatibility URI.                                  |
+| `ui://quick-shell/mcp-app.html`    | `text/html;profile=mcp-app` | V1 legacy compatibility URI.                               |
 
 Tools:
 
@@ -173,6 +181,19 @@ Tools:
 | `resize_quick_shell_session`          | app        | App-only terminal resize fallback.                                                                                                           |
 | `close_quick_shell_session`           | app        | App-owned session close.                                                                                                                     |
 | `record_quick_shell_output_confirmed` | app        | Audit breadcrumb after the user confirms output return.                                                                                      |
+| `list_quick_shell_files`              | app        | Bounded root-relative SFTP directory listing in hidden metadata.                                                                             |
+| `prepare_quick_shell_file_operation`  | app        | Creates a short-lived one-use lease for a mutation or transfer.                                                                              |
+| `mkdir_quick_shell_path`              | app        | Creates a directory using a fresh operation lease.                                                                                           |
+| `rename_quick_shell_path`             | app        | Renames a path using a fresh operation lease.                                                                                                |
+| `delete_quick_shell_path`             | app        | Deletes a path using a fresh operation lease.                                                                                                |
+
+## SFTP Safety Model
+
+The Files view starts its helper lazily and uses system OpenSSH with the same configured alias, keys, agent, host verification, and `ProxyJump` behavior as the terminal. Authentication is noninteractive (`BatchMode=yes`), so accept a new host key or unlock a key through the terminal first when necessary.
+
+Paths are relative to the remote account's canonical home. The server bounds path bytes, component bytes, depth, directory entries, pending operations, transfer bytes, and lease lifetime. This is a user-safety boundary, not race-proof isolation from a malicious process running as the same remote user. Symlinks are listed distinctly and destructive operations require explicit UI confirmation plus a fresh one-use lease.
+
+Transfers use fixed bridge routes with a separate file bearer in request headers. Capabilities, leases, and paths do not appear in URLs or model-visible MCP content. Downloads are bounded and appear only when the host advertises `downloadFile`; larger or resumable transfers remain out of scope.
 
 `open_quick_shell` returns model-visible text plus structured public session fields: `sessionId`, `device`, optional `reason`, optional `suggestedCommand`, and optional device metadata. The model-visible text says the session is prepared, not opened: the SSH PTY starts only after a compatible MCP App host renders the app and attaches through the bridge or app-only fallback. Hidden `_meta.quickShell` contains the app token. Hidden `_meta.quickShellSession` may also include bridge URL, WebSocket token, limits, and ping cadence so the app can attach immediately.
 
@@ -240,7 +261,7 @@ The verifier contract is intentionally stricter than a process liveness check. I
 - optional gateway config env expectations are present
 - gateway upstream command and args match the expected process
 - gateway runtime is connected and exposes the expected tool count
-- app-only tools are not visible to model discovery
+- app-only tools remain app-visible, OpenAI-private, and free of app resource/output-template bindings
 - `check_quick_shell` can be called through the gateway
 - resource smoke: the deployed server serves the app resource as `text/html;profile=mcp-app` and exposes every runtime tool
 - audit log smoke: when `QUICK_SHELL_VERIFY_AUDIT_LOG` is set, the log contains `runtime_started` and `bridge_listening` with the expected `baseUrl`
@@ -280,7 +301,7 @@ Operational checks:
 
 - Confirm `check_quick_shell` succeeds through the gateway.
 - Confirm the gateway reports the upstream as connected with the expected exposed tool count.
-- Confirm app-only tools are hidden from model discovery.
+- Confirm app-only tools remain private, token-gated callbacks without their own app resource/output-template binding.
 - Confirm the bridge public URL and allowed origins match the host that will render the app.
 - Review the audit log for startup failures, bridge rejections, stale sessions, and cleanup events.
 

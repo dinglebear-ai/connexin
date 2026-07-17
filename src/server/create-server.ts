@@ -14,6 +14,8 @@ import type {
 } from "./session-manager.js";
 import {
   APP_RESOURCE_URI,
+  LEGACY_APP_RESOURCE_URI,
+  V2_APP_RESOURCE_URI,
   SERVER_INSTRUCTIONS,
   appCapabilityInputSchema,
   appResourceMeta,
@@ -673,9 +675,10 @@ export function createServer(options: CreateServerOptions): McpServer {
         };
       }
 
-      const capability = requireAppCapability(manager, args, closeCapability);
-      if ("error" in capability) return capability.error;
-      const session = capability.session;
+      if (existing.appToken !== args.appToken) {
+        return toolError("Invalid quick-shell app capability.");
+      }
+      const session = existing;
 
       const closed = manager.closeSession(session.id);
       return {
@@ -692,36 +695,305 @@ export function createServer(options: CreateServerOptions): McpServer {
     },
   );
 
-  registerAppResource(
+  registerAppTool(
     server,
-    "quick-shell",
-    APP_RESOURCE_URI,
+    "list_quick_shell_files",
     {
-      description: "quick-shell MCP App",
-      _meta: {
-        ui: appResourceMeta(bridgeBaseUrl),
+      title: "List Quick Shell Files",
+      description: "App-only confined SFTP directory listing.",
+      inputSchema: {
+        ...appCapabilityInputSchema(),
+        path: utf8Max(config.maxFilePathBytes).optional(),
       },
+      outputSchema: { count: z.number().int().min(0) },
+      annotations: toolAnnotations("List Quick Shell Files", {
+        readOnlyHint: true,
+        destructiveHint: false,
+        openWorldHint: true,
+        idempotentHint: true,
+      }),
+      _meta: toolMeta(["app"], {
+        invoking: "Listing files",
+        invoked: "Files listed",
+      }),
     },
-    async () => {
-      const text = await readBuiltAppHtml();
-      manager.recordAuditEvent("app_resource_read", {
-        uri: APP_RESOURCE_URI,
-        bytes: new TextEncoder().encode(text).byteLength,
+    async (args) => {
+      const capability = requireAppCapability(manager, args, {
+        missingReason: "missing_file_capability",
+        missingMessage: "Missing quick-shell file capability.",
+        invalidReason: "invalid_file_capability",
       });
-      return {
-        contents: [
-          {
-            uri: APP_RESOURCE_URI,
-            mimeType: RESOURCE_MIME_TYPE,
-            text,
-            _meta: {
-              ui: appResourceMeta(bridgeBaseUrl),
+      if ("error" in capability) return capability.error;
+      try {
+        const entries = await manager
+          .getFileSession(capability.session.id)!
+          .list(args.path ?? ".");
+        return {
+          content: [
+            {
+              type: "text",
+              text: "Quick-shell file listing is available to the app.",
+            },
+          ],
+          structuredContent: { count: entries.length },
+          _meta: {
+            quickShellFiles: {
+              path: args.path ?? ".",
+              entries,
+              maxEmbeddedDownloadBytes: config.maxEmbeddedDownloadBytes,
             },
           },
-        ],
-      };
+        };
+      } catch (error) {
+        return toolError(
+          `Unable to list quick-shell files: ${safeFileError(error)}.`,
+        );
+      }
     },
   );
 
+  registerAppTool(
+    server,
+    "prepare_quick_shell_file_operation",
+    {
+      title: "Prepare Quick Shell File Operation",
+      description: "App-only short-lived file operation capability.",
+      inputSchema: {
+        ...appCapabilityInputSchema(),
+        operation: z.enum(["mkdir", "rename", "delete", "upload", "download"]),
+        path: utf8Max(config.maxFilePathBytes).optional(),
+        from: utf8Max(config.maxFilePathBytes).optional(),
+        to: utf8Max(config.maxFilePathBytes).optional(),
+        expectedFingerprint: z.string().min(16).max(128).optional(),
+        targetFingerprint: z.string().min(16).max(128).optional(),
+        kind: z.enum(["file", "directory", "symlink"]).optional(),
+        bytes: z.number().int().min(0).max(config.maxTransferBytes).optional(),
+        overwrite: z.boolean().optional(),
+      },
+      outputSchema: { prepared: z.boolean() },
+      annotations: toolAnnotations("Prepare Quick Shell File Operation", {
+        readOnlyHint: false,
+        destructiveHint: false,
+        openWorldHint: true,
+      }),
+      _meta: toolMeta(["app"], {
+        invoking: "Preparing file action",
+        invoked: "File action prepared",
+      }),
+    },
+    async (args) => {
+      const capability = requireAppCapability(manager, args, {
+        missingReason: "missing_file_capability",
+        missingMessage: "Missing quick-shell file capability.",
+        invalidReason: "invalid_file_capability",
+      });
+      if ("error" in capability) return capability.error;
+      try {
+        const lease = await manager
+          .getFileSession(capability.session.id)!
+          .prepare(parsePrepareOperation(args));
+        manager.recordAuditEvent("file_operation_prepared", {
+          sessionId: capability.session.id,
+          device: capability.session.publicSummary.device,
+          operation: args.operation,
+          outcome: "prepared",
+        });
+        return {
+          content: [
+            {
+              type: "text",
+              text: "Quick-shell file operation prepared for the app.",
+            },
+          ],
+          structuredContent: { prepared: true },
+          _meta: { quickShellFiles: { lease } },
+        };
+      } catch (error) {
+        manager.recordAuditEvent("file_operation_failed", {
+          sessionId: capability.session.id,
+          device: capability.session.publicSummary.device,
+          operation: args.operation,
+          outcome: "failed",
+          errorCode: safeFileError(error),
+        });
+        return toolError(
+          `Unable to prepare quick-shell file operation: ${safeFileError(error)}.`,
+        );
+      }
+    },
+  );
+
+  for (const [toolName, operation, title] of [
+    ["mkdir_quick_shell_path", "mkdir", "Create Quick Shell Folder"],
+    ["rename_quick_shell_path", "rename", "Rename Quick Shell Path"],
+    ["delete_quick_shell_path", "delete", "Delete Quick Shell Path"],
+  ] as const) {
+    registerAppTool(
+      server,
+      toolName,
+      {
+        title,
+        description: "App-only confirmed SFTP mutation using a one-time lease.",
+        inputSchema: {
+          ...appCapabilityInputSchema(),
+          lease: z.string().min(16).max(256),
+        },
+        outputSchema: { completed: z.boolean() },
+        annotations: toolAnnotations(title, {
+          readOnlyHint: false,
+          destructiveHint: operation !== "mkdir",
+          openWorldHint: true,
+        }),
+        _meta: toolMeta(["app"], {
+          invoking: "Applying file action",
+          invoked: "File action applied",
+        }),
+      },
+      async (args) => {
+        const capability = requireAppCapability(manager, args, {
+          missingReason: "missing_file_capability",
+          missingMessage: "Missing quick-shell file capability.",
+          invalidReason: "invalid_file_capability",
+        });
+        if ("error" in capability) return capability.error;
+        try {
+          await manager
+            .getFileSession(capability.session.id)!
+            .mutate(args.lease, operation);
+          manager.recordAuditEvent("file_operation_completed", {
+            sessionId: capability.session.id,
+            device: capability.session.publicSummary.device,
+            operation,
+            outcome: "completed",
+          });
+          return {
+            content: [
+              { type: "text", text: "Quick-shell file operation completed." },
+            ],
+            structuredContent: { completed: true },
+          };
+        } catch (error) {
+          manager.recordAuditEvent("file_operation_failed", {
+            sessionId: capability.session.id,
+            device: capability.session.publicSummary.device,
+            operation,
+            outcome: "failed",
+            errorCode: safeFileError(error),
+          });
+          return toolError(
+            `Quick-shell file operation failed: ${safeFileError(error)}.`,
+          );
+        }
+      },
+    );
+  }
+
+  for (const [name, uri] of [
+    ["quick-shell", APP_RESOURCE_URI],
+    ["quick-shell-v2", V2_APP_RESOURCE_URI],
+    ["quick-shell-legacy", LEGACY_APP_RESOURCE_URI],
+  ] as const) {
+    registerAppResource(
+      server,
+      name,
+      uri,
+      {
+        description: "quick-shell MCP App",
+        _meta: {
+          ui: appResourceMeta(bridgeBaseUrl),
+        },
+      },
+      async () => {
+        const text = await readBuiltAppHtml();
+        manager.recordAuditEvent("app_resource_read", {
+          uri,
+          bytes: new TextEncoder().encode(text).byteLength,
+        });
+        return {
+          contents: [
+            {
+              uri,
+              mimeType: RESOURCE_MIME_TYPE,
+              text,
+              _meta: {
+                ui: appResourceMeta(bridgeBaseUrl),
+              },
+            },
+          ],
+        };
+      },
+    );
+  }
+
   return server;
+}
+
+function safeFileError(error: unknown): string {
+  const code = error instanceof Error ? error.message : "operation_failed";
+  return /^[a-z_]+$/.test(code) ? code : "operation_failed";
+}
+
+function parsePrepareOperation(args: Record<string, unknown>) {
+  const operation = args.operation;
+  if (operation === "mkdir" && typeof args.path === "string")
+    return { operation, path: args.path } as const;
+  if (
+    operation === "rename" &&
+    typeof args.from === "string" &&
+    typeof args.to === "string" &&
+    typeof args.expectedFingerprint === "string"
+  )
+    return {
+      operation,
+      from: args.from,
+      to: args.to,
+      expectedFingerprint: args.expectedFingerprint,
+      overwrite: args.overwrite === true,
+      targetFingerprint:
+        typeof args.targetFingerprint === "string"
+          ? args.targetFingerprint
+          : undefined,
+    } as const;
+  if (
+    operation === "delete" &&
+    typeof args.path === "string" &&
+    typeof args.expectedFingerprint === "string" &&
+    (args.kind === "file" ||
+      args.kind === "directory" ||
+      args.kind === "symlink")
+  )
+    return {
+      operation,
+      path: args.path,
+      expectedFingerprint: args.expectedFingerprint,
+      kind: args.kind,
+    } as const;
+  if (
+    operation === "upload" &&
+    typeof args.path === "string" &&
+    typeof args.bytes === "number"
+  )
+    return {
+      operation,
+      path: args.path,
+      bytes: args.bytes,
+      overwrite: args.overwrite === true,
+      expectedFingerprint:
+        typeof args.expectedFingerprint === "string"
+          ? args.expectedFingerprint
+          : undefined,
+    } as const;
+  if (
+    operation === "download" &&
+    typeof args.path === "string" &&
+    typeof args.expectedFingerprint === "string" &&
+    typeof args.bytes === "number"
+  )
+    return {
+      operation,
+      path: args.path,
+      expectedFingerprint: args.expectedFingerprint,
+      bytes: args.bytes,
+    } as const;
+  throw new Error("invalid_operation");
 }

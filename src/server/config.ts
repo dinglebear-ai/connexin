@@ -1,4 +1,5 @@
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 export interface RuntimeConfig {
   maxSessions: number;
@@ -21,6 +22,20 @@ export interface RuntimeConfig {
   bridgeHost: string;
   bridgePort: number;
   bridgePublicUrl?: string;
+  sftpHelperPath: string;
+  maxFileEntries: number;
+  maxFileMetadataBytes: number;
+  maxFilePathBytes: number;
+  maxFileComponentBytes: number;
+  maxFilePathDepth: number;
+  maxFileQueuedOperations: number;
+  maxTransferBytes: number;
+  maxEmbeddedDownloadBytes: number;
+  fileOperationLeaseTtlMs: number;
+  maxFileOperationLeases: number;
+  fileMetadataTimeoutMs: number;
+  fileTransferMaxDurationMs: number;
+  fileShutdownTimeoutMs: number;
 }
 
 const DEFAULTS = {
@@ -36,6 +51,19 @@ const DEFAULTS = {
   maxSessionAgeMs: 30 * 60_000,
   idleGraceMs: 5 * 60_000,
   cleanupIntervalMs: 30_000,
+  maxFileEntries: 1000,
+  maxFileMetadataBytes: 512 * 1024,
+  maxFilePathBytes: 4096,
+  maxFileComponentBytes: 255,
+  maxFilePathDepth: 64,
+  maxFileQueuedOperations: 8,
+  maxTransferBytes: 512 * 1024 * 1024,
+  maxEmbeddedDownloadBytes: 8 * 1024 * 1024,
+  fileOperationLeaseTtlMs: 60_000,
+  maxFileOperationLeases: 16,
+  fileMetadataTimeoutMs: 30_000,
+  fileTransferMaxDurationMs: 30 * 60_000,
+  fileShutdownTimeoutMs: 5_000,
 } as const;
 
 function numberFromEnv(
@@ -80,7 +108,24 @@ function parseHttpOrigin(raw: string, key: string): string {
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
     throw new Error(`${key} entries must start with http:// or https://`);
   }
+  // WHATWG URL accepts "*" inside hostnames, so a stray wildcard would
+  // otherwise become a dead exact-match entry instead of a config error.
+  if (parsed.origin.includes("*")) {
+    throw new Error(
+      `${key} entries may only use "*" as a full leading label (https://*.example.com)`,
+    );
+  }
   return parsed.origin;
+}
+
+const WILDCARD_ORIGIN_ENTRY = /^(https?):\/\/\*\.([^/]+)$/;
+
+function parseAllowedOriginEntry(raw: string, key: string): string {
+  const wildcard = WILDCARD_ORIGIN_ENTRY.exec(raw);
+  if (!wildcard) return parseHttpOrigin(raw, key);
+  const [, scheme, suffix] = wildcard;
+  const base = parseHttpOrigin(`${scheme}://${suffix}`, key);
+  return `${new URL(base).protocol}//*.${new URL(base).host}`;
 }
 
 function allowedOriginsFromEnv(env: NodeJS.ProcessEnv): string[] {
@@ -91,10 +136,38 @@ function allowedOriginsFromEnv(env: NodeJS.ProcessEnv): string[] {
         .map((origin) => origin.trim())
         .filter(Boolean)
         .map((origin) =>
-          parseHttpOrigin(origin, "QUICK_SHELL_ALLOWED_ORIGINS"),
+          parseAllowedOriginEntry(origin, "QUICK_SHELL_ALLOWED_ORIGINS"),
         ),
     ),
   ];
+}
+
+export function isOriginAllowed(
+  allowedOrigins: readonly string[],
+  requestOrigin: string,
+): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(requestOrigin);
+  } catch {
+    return false;
+  }
+  const normalized = parsed.origin;
+  for (const entry of allowedOrigins) {
+    const wildcardAt = entry.indexOf("//*.");
+    if (wildcardAt === -1) {
+      if (entry === normalized) return true;
+      continue;
+    }
+    if (`${parsed.protocol}//*.` !== entry.slice(0, wildcardAt + 4)) continue;
+    const suffix = entry.slice(wildcardAt + 4);
+    if (!parsed.host.endsWith(`.${suffix}`)) continue;
+    const label = parsed.host.slice(0, -(suffix.length + 1));
+    // Exactly one additional label: "a.example.com" matches *.example.com,
+    // "a.b.example.com" and the bare "example.com" do not.
+    if (label.length > 0 && !label.includes(".")) return true;
+  }
+  return false;
 }
 
 function isLoopbackHostname(hostname: string): boolean {
@@ -154,6 +227,15 @@ function defaultQuickShellConfigPath(env: NodeJS.ProcessEnv): string {
       "quick-shell.toml",
     )
   );
+}
+
+function defaultSftpHelperPath(env: NodeJS.ProcessEnv): string {
+  if (env.QUICK_SHELL_SFTP_HELPER?.trim())
+    return env.QUICK_SHELL_SFTP_HELPER.trim();
+  const moduleDir = dirname(fileURLToPath(import.meta.url));
+  return moduleDir.includes(`${join("dist", "server", "server")}`)
+    ? resolve(moduleDir, "../../bin/quick-shell-sftp")
+    : resolve(moduleDir, "../../dist/bin/quick-shell-sftp");
 }
 
 export function httpPortFromEnv(env: NodeJS.ProcessEnv = process.env): number {
@@ -240,5 +322,71 @@ export function loadRuntimeConfig(
     bridgeHost: env.QUICK_SHELL_BRIDGE_HOST?.trim() || "127.0.0.1",
     bridgePort: portFromEnv(env, "QUICK_SHELL_BRIDGE_PORT", 0),
     bridgePublicUrl,
+    sftpHelperPath: defaultSftpHelperPath(env),
+    maxFileEntries: numberFromEnv(
+      env,
+      "QUICK_SHELL_MAX_FILE_ENTRIES",
+      DEFAULTS.maxFileEntries,
+    ),
+    maxFileMetadataBytes: numberFromEnv(
+      env,
+      "QUICK_SHELL_MAX_FILE_METADATA_BYTES",
+      DEFAULTS.maxFileMetadataBytes,
+    ),
+    maxFilePathBytes: numberFromEnv(
+      env,
+      "QUICK_SHELL_MAX_FILE_PATH_BYTES",
+      DEFAULTS.maxFilePathBytes,
+    ),
+    maxFileComponentBytes: numberFromEnv(
+      env,
+      "QUICK_SHELL_MAX_FILE_COMPONENT_BYTES",
+      DEFAULTS.maxFileComponentBytes,
+    ),
+    maxFilePathDepth: numberFromEnv(
+      env,
+      "QUICK_SHELL_MAX_FILE_PATH_DEPTH",
+      DEFAULTS.maxFilePathDepth,
+    ),
+    maxFileQueuedOperations: numberFromEnv(
+      env,
+      "QUICK_SHELL_MAX_FILE_QUEUED_OPERATIONS",
+      DEFAULTS.maxFileQueuedOperations,
+    ),
+    maxTransferBytes: numberFromEnv(
+      env,
+      "QUICK_SHELL_MAX_TRANSFER_BYTES",
+      DEFAULTS.maxTransferBytes,
+    ),
+    maxEmbeddedDownloadBytes: numberFromEnv(
+      env,
+      "QUICK_SHELL_MAX_EMBEDDED_DOWNLOAD_BYTES",
+      DEFAULTS.maxEmbeddedDownloadBytes,
+    ),
+    fileOperationLeaseTtlMs: numberFromEnv(
+      env,
+      "QUICK_SHELL_FILE_OPERATION_LEASE_TTL_MS",
+      DEFAULTS.fileOperationLeaseTtlMs,
+    ),
+    maxFileOperationLeases: numberFromEnv(
+      env,
+      "QUICK_SHELL_MAX_FILE_OPERATION_LEASES",
+      DEFAULTS.maxFileOperationLeases,
+    ),
+    fileMetadataTimeoutMs: numberFromEnv(
+      env,
+      "QUICK_SHELL_FILE_METADATA_TIMEOUT_MS",
+      DEFAULTS.fileMetadataTimeoutMs,
+    ),
+    fileTransferMaxDurationMs: numberFromEnv(
+      env,
+      "QUICK_SHELL_FILE_TRANSFER_MAX_DURATION_MS",
+      DEFAULTS.fileTransferMaxDurationMs,
+    ),
+    fileShutdownTimeoutMs: numberFromEnv(
+      env,
+      "QUICK_SHELL_FILE_SHUTDOWN_TIMEOUT_MS",
+      DEFAULTS.fileShutdownTimeoutMs,
+    ),
   };
 }

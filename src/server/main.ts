@@ -153,7 +153,7 @@ export async function prepareRuntime(
           console.error("quick-shell MCP server close failed", error);
         }
         try {
-          manager.closeAll();
+          await manager.closeAllAndDrain();
         } catch (error) {
           errors.push(error);
           console.error("quick-shell PTY cleanup failed", error);

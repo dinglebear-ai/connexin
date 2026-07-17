@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { httpPortFromEnv, loadRuntimeConfig } from "../../src/server/config.js";
+import {
+  httpPortFromEnv,
+  isOriginAllowed,
+  loadRuntimeConfig,
+} from "../../src/server/config.js";
 
 describe("loadRuntimeConfig", () => {
   it("loads numeric overrides", () => {
@@ -30,6 +34,33 @@ describe("loadRuntimeConfig", () => {
           " https://one.example/,https://two.example/path ,, ",
       }).allowedOrigins,
     ).toEqual(["https://one.example", "https://two.example"]);
+  });
+
+  it("parses wildcard subdomain origin entries", () => {
+    expect(
+      loadRuntimeConfig({
+        QUICK_SHELL_ALLOWED_ORIGINS:
+          "https://*.claudemcpcontent.com,https://claude.ai",
+      }).allowedOrigins,
+    ).toEqual(["https://*.claudemcpcontent.com", "https://claude.ai"]);
+    expect(
+      loadRuntimeConfig({
+        QUICK_SHELL_ALLOWED_ORIGINS: "http://*.local.example:8080",
+      }).allowedOrigins,
+    ).toEqual(["http://*.local.example:8080"]);
+  });
+
+  it("rejects wildcards that are not a full leading label", () => {
+    for (const entry of [
+      "https://a.*.example.com",
+      "https://*example.com",
+      "https://*",
+      "https://*.",
+    ]) {
+      expect(() =>
+        loadRuntimeConfig({ QUICK_SHELL_ALLOWED_ORIGINS: entry }),
+      ).toThrow();
+    }
   });
 
   it("loads bridge listen and public URL settings", () => {
@@ -103,5 +134,60 @@ describe("loadRuntimeConfig", () => {
     ).toThrow(
       "QUICK_SHELL_BRIDGE_PUBLIC_URL must not include a path prefix because quick-shell v1 proxies /terminal at the origin root",
     );
+  });
+});
+
+describe("isOriginAllowed", () => {
+  const allowed = ["https://*.claudemcpcontent.com", "https://claude.ai"];
+
+  it("matches exact origins", () => {
+    expect(isOriginAllowed(allowed, "https://claude.ai")).toBe(true);
+    expect(isOriginAllowed(allowed, "https://claude.ai/")).toBe(true);
+    expect(isOriginAllowed(allowed, "https://evil.example")).toBe(false);
+  });
+
+  it("matches exactly one subdomain label under a wildcard entry", () => {
+    expect(
+      isOriginAllowed(
+        allowed,
+        "https://9a87468183112cbe85de8e92775f197d.claudemcpcontent.com",
+      ),
+    ).toBe(true);
+    expect(isOriginAllowed(allowed, "https://claudemcpcontent.com")).toBe(
+      false,
+    );
+    expect(isOriginAllowed(allowed, "https://a.b.claudemcpcontent.com")).toBe(
+      false,
+    );
+    expect(isOriginAllowed(allowed, "https://evilclaudemcpcontent.com")).toBe(
+      false,
+    );
+  });
+
+  it("requires scheme and port to match wildcard entries", () => {
+    expect(isOriginAllowed(allowed, "http://abc.claudemcpcontent.com")).toBe(
+      false,
+    );
+    expect(
+      isOriginAllowed(allowed, "https://abc.claudemcpcontent.com:8443"),
+    ).toBe(false);
+    expect(
+      isOriginAllowed(
+        ["http://*.local.example:8080"],
+        "http://a.local.example:8080",
+      ),
+    ).toBe(true);
+    expect(
+      isOriginAllowed(
+        ["http://*.local.example:8080"],
+        "http://a.local.example",
+      ),
+    ).toBe(false);
+  });
+
+  it("rejects malformed request origins", () => {
+    expect(isOriginAllowed(allowed, "null")).toBe(false);
+    expect(isOriginAllowed(allowed, "")).toBe(false);
+    expect(isOriginAllowed(allowed, "claudemcpcontent.com")).toBe(false);
   });
 });

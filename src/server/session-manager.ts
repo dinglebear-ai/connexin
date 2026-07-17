@@ -1,4 +1,4 @@
-import { randomBytes, randomUUID } from "node:crypto";
+import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { spawn as spawnPty } from "node-pty";
 import type { AuditEvent, AuditFields, AuditLogger } from "./audit-log.js";
 import { noopAuditLogger } from "./audit-log.js";
@@ -20,6 +20,8 @@ import {
 } from "../shared/terminal-defaults.js";
 import { BoundedTextBuffer } from "../shared/bounded-text-buffer.js";
 import { takeLastUtf8Bytes, utf8ByteLength } from "../shared/utf8.js";
+import { FileSession, type FileHelperFactory } from "./file-session.js";
+import { spawnSftpHelper } from "./sftp-helper.js";
 
 export interface Disposable {
   dispose(): void;
@@ -55,6 +57,8 @@ export interface QuickShellSession {
   id: SessionId;
   appToken: string;
   wsToken: string;
+  fileToken: string;
+  fileSession?: FileSession;
   pty?: PtyProcess;
   publicSummary: QuickShellPublicSession;
   createdAt: number;
@@ -96,6 +100,7 @@ export interface QuickShellSessionManagerOptions {
   deviceMetadata?: DeviceMetadataConfig;
   audit?: AuditLogger;
   ptyFactory?: PtyFactory;
+  fileHelperFactory?: (session: QuickShellSession) => FileHelperFactory;
 }
 
 const ENV_ALLOWLIST = [
@@ -141,8 +146,12 @@ export class QuickShellSessionManager {
   private readonly deviceMetadata: DeviceMetadataConfig;
   private readonly audit: AuditLogger;
   private readonly ptyFactory: PtyFactory;
+  private readonly fileHelperFactory: (
+    session: QuickShellSession,
+  ) => FileHelperFactory;
   private readonly sessions = new Map<SessionId, QuickShellSession>();
   private readonly closedListeners = new Set<(sessionId: SessionId) => void>();
+  private readonly fileClosePromises = new Set<Promise<void>>();
   private droppedAuditRecords = 0;
   private lastAuditError: unknown;
 
@@ -152,6 +161,21 @@ export class QuickShellSessionManager {
     this.deviceMetadata = options.deviceMetadata ?? { devices: new Map() };
     this.audit = options.audit ?? noopAuditLogger;
     this.ptyFactory = options.ptyFactory ?? defaultPtyFactory();
+    this.fileHelperFactory =
+      options.fileHelperFactory ??
+      ((session) => () =>
+        spawnSftpHelper({
+          helperPath: this.config.sftpHelperPath,
+          sshConfigPath: this.config.sshConfigPath,
+          device: session.publicSummary.device,
+          cwd: process.env.HOME,
+          env: buildPtyEnv(),
+          maxPending: this.config.maxFileQueuedOperations,
+          connectTimeoutSeconds: Math.max(
+            1,
+            Math.ceil(this.config.fileMetadataTimeoutMs / 1000),
+          ),
+        }));
   }
 
   async createSession(
@@ -188,6 +212,7 @@ export class QuickShellSessionManager {
       id,
       appToken: token(),
       wsToken: token(),
+      fileToken: token(),
       publicSummary,
       createdAt: now,
       lastActivityAt: now,
@@ -309,7 +334,8 @@ export class QuickShellSessionManager {
     appToken: string,
   ): QuickShellSession | undefined {
     const session = this.sessions.get(sessionId);
-    if (!session || session.appToken !== appToken) return undefined;
+    if (!session || session.closing || session.appToken !== appToken)
+      return undefined;
     this.recordActivity(sessionId);
     return session;
   }
@@ -322,6 +348,33 @@ export class QuickShellSessionManager {
     if (!session || session.wsToken !== wsToken) return undefined;
     this.recordActivity(sessionId);
     return session;
+  }
+
+  authenticateFileCapability(fileToken: string): QuickShellSession | undefined {
+    const candidate = Buffer.from(fileToken);
+    for (const session of this.sessions.values()) {
+      const expected = Buffer.from(session.fileToken);
+      if (
+        candidate.length === expected.length &&
+        timingSafeEqual(candidate, expected) &&
+        !session.closing
+      ) {
+        this.recordActivity(session.id);
+        return session;
+      }
+    }
+    return undefined;
+  }
+
+  getFileSession(sessionId: SessionId): FileSession | undefined {
+    const session = this.sessions.get(sessionId);
+    if (!session || session.closing) return undefined;
+    session.fileSession ??= new FileSession(
+      this.config,
+      this.fileHelperFactory(session),
+    );
+    this.recordActivity(sessionId);
+    return session.fileSession;
   }
 
   recordActivity(sessionId: SessionId): boolean {
@@ -456,6 +509,11 @@ export class QuickShellSessionManager {
     this.logLifecycleFailures("quick-shell closeAll cleanup failed", failures);
   }
 
+  async closeAllAndDrain(): Promise<void> {
+    this.closeAll();
+    await Promise.allSettled([...this.fileClosePromises]);
+  }
+
   listSessions(): QuickShellSession[] {
     return [...this.sessions.values()];
   }
@@ -546,6 +604,13 @@ export class QuickShellSessionManager {
   } {
     const failures: LifecycleFailure[] = [];
     session.closing = true;
+    session.fileSession?.dispose();
+    if (session.fileSession) {
+      const drain = session.fileSession
+        .drain(this.config.fileShutdownTimeoutMs)
+        .finally(() => this.fileClosePromises.delete(drain));
+      this.fileClosePromises.add(drain);
+    }
     this.disposeRegisteredListeners(
       session.id,
       session.disposables.splice(0),
