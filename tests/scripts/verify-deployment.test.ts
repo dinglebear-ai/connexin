@@ -194,7 +194,7 @@ describe("runVerifyDeployment", () => {
     ).toBe(true);
     expect(
       calls.some((call) => call.includes(".quick-shell-resource-smoke")),
-    ).toBe(false);
+    ).toBe(true);
   });
 
   it("fails with a recovery hint when deployment reports stale stdio state", async () => {

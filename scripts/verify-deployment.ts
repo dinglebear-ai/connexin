@@ -746,9 +746,10 @@ await client.close();
   const smokeHome = CONTAINER_HOME
     ? shellQuote(CONTAINER_HOME)
     : '"${HOME:-/tmp}"';
+  const smokePathTemplate = `${CONTAINER_PATH}/.quick-shell-resource-smoke.XXXXXX.mjs`;
   const resourceSmoke = [
     ": resource_smoke",
-    'smoke=$(mktemp "${TMPDIR:-/tmp}/quick-shell-resource-smoke.XXXXXX.mjs")',
+    `smoke=$(mktemp ${shellQuote(smokePathTemplate)})`,
     "trap 'rm -f \"$smoke\"' EXIT",
     `printf %s ${shellQuote(encodedResourceCode)} | base64 -d > "$smoke"`,
     `cd ${shellQuote(CONTAINER_PATH)}`,
