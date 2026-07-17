@@ -2,6 +2,7 @@ import { createHash, randomBytes } from "node:crypto";
 import type { RuntimeConfig } from "./config.js";
 import { assertCanonicalWithin, confinedRemotePath } from "./file-policy.js";
 import type { SftpHelper } from "./sftp-helper.js";
+import type { Readable, Writable } from "node:stream";
 
 export interface RemoteFileEntry {
   name: string;
@@ -102,6 +103,37 @@ export class FileSession {
     else throw new Error("invalid_lease");
   }
 
+  async upload(
+    leaseToken: string,
+    source: Readable,
+    bytes: number,
+    signal: AbortSignal,
+  ): Promise<number> {
+    const lease = this.consumeLease(leaseToken, "upload");
+    if (bytes < 0 || bytes > this.config.maxTransferBytes)
+      throw new Error("too_large");
+    const result = await (
+      await this.getHelper()
+    ).upload(source, { path: lease.paths[0]!, bytes }, signal);
+    return result.bytes;
+  }
+
+  async download(
+    leaseToken: string,
+    target: Writable,
+    signal: AbortSignal,
+  ): Promise<number> {
+    const lease = this.consumeLease(leaseToken, "download");
+    const result = await (
+      await this.getHelper()
+    ).download(
+      target,
+      { path: lease.paths[0]!, maxBytes: this.config.maxEmbeddedDownloadBytes },
+      signal,
+    );
+    return result.bytes;
+  }
+
   dispose(): void {
     this.disposed = true;
     this.leases.clear();
@@ -135,6 +167,14 @@ export class FileSession {
       }
     })();
     return this.connecting;
+  }
+
+  private consumeLease(token: string, operation: string): Lease {
+    const lease = this.leases.get(token);
+    this.leases.delete(token);
+    if (!lease || lease.operation !== operation || lease.expiresAt < Date.now())
+      throw new Error("invalid_lease");
+    return lease;
   }
 }
 

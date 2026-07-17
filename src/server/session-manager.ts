@@ -1,4 +1,4 @@
-import { randomBytes, randomUUID } from "node:crypto";
+import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { spawn as spawnPty } from "node-pty";
 import type { AuditEvent, AuditFields, AuditLogger } from "./audit-log.js";
 import { noopAuditLogger } from "./audit-log.js";
@@ -342,6 +342,22 @@ export class QuickShellSessionManager {
     if (!session || session.wsToken !== wsToken) return undefined;
     this.recordActivity(sessionId);
     return session;
+  }
+
+  authenticateFileCapability(fileToken: string): QuickShellSession | undefined {
+    const candidate = Buffer.from(fileToken);
+    for (const session of this.sessions.values()) {
+      const expected = Buffer.from(session.fileToken);
+      if (
+        candidate.length === expected.length &&
+        timingSafeEqual(candidate, expected) &&
+        !session.closing
+      ) {
+        this.recordActivity(session.id);
+        return session;
+      }
+    }
+    return undefined;
   }
 
   getFileSession(sessionId: SessionId): FileSession | undefined {

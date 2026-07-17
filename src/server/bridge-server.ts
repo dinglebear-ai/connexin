@@ -22,6 +22,111 @@ const MAX_WS_CLOSE_REASON_BYTES = 123;
 const REJECTION_AUDIT_LIMIT = 10;
 const REJECTION_AUDIT_WINDOW_MS = 60_000;
 
+async function handleFileRequest(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  config: RuntimeConfig,
+  manager: QuickShellSessionManager,
+): Promise<void> {
+  const origin = req.headers.origin;
+  if (!origin || !isOriginAllowed(config.allowedOrigins, origin)) {
+    res.writeHead(403, { "Content-Type": "application/problem+json" });
+    res.end('{"code":"origin_not_allowed"}');
+    return;
+  }
+  const pathname = new URL(req.url ?? "/", "http://127.0.0.1").pathname;
+  const methodAllowed =
+    (pathname === "/files/upload" && req.method === "PUT") ||
+    (pathname === "/files/download" && req.method === "POST");
+  if (req.method === "OPTIONS") {
+    const requestedMethod = req.headers["access-control-request-method"];
+    if (
+      (pathname !== "/files/upload" && pathname !== "/files/download") ||
+      !["PUT", "POST"].includes(String(requestedMethod))
+    ) {
+      res.writeHead(403);
+      res.end();
+      return;
+    }
+    res.writeHead(204, {
+      "Access-Control-Allow-Origin": origin,
+      "Access-Control-Allow-Methods": String(requestedMethod),
+      "Access-Control-Allow-Headers":
+        "Authorization, X-Quick-Shell-File-Lease, Content-Type",
+      "Access-Control-Max-Age": "300",
+      Vary: "Origin",
+    });
+    res.end();
+    return;
+  }
+  if (!methodAllowed) {
+    res.writeHead(404);
+    res.end("not found");
+    return;
+  }
+  const auth = req.headers.authorization;
+  const session = auth?.startsWith("Bearer ")
+    ? manager.authenticateFileCapability(auth.slice(7))
+    : undefined;
+  const lease = req.headers["x-quick-shell-file-lease"];
+  if (!session || typeof lease !== "string") {
+    res.writeHead(401, { "Content-Type": "application/problem+json" });
+    res.end('{"code":"unauthorized"}');
+    return;
+  }
+  const fileSession = manager.getFileSession(session.id);
+  if (!fileSession) {
+    res.writeHead(410);
+    res.end();
+    return;
+  }
+  const controller = new AbortController();
+  req.once("aborted", () => controller.abort());
+  res.setHeader("Access-Control-Allow-Origin", origin);
+  res.setHeader("Vary", "Origin");
+  try {
+    if (pathname === "/files/upload") {
+      const length = Number(req.headers["content-length"]);
+      if (
+        !Number.isSafeInteger(length) ||
+        length < 0 ||
+        length > config.maxTransferBytes
+      )
+        throw new Error("too_large");
+      const bytes = await fileSession.upload(
+        lease,
+        req,
+        length,
+        controller.signal,
+      );
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ bytes }));
+    } else {
+      res.writeHead(200, {
+        "Content-Type": "application/octet-stream",
+        "Content-Disposition": 'attachment; filename="quick-shell-download"',
+      });
+      await fileSession.download(lease, res, controller.signal);
+      res.end();
+    }
+  } catch (error) {
+    if (!res.headersSent)
+      res.writeHead(
+        error instanceof Error && error.message === "too_large" ? 413 : 409,
+        { "Content-Type": "application/problem+json" },
+      );
+    if (!res.writableEnded)
+      res.end(
+        JSON.stringify({
+          code:
+            error instanceof Error && /^[a-z_]+$/.test(error.message)
+              ? error.message
+              : "operation_failed",
+        }),
+      );
+  }
+}
+
 export interface BridgeServer {
   baseUrl: string;
   listenUrl: string;
@@ -192,9 +297,8 @@ export async function startBridgeServer(
   options: StartBridgeServerOptions,
 ): Promise<BridgeServer> {
   const { config, manager } = options;
-  const httpServer = http.createServer((_req, res) => {
-    res.writeHead(404);
-    res.end("not found");
+  const httpServer = http.createServer((req, res) => {
+    void handleFileRequest(req, res, config, manager);
   });
   const wss = new WebSocketServer({
     noServer: true,

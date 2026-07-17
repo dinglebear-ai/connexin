@@ -48,6 +48,9 @@ export const QuickShellAppSessionSchema = QuickShellPublicSessionSchema.extend({
   maxSubmitBytes: z.number().int().positive(),
   maxWsPayloadBytes: z.number().int().positive(),
   pingIntervalMs: z.number().int().positive(),
+  fileBaseUrl: z.string().min(1),
+  fileToken: CapabilityTokenSchema,
+  maxEmbeddedDownloadBytes: z.number().int().positive(),
 });
 export type QuickShellAppSession = z.infer<typeof QuickShellAppSessionSchema>;
 

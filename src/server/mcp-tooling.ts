@@ -116,6 +116,9 @@ export function appSessionFor(
     maxSubmitBytes: config.maxSubmitBytes,
     maxWsPayloadBytes: config.maxWsPayloadBytes,
     pingIntervalMs: pingIntervalMs(config),
+    fileBaseUrl: bridgeBaseUrl,
+    fileToken: session.fileToken,
+    maxEmbeddedDownloadBytes: config.maxEmbeddedDownloadBytes,
   };
 }
 
