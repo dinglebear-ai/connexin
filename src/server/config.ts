@@ -80,7 +80,24 @@ function parseHttpOrigin(raw: string, key: string): string {
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
     throw new Error(`${key} entries must start with http:// or https://`);
   }
+  // WHATWG URL accepts "*" inside hostnames, so a stray wildcard would
+  // otherwise become a dead exact-match entry instead of a config error.
+  if (parsed.origin.includes("*")) {
+    throw new Error(
+      `${key} entries may only use "*" as a full leading label (https://*.example.com)`,
+    );
+  }
   return parsed.origin;
+}
+
+const WILDCARD_ORIGIN_ENTRY = /^(https?):\/\/\*\.([^/]+)$/;
+
+function parseAllowedOriginEntry(raw: string, key: string): string {
+  const wildcard = WILDCARD_ORIGIN_ENTRY.exec(raw);
+  if (!wildcard) return parseHttpOrigin(raw, key);
+  const [, scheme, suffix] = wildcard;
+  const base = parseHttpOrigin(`${scheme}://${suffix}`, key);
+  return `${new URL(base).protocol}//*.${new URL(base).host}`;
 }
 
 function allowedOriginsFromEnv(env: NodeJS.ProcessEnv): string[] {
@@ -91,10 +108,38 @@ function allowedOriginsFromEnv(env: NodeJS.ProcessEnv): string[] {
         .map((origin) => origin.trim())
         .filter(Boolean)
         .map((origin) =>
-          parseHttpOrigin(origin, "QUICK_SHELL_ALLOWED_ORIGINS"),
+          parseAllowedOriginEntry(origin, "QUICK_SHELL_ALLOWED_ORIGINS"),
         ),
     ),
   ];
+}
+
+export function isOriginAllowed(
+  allowedOrigins: readonly string[],
+  requestOrigin: string,
+): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(requestOrigin);
+  } catch {
+    return false;
+  }
+  const normalized = parsed.origin;
+  for (const entry of allowedOrigins) {
+    const wildcardAt = entry.indexOf("//*.");
+    if (wildcardAt === -1) {
+      if (entry === normalized) return true;
+      continue;
+    }
+    if (`${parsed.protocol}//*.` !== entry.slice(0, wildcardAt + 4)) continue;
+    const suffix = entry.slice(wildcardAt + 4);
+    if (!parsed.host.endsWith(`.${suffix}`)) continue;
+    const label = parsed.host.slice(0, -(suffix.length + 1));
+    // Exactly one additional label: "a.example.com" matches *.example.com,
+    // "a.b.example.com" and the bare "example.com" do not.
+    if (label.length > 0 && !label.includes(".")) return true;
+  }
+  return false;
 }
 
 function isLoopbackHostname(hostname: string): boolean {

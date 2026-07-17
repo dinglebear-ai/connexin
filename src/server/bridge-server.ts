@@ -2,6 +2,7 @@ import http from "node:http";
 import type { Duplex } from "node:stream";
 import { WebSocket, WebSocketServer } from "ws";
 import { createAuditRateLimiter } from "./audit-log.js";
+import { isOriginAllowed } from "./config.js";
 import type { RuntimeConfig } from "./config.js";
 import type {
   Disposable,
@@ -264,7 +265,7 @@ export async function startBridgeServer(
     const requestOrigin = request.headers.origin;
     if (
       config.allowedOrigins.length > 0 &&
-      (!requestOrigin || !config.allowedOrigins.includes(requestOrigin))
+      (!requestOrigin || !isOriginAllowed(config.allowedOrigins, requestOrigin))
     ) {
       recordUnauthenticatedRejection({
         reason: "origin_not_allowed",
