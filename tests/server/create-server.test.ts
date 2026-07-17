@@ -18,6 +18,7 @@ import { FakePty } from "./helpers/fake-pty.js";
 import { testRuntimeConfig } from "./helpers/runtime-config.js";
 
 const APP_RESOURCE_URI = "ui://quick-shell/mcp-app.v2.html";
+const LEGACY_APP_RESOURCE_URI = "ui://quick-shell/mcp-app.html";
 const APP_HTML_PATH = resolve("dist/app/mcp-app.html");
 
 async function withBuiltAppHtml<T>(
@@ -782,6 +783,9 @@ describe("createServer", () => {
         createTestServer("http://127.0.0.1:45678").server,
       ));
       const first = await client.readResource({ uri: APP_RESOURCE_URI });
+      const legacy = await client.readResource({
+        uri: LEGACY_APP_RESOURCE_URI,
+      });
       await writeFile(APP_HTML_PATH, "<html>second</html>");
       resetAppHtmlCacheForTests();
       const second = await client.readResource({ uri: APP_RESOURCE_URI });
@@ -803,6 +807,11 @@ describe("createServer", () => {
             prefersBorder: false,
           },
         },
+      });
+      expect(legacy.contents[0]).toMatchObject({
+        uri: LEGACY_APP_RESOURCE_URI,
+        mimeType: "text/html;profile=mcp-app",
+        text: "<html>first</html>",
       });
       expect(second.contents[0]).toMatchObject({ text: "<html>second</html>" });
     } finally {

@@ -479,12 +479,15 @@ async function connectTerminal(
     }
     if (isCurrentSocketBinding(binding)) {
       clearFallbackTimer();
-      disposeTerminal();
-      session = undefined;
-      connectionFailed = true;
-      setStatus(disconnectStatus(event));
-      updateModelContext("disconnected");
+      setStatus(`${disconnectStatus(event)}; reconnecting`);
+      updateModelContext("reconnecting");
       updateControls();
+      void connectTerminal(details, generation).catch((error) => {
+        if (!isCurrentGeneration(generation, details.sessionId)) return;
+        disposeTerminal();
+        session = undefined;
+        handleConnectFailure(error, generation, capability);
+      });
     }
   });
   socket.addEventListener("error", () => {
@@ -1212,6 +1215,16 @@ async function closeRemoteSession(
 
 function setStatus(message: string): void {
   elements.status.textContent = message;
+  const normalized = message.toLowerCase();
+  elements.status.dataset.tone = normalized.startsWith("connected")
+    ? "success"
+    : normalized.includes("connecting") || normalized.includes("waiting")
+      ? "active"
+      : normalized.includes("failed") ||
+          normalized.includes("error") ||
+          normalized.includes("disconnected")
+        ? "error"
+        : "neutral";
 }
 
 function sessionDisplayName(value: QuickShellPublicSession): string {

@@ -442,6 +442,26 @@ describe("quick-shell MCP app", () => {
     ).toBe("Output to send");
   });
 
+  it("renders compact inspector-aligned application chrome", async () => {
+    await loadApp();
+
+    expect(document.querySelector(".shell__mark")?.textContent).toBe(">_");
+    expect(document.querySelector(".shell__product")?.textContent).toBe(
+      "Quick Shell",
+    );
+    expect(document.querySelector(".shell__descriptor")?.textContent).toBe(
+      "SSH terminal",
+    );
+    expect(
+      document.querySelector('.actions button[data-variant="primary"]')
+        ?.textContent,
+    ).toBe("Send output");
+    expect(
+      document.querySelector('.actions button[data-variant="danger"]')
+        ?.textContent,
+    ).toBe("Close");
+  });
+
   it("coalesces accessible transcript normalization to one animation frame", async () => {
     const app = await loadApp();
     app.callServerToolImpl = async (call) => {
@@ -1440,7 +1460,7 @@ describe("quick-shell MCP app", () => {
     vi.useRealTimers();
   });
 
-  it("returns to a reconnectable state when the WebSocket closes", async () => {
+  it("reconnects the WebSocket after an authenticated connection closes", async () => {
     const app = await loadApp();
     app.callServerToolImpl = async (call) => {
       if (call.name === "get_quick_shell_session")
@@ -1451,14 +1471,60 @@ describe("quick-shell MCP app", () => {
     app.ontoolresult?.(openedResult("s1", "fileserver"));
     await waitForCondition(() => harness.sockets.length === 1);
     openSocketWithReady(harness.sockets[0]);
-    expect(button("Send output").disabled).toBe(false);
 
     harness.sockets[0]?.close();
 
-    expect(statusText()).toBe("Disconnected");
-    expect(button("Reconnect").disabled).toBe(false);
-    expect(button("Insert").disabled).toBe(true);
-    expect(button("Send output").disabled).toBe(true);
+    await waitForCondition(() => harness.sockets.length === 2);
+    expect(
+      app.serverToolCalls.some(
+        (call) => call.name === "poll_quick_shell_session",
+      ),
+    ).toBe(false);
+    openSocketWithReady(harness.sockets[1]);
+    expect(statusText()).toBe("Connected to fileserver");
+    expect(button("Reconnect").hidden).toBe(true);
+    expect(button("Insert").disabled).toBe(false);
+    expect(button("Send output").disabled).toBe(false);
+  });
+
+  it("falls back to app-only terminal tools when WebSocket reconnection fails", async () => {
+    const app = await loadApp();
+    app.callServerToolImpl = async (call) => {
+      if (call.name === "get_quick_shell_session")
+        return detailsResult("s1", "fileserver");
+      if (call.name === "poll_quick_shell_session") {
+        return {
+          _meta: {
+            quickShellPoll: {
+              sessionId: "s1",
+              chunks: [{ seq: 1, data: "still connected" }],
+              nextSeq: 1,
+              reset: false,
+              exited: false,
+              exitCode: null,
+            },
+          },
+        };
+      }
+      return { structuredContent: { closed: true } };
+    };
+
+    app.ontoolresult?.(openedResult("s1", "fileserver"));
+    await waitForCondition(() => harness.sockets.length === 1);
+    openSocketWithReady(harness.sockets[0]);
+    expect(button("Send output").disabled).toBe(false);
+
+    harness.sockets[0]?.close();
+    await waitForCondition(() => harness.sockets.length === 2);
+    harness.sockets[1]?.error();
+
+    await waitForCondition(() =>
+      harness.terminals[1]?.writes.includes("still connected"),
+    );
+    expect(statusText()).toBe("Connected to fileserver");
+    expect(button("Reconnect").hidden).toBe(true);
+    expect(button("Insert").disabled).toBe(false);
+    expect(button("Send output").disabled).toBe(false);
   });
 
   it("uses host download and model-context capabilities without exposing terminal secrets", async () => {

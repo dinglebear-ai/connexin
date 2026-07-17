@@ -14,6 +14,7 @@ import type {
 } from "./session-manager.js";
 import {
   APP_RESOURCE_URI,
+  LEGACY_APP_RESOURCE_URI,
   SERVER_INSTRUCTIONS,
   appCapabilityInputSchema,
   appResourceMeta,
@@ -692,36 +693,41 @@ export function createServer(options: CreateServerOptions): McpServer {
     },
   );
 
-  registerAppResource(
-    server,
-    "quick-shell",
-    APP_RESOURCE_URI,
-    {
-      description: "quick-shell MCP App",
-      _meta: {
-        ui: appResourceMeta(bridgeBaseUrl),
+  for (const [name, uri] of [
+    ["quick-shell", APP_RESOURCE_URI],
+    ["quick-shell-legacy", LEGACY_APP_RESOURCE_URI],
+  ] as const) {
+    registerAppResource(
+      server,
+      name,
+      uri,
+      {
+        description: "quick-shell MCP App",
+        _meta: {
+          ui: appResourceMeta(bridgeBaseUrl),
+        },
       },
-    },
-    async () => {
-      const text = await readBuiltAppHtml();
-      manager.recordAuditEvent("app_resource_read", {
-        uri: APP_RESOURCE_URI,
-        bytes: new TextEncoder().encode(text).byteLength,
-      });
-      return {
-        contents: [
-          {
-            uri: APP_RESOURCE_URI,
-            mimeType: RESOURCE_MIME_TYPE,
-            text,
-            _meta: {
-              ui: appResourceMeta(bridgeBaseUrl),
+      async () => {
+        const text = await readBuiltAppHtml();
+        manager.recordAuditEvent("app_resource_read", {
+          uri,
+          bytes: new TextEncoder().encode(text).byteLength,
+        });
+        return {
+          contents: [
+            {
+              uri,
+              mimeType: RESOURCE_MIME_TYPE,
+              text,
+              _meta: {
+                ui: appResourceMeta(bridgeBaseUrl),
+              },
             },
-          },
-        ],
-      };
-    },
-  );
+          ],
+        };
+      },
+    );
+  }
 
   return server;
 }

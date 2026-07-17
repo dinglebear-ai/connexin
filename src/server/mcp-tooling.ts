@@ -17,6 +17,7 @@ import type {
 import { utf8ByteLength } from "../shared/utf8.js";
 
 export const APP_RESOURCE_URI = "ui://quick-shell/mcp-app.v2.html";
+export const LEGACY_APP_RESOURCE_URI = "ui://quick-shell/mcp-app.html";
 export const SERVER_INSTRUCTIONS =
   "quick-shell opens a human-controlled SSH terminal for an allowlisted SSH config host alias. Use open_quick_shell only when a remote agent is blocked by a one-off command; suggested_command is prefilled only, and the user must run commands, review output, and explicitly send output back.";
 
