@@ -66,7 +66,7 @@ const EXPECTED_BRIDGE_PORT = optionalEnvValue("QUICK_SHELL_VERIFY_BRIDGE_PORT");
 const EXPECTED_BRIDGE_PUBLIC_URL = optionalEnvValue(
   "QUICK_SHELL_VERIFY_BRIDGE_PUBLIC_URL",
 );
-const APP_RESOURCE_URI = "ui://quick-shell/mcp-app.v2.html";
+const APP_RESOURCE_URI = "ui://quick-shell/mcp-app.v3.html";
 const BUILD_MANIFEST_PATH = "dist/quick-shell-build-manifest.json";
 const manifestFilePathSchema = z
   .string()

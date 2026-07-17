@@ -15,6 +15,7 @@ import type {
 import {
   APP_RESOURCE_URI,
   LEGACY_APP_RESOURCE_URI,
+  V2_APP_RESOURCE_URI,
   SERVER_INSTRUCTIONS,
   appCapabilityInputSchema,
   appResourceMeta,
@@ -693,8 +694,170 @@ export function createServer(options: CreateServerOptions): McpServer {
     },
   );
 
+  registerAppTool(
+    server,
+    "list_quick_shell_files",
+    {
+      title: "List Quick Shell Files",
+      description: "App-only confined SFTP directory listing.",
+      inputSchema: {
+        ...appCapabilityInputSchema(),
+        path: utf8Max(config.maxFilePathBytes).optional(),
+      },
+      outputSchema: { count: z.number().int().min(0) },
+      annotations: toolAnnotations("List Quick Shell Files", {
+        readOnlyHint: true,
+        destructiveHint: false,
+        openWorldHint: true,
+        idempotentHint: true,
+      }),
+      _meta: toolMeta(["app"], {
+        invoking: "Listing files",
+        invoked: "Files listed",
+      }),
+    },
+    async (args) => {
+      const capability = requireAppCapability(manager, args, {
+        missingReason: "missing_file_capability",
+        missingMessage: "Missing quick-shell file capability.",
+        invalidReason: "invalid_file_capability",
+      });
+      if ("error" in capability) return capability.error;
+      try {
+        const entries = await manager
+          .getFileSession(capability.session.id)!
+          .list(args.path ?? ".");
+        return {
+          content: [
+            {
+              type: "text",
+              text: "Quick-shell file listing is available to the app.",
+            },
+          ],
+          structuredContent: { count: entries.length },
+          _meta: {
+            quickShellFiles: {
+              path: args.path ?? ".",
+              entries,
+              maxEmbeddedDownloadBytes: config.maxEmbeddedDownloadBytes,
+            },
+          },
+        };
+      } catch (error) {
+        return toolError(
+          `Unable to list quick-shell files: ${safeFileError(error)}.`,
+        );
+      }
+    },
+  );
+
+  registerAppTool(
+    server,
+    "prepare_quick_shell_file_operation",
+    {
+      title: "Prepare Quick Shell File Operation",
+      description: "App-only short-lived file operation capability.",
+      inputSchema: {
+        ...appCapabilityInputSchema(),
+        operation: z.enum(["mkdir", "rename", "delete", "upload", "download"]),
+        paths: z.array(utf8Max(config.maxFilePathBytes)).min(1).max(2),
+        overwrite: z.boolean().optional(),
+      },
+      outputSchema: { prepared: z.boolean() },
+      annotations: toolAnnotations("Prepare Quick Shell File Operation", {
+        readOnlyHint: false,
+        destructiveHint: false,
+        openWorldHint: true,
+      }),
+      _meta: toolMeta(["app"], {
+        invoking: "Preparing file action",
+        invoked: "File action prepared",
+      }),
+    },
+    async (args) => {
+      const capability = requireAppCapability(manager, args, {
+        missingReason: "missing_file_capability",
+        missingMessage: "Missing quick-shell file capability.",
+        invalidReason: "invalid_file_capability",
+      });
+      if ("error" in capability) return capability.error;
+      try {
+        const lease = manager
+          .getFileSession(capability.session.id)!
+          .prepare(args.operation, args.paths, args.overwrite);
+        return {
+          content: [
+            {
+              type: "text",
+              text: "Quick-shell file operation prepared for the app.",
+            },
+          ],
+          structuredContent: { prepared: true },
+          _meta: { quickShellFiles: { lease } },
+        };
+      } catch (error) {
+        return toolError(
+          `Unable to prepare quick-shell file operation: ${safeFileError(error)}.`,
+        );
+      }
+    },
+  );
+
+  for (const [toolName, operation, title] of [
+    ["mkdir_quick_shell_path", "mkdir", "Create Quick Shell Folder"],
+    ["rename_quick_shell_path", "rename", "Rename Quick Shell Path"],
+    ["delete_quick_shell_path", "delete", "Delete Quick Shell Path"],
+  ] as const) {
+    registerAppTool(
+      server,
+      toolName,
+      {
+        title,
+        description: "App-only confirmed SFTP mutation using a one-time lease.",
+        inputSchema: {
+          ...appCapabilityInputSchema(),
+          lease: z.string().min(16).max(256),
+        },
+        outputSchema: { completed: z.boolean() },
+        annotations: toolAnnotations(title, {
+          readOnlyHint: false,
+          destructiveHint: operation !== "mkdir",
+          openWorldHint: true,
+        }),
+        _meta: toolMeta(["app"], {
+          invoking: "Applying file action",
+          invoked: "File action applied",
+        }),
+      },
+      async (args) => {
+        const capability = requireAppCapability(manager, args, {
+          missingReason: "missing_file_capability",
+          missingMessage: "Missing quick-shell file capability.",
+          invalidReason: "invalid_file_capability",
+        });
+        if ("error" in capability) return capability.error;
+        try {
+          await manager
+            .getFileSession(capability.session.id)!
+            .mutate(args.lease);
+          return {
+            content: [
+              { type: "text", text: "Quick-shell file operation completed." },
+            ],
+            structuredContent: { completed: true },
+          };
+        } catch (error) {
+          return toolError(
+            `Quick-shell file operation failed: ${safeFileError(error)}.`,
+          );
+        }
+      },
+    );
+  }
+
   for (const [name, uri] of [
     ["quick-shell", APP_RESOURCE_URI],
+    ["quick-shell-v2", V2_APP_RESOURCE_URI],
     ["quick-shell-legacy", LEGACY_APP_RESOURCE_URI],
   ] as const) {
     registerAppResource(
@@ -730,4 +893,9 @@ export function createServer(options: CreateServerOptions): McpServer {
   }
 
   return server;
+}
+
+function safeFileError(error: unknown): string {
+  const code = error instanceof Error ? error.message : "operation_failed";
+  return /^[a-z_]+$/.test(code) ? code : "operation_failed";
 }

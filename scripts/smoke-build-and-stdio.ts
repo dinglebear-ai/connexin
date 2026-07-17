@@ -5,7 +5,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import WebSocket from "ws";
 
-const APP_RESOURCE_URI = "ui://quick-shell/mcp-app.v2.html";
+const APP_RESOURCE_URI = "ui://quick-shell/mcp-app.v3.html";
 const OPERATION_TIMEOUT_MS = 10_000;
 
 const tempDir = await mkdtemp(join(tmpdir(), "quick-shell-smoke-"));
@@ -90,6 +90,16 @@ try {
   }
   if (!tools.some((tool) => tool.name === "close_quick_shell_session")) {
     throw new Error("close_quick_shell_session not found in tools/list");
+  }
+  for (const required of [
+    "list_quick_shell_files",
+    "prepare_quick_shell_file_operation",
+    "mkdir_quick_shell_path",
+    "rename_quick_shell_path",
+    "delete_quick_shell_path",
+  ]) {
+    if (!tools.some((tool) => tool.name === required))
+      throw new Error(`${required} not found in tools/list`);
   }
 
   const resource = await withTimeout(
