@@ -158,7 +158,7 @@ The WebSocket URL contains only the session id. The app authenticates with a per
 
 ## API and Capability Model
 
-quick-shell follows the MCP Apps standard first. `open_quick_shell` declares `_meta.ui.resourceUri`, the app resource is served as `text/html;profile=mcp-app`, and the iframe talks to the host through the standard `ui/*` bridge. ChatGPT/OpenAI compatibility aliases are also present, including `openai/outputTemplate`, widget visibility, and status metadata.
+quick-shell follows the MCP Apps standard first. `open_quick_shell` declares `_meta.ui.resourceUri`, the app resource is served as `text/html;profile=mcp-app`, and the iframe talks to the host through the standard `ui/*` bridge. ChatGPT/OpenAI compatibility aliases are also present, including `openai/outputTemplate`, widget visibility, and status metadata. App-only sibling tools are private, token-gated callbacks; they do not bind their own app resource or output template.
 
 App resource:
 
@@ -261,7 +261,7 @@ The verifier contract is intentionally stricter than a process liveness check. I
 - optional gateway config env expectations are present
 - gateway upstream command and args match the expected process
 - gateway runtime is connected and exposes the expected tool count
-- app-only tools are not visible to model discovery
+- app-only tools remain app-visible, OpenAI-private, and free of app resource/output-template bindings
 - `check_quick_shell` can be called through the gateway
 - resource smoke: the deployed server serves the app resource as `text/html;profile=mcp-app` and exposes every runtime tool
 - audit log smoke: when `QUICK_SHELL_VERIFY_AUDIT_LOG` is set, the log contains `runtime_started` and `bridge_listening` with the expected `baseUrl`
@@ -301,7 +301,7 @@ Operational checks:
 
 - Confirm `check_quick_shell` succeeds through the gateway.
 - Confirm the gateway reports the upstream as connected with the expected exposed tool count.
-- Confirm app-only tools are hidden from model discovery.
+- Confirm app-only tools remain private, token-gated callbacks without their own app resource/output-template binding.
 - Confirm the bridge public URL and allowed origins match the host that will render the app.
 - Review the audit log for startup failures, bridge rejections, stale sessions, and cleanup events.
 

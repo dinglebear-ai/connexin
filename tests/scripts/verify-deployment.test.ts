@@ -27,6 +27,13 @@ describe("runVerifyDeployment", () => {
     "rename_quick_shell_path",
     "delete_quick_shell_path",
   ];
+  const appOnlyMetadata = runtimeToolNames.slice(3).map((name) => ({
+    name,
+    visibility: ["app"],
+    hasUiResource: false,
+    hasOutputTemplate: false,
+    openaiVisibility: "private",
+  }));
   const manifest: BuildManifest = {
     version: 1,
     packageName: "quick-shell",
@@ -86,6 +93,7 @@ describe("runVerifyDeployment", () => {
           return {
             stdout: json({
               toolNames: runtimeToolNames,
+              appOnlyMetadata,
               resourceCount: 1,
               mimeType: "text/html;profile=mcp-app",
             }),
@@ -337,7 +345,7 @@ describe("runVerifyDeployment", () => {
     );
   });
 
-  it("fails when app-only helpers are visible to model-facing discovery", async () => {
+  it("allows gateway search to index token-gated app-only helpers", async () => {
     const { run } = passingRunner();
     const wrappedRun: CommandRunner = async (command, args) => {
       const normalizedCall = [command, ...args].join(" ").replaceAll("'", "");
@@ -350,6 +358,7 @@ describe("runVerifyDeployment", () => {
           stdout: json({
             result: [
               { id: "quick-shell::check_quick_shell" },
+              { id: "quick-shell::list_quick_shell_devices" },
               { id: "quick-shell::open_quick_shell" },
               { id: "quick-shell::write_quick_shell_input" },
             ],
@@ -366,9 +375,51 @@ describe("runVerifyDeployment", () => {
       expectedManifest: manifest,
     });
 
+    expect(result.ok).toBe(true);
+  });
+
+  it("fails when app-only helpers bind their own app resource", async () => {
+    const { run } = passingRunner();
+    const wrappedRun: CommandRunner = async (command, args) => {
+      const normalizedCall = [command, ...args].join(" ").replaceAll("'", "");
+      if (
+        (command === "incus" || command === "bash") &&
+        normalizedCall.includes("resource_smoke")
+      ) {
+        return {
+          stdout: json({
+            toolNames: runtimeToolNames,
+            appOnlyMetadata: appOnlyMetadata.map((tool) =>
+              tool.name === "write_quick_shell_input"
+                ? {
+                    ...tool,
+                    hasUiResource: true,
+                    hasOutputTemplate: true,
+                    openaiVisibility: "public",
+                  }
+                : tool,
+            ),
+            resourceCount: 1,
+            mimeType: "text/html;profile=mcp-app",
+          }),
+          stderr: "",
+          exitCode: 0,
+        };
+      }
+      return run(command, args);
+    };
+
+    const result = await runVerifyDeployment({
+      run: wrappedRun,
+      expectedManifest: manifest,
+    });
+
     expect(result.ok).toBe(false);
     expect(result.failures.join("\n")).toContain(
-      "app-only tool quick-shell::write_quick_shell_input is visible",
+      "resource smoke: write_quick_shell_input binds a UI resource",
+    );
+    expect(result.failures.join("\n")).toContain(
+      "resource smoke: write_quick_shell_input binds an OpenAI output template",
     );
   });
 

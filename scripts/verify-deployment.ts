@@ -146,6 +146,19 @@ const toolSmokeSchema = z
 const resourceSmokeSchema = z
   .object({
     toolNames: z.array(z.string()),
+    appOnlyMetadata: z
+      .array(
+        z
+          .object({
+            name: z.string(),
+            visibility: z.array(z.string()).optional(),
+            hasUiResource: z.boolean(),
+            hasOutputTemplate: z.boolean(),
+            openaiVisibility: z.string().optional(),
+          })
+          .passthrough(),
+      )
+      .optional(),
     resourceCount: z.number().int().nonnegative(),
     mimeType: z.string().optional(),
   })
@@ -662,12 +675,6 @@ export async function runVerifyDeployment(
     if (!ids.has(required))
       failures.push(`gateway code search: missing ${required}`);
   }
-  for (const appOnly of APP_ONLY_TOOLS) {
-    if (ids.has(appOnly))
-      failures.push(
-        `gateway code search: app-only tool ${appOnly} is visible to model discovery`,
-      );
-  }
 
   const toolSmokeCode = `async () => {
     const result = await callTool("quick-shell::check_quick_shell", {});
@@ -737,7 +744,17 @@ const client = new Client({ name: "quick-shell-deployment-verify", version: "0.0
 await client.connect(transport);
 const tools = await client.listTools();
 const resource = await client.readResource({ uri: "${APP_RESOURCE_URI}" });
-console.log(JSON.stringify({ toolNames: tools.tools.map((tool) => tool.name), resourceCount: resource.contents.length, mimeType: resource.contents[0]?.mimeType }));
+const appOnlyTools = new Set(${JSON.stringify(APP_ONLY_TOOLS.map((tool) => tool.replace(/^quick-shell::/, "")))});
+const appOnlyMetadata = tools.tools
+  .filter((tool) => appOnlyTools.has(tool.name))
+  .map((tool) => ({
+    name: tool.name,
+    visibility: tool._meta?.ui?.visibility,
+    hasUiResource: typeof tool._meta?.ui?.resourceUri === "string",
+    hasOutputTemplate: typeof tool._meta?.["openai/outputTemplate"] === "string",
+    openaiVisibility: tool._meta?.["openai/visibility"],
+  }));
+console.log(JSON.stringify({ toolNames: tools.tools.map((tool) => tool.name), appOnlyMetadata, resourceCount: resource.contents.length, mimeType: resource.contents[0]?.mimeType }));
 await client.close();
 `;
   const encodedResourceCode = Buffer.from(resourceCode, "utf8").toString(
@@ -781,6 +798,34 @@ await client.close();
     for (const required of REQUIRED_RUNTIME_TOOL_NAMES) {
       if (!resource.toolNames.includes(required))
         failures.push(`resource smoke: missing ${required}`);
+    }
+    const metadataByName = new Map(
+      (resource.appOnlyMetadata ?? []).map((tool) => [tool.name, tool]),
+    );
+    for (const appOnly of APP_ONLY_TOOLS) {
+      const name = appOnly.replace(/^quick-shell::/, "");
+      const metadata = metadataByName.get(name);
+      if (!metadata) {
+        failures.push(`resource smoke: missing app-only metadata for ${name}`);
+        continue;
+      }
+      if (!metadata.visibility?.includes("app")) {
+        failures.push(`resource smoke: ${name} is not app-visible`);
+      }
+      if (metadata.visibility?.includes("model")) {
+        failures.push(`resource smoke: ${name} is model-visible`);
+      }
+      if (metadata.hasUiResource) {
+        failures.push(`resource smoke: ${name} binds a UI resource`);
+      }
+      if (metadata.hasOutputTemplate) {
+        failures.push(
+          `resource smoke: ${name} binds an OpenAI output template`,
+        );
+      }
+      if (metadata.openaiVisibility !== "private") {
+        failures.push(`resource smoke: ${name} is not OpenAI-private`);
+      }
     }
   }
 
