@@ -25,6 +25,7 @@ npm run dev              # rebuild the MCP app and run the HTTP server with a de
 npm run serve:stdio      # run the built stdio MCP server
 npm run serve            # run the built localhost HTTP MCP server
 npm run verify:deployment
+npm run test:sftp-integration -- dist/bin/quick-shell-sftp /path/to/ssh_config host-alias
 ```
 
 Stdio is the recommended production transport:
@@ -85,7 +86,7 @@ The local CLI does not accept `--reason`. Use the MCP API `reason` field when th
 | `QUICK_SHELL_IDLE_GRACE_MS`                  | `300000`                                     | Idle lifetime before cleanup.                                                                                                                                                                                                                          |
 | `QUICK_SHELL_CLEANUP_INTERVAL_MS`            | `30000`                                      | Session cleanup interval.                                                                                                                                                                                                                              |
 
-File explorer limits use `QUICK_SHELL_MAX_FILE_ENTRIES=1000`, `QUICK_SHELL_MAX_FILE_PATH_BYTES=4096`, `QUICK_SHELL_MAX_FILE_COMPONENT_BYTES=255`, `QUICK_SHELL_MAX_FILE_PATH_DEPTH=64`, `QUICK_SHELL_MAX_FILE_QUEUED_OPERATIONS=8`, `QUICK_SHELL_MAX_TRANSFER_BYTES=536870912`, `QUICK_SHELL_MAX_EMBEDDED_DOWNLOAD_BYTES=8388608`, and `QUICK_SHELL_FILE_OPERATION_LEASE_TTL_MS=60000`. `QUICK_SHELL_SFTP_HELPER` may override the bundled `dist/bin/quick-shell-sftp` path.
+File explorer limits use `QUICK_SHELL_MAX_FILE_ENTRIES=1000`, `QUICK_SHELL_MAX_FILE_METADATA_BYTES=524288`, `QUICK_SHELL_MAX_FILE_PATH_BYTES=4096`, `QUICK_SHELL_MAX_FILE_COMPONENT_BYTES=255`, `QUICK_SHELL_MAX_FILE_PATH_DEPTH=64`, `QUICK_SHELL_MAX_FILE_QUEUED_OPERATIONS=8`, `QUICK_SHELL_MAX_TRANSFER_BYTES=536870912`, `QUICK_SHELL_MAX_EMBEDDED_DOWNLOAD_BYTES=8388608`, `QUICK_SHELL_FILE_OPERATION_LEASE_TTL_MS=60000`, `QUICK_SHELL_MAX_FILE_OPERATION_LEASES=16`, `QUICK_SHELL_FILE_METADATA_TIMEOUT_MS=30000`, `QUICK_SHELL_FILE_TRANSFER_MAX_DURATION_MS=1800000`, and `QUICK_SHELL_FILE_SHUTDOWN_TIMEOUT_MS=5000`. `QUICK_SHELL_SFTP_HELPER` may override the bundled `dist/bin/quick-shell-sftp` path.
 
 ## Devices
 
@@ -144,8 +145,8 @@ node dist/server/server/main.js --stdio
 
 Remote bridge requirements:
 
-- Proxy only the bridge path needed by the app: `/terminal`.
-- Set `QUICK_SHELL_BRIDGE_PUBLIC_URL` to an origin with no path prefix; v1 serves `/terminal` at that origin's root.
+- Proxy only the bridge paths needed by the app: `/terminal`, `/files/upload`, and `/files/download`.
+- Set `QUICK_SHELL_BRIDGE_PUBLIC_URL` to an origin with no path prefix; v1 serves `/terminal`, `/files/upload`, and `/files/download` at that origin's root.
 - Preserve WebSocket upgrade headers.
 - Disable proxy buffering on file routes and enforce compatible body and timeout limits.
 - Use HTTPS for `QUICK_SHELL_BRIDGE_PUBLIC_URL`; the app receives a `wss://` terminal URL.

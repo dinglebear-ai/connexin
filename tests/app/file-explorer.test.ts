@@ -84,4 +84,42 @@ describe("FileExplorerController", () => {
     await old;
     expect(mount.querySelector(".files__name")?.textContent).toBe("new");
   });
+
+  it("hides download actions above the embedded download cap", async () => {
+    const mount = document.createElement("div");
+    document.body.append(mount);
+    const api = {
+      list: vi.fn(async () => ({
+        entries: [
+          {
+            name: "small.txt",
+            path: "small.txt",
+            kind: "file",
+            size: 1,
+            modified: 0,
+            mode: 0,
+            fingerprint: "x",
+          },
+          {
+            name: "large.bin",
+            path: "large.bin",
+            kind: "file",
+            size: 2,
+            modified: 0,
+            mode: 0,
+            fingerprint: "y",
+          },
+        ],
+        maxEmbeddedDownloadBytes: 1,
+      })),
+      mutate: vi.fn(),
+      upload: vi.fn(),
+      download: vi.fn(),
+    } as any;
+    const controller = new FileExplorerController(mount, api, vi.fn(), vi.fn());
+    await controller.load();
+    const rows = [...mount.querySelectorAll(".files__row")];
+    expect(rows[0]?.textContent).toContain("Download");
+    expect(rows[1]?.textContent).not.toContain("Download");
+  });
 });

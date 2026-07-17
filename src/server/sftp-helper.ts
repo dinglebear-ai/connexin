@@ -253,16 +253,19 @@ export class ChildSftpHelper implements SftpHelper {
       release = resolve;
     });
     try {
-      await Promise.race([
-        previous,
-        new Promise<never>((_, reject) =>
-          signal.addEventListener(
-            "abort",
-            () => reject(protocolError("aborted")),
-            { once: true },
-          ),
-        ),
-      ]);
+      let abortDuringWait: (() => void) | undefined;
+      try {
+        await Promise.race([
+          previous,
+          new Promise<never>((_, reject) => {
+            abortDuringWait = () => reject(protocolError("aborted"));
+            signal.addEventListener("abort", abortDuringWait, { once: true });
+          }),
+        ]);
+      } finally {
+        if (abortDuringWait)
+          signal.removeEventListener("abort", abortDuringWait);
+      }
       if (signal.aborted) {
         this.dispose();
         throw protocolError("aborted");

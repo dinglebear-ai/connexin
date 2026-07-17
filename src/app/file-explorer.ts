@@ -5,6 +5,7 @@ export class FileExplorerController {
   private generation = 0;
   private abort?: AbortController;
   private entries: FileEntry[] = [];
+  private maxEmbeddedDownloadBytes = 0;
   private actionActive = false;
   private lifecycleGeneration = 0;
 
@@ -29,6 +30,7 @@ export class FileExplorerController {
       const result = await this.api.list(path, controller.signal);
       if (generation !== this.generation) return;
       this.entries = result.entries;
+      this.maxEmbeddedDownloadBytes = result.maxEmbeddedDownloadBytes;
       this.renderList();
       this.mount.dataset.state = "ready";
       this.setStatus(
@@ -110,7 +112,11 @@ export class FileExplorerController {
       size.textContent = entry.kind === "file" ? formatBytes(entry.size) : "";
       const actions = document.createElement("span");
       actions.className = "files__row-actions";
-      if (entry.kind === "file" && this.download)
+      if (
+        entry.kind === "file" &&
+        this.download &&
+        entry.size <= this.maxEmbeddedDownloadBytes
+      )
         actions.append(
           this.actionButton(
             "Download",
@@ -189,6 +195,8 @@ export class FileExplorerController {
     const controller = new AbortController();
     this.abort = controller;
     const existing = this.entries.find((entry) => entry.name === file.name);
+    if (existing && existing.kind !== "file")
+      throw new Error("A non-file entry already uses that name");
     if (existing && !window.confirm(`Overwrite ${file.name}?`)) return;
     await this.api.upload(
       joinPath(this.path, file.name),

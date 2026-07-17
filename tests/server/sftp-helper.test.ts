@@ -25,6 +25,10 @@ describe("ChildSftpHelper", () => {
   it("correlates sanitized NDJSON responses", async () => {
     const process = child();
     const helper = new ChildSftpHelper(process);
+    const controlWrites: string[] = [];
+    process.stdin.on("data", (chunk: Buffer) =>
+      controlWrites.push(chunk.toString("utf8")),
+    );
     const pending = helper.request<{ protocol: number }>("hello", {});
     process.stdout.write('{"version":1,"id":1,"data":{"protocol":1}}\n');
     await expect(pending).resolves.toEqual({ protocol: 1 });
@@ -66,5 +70,30 @@ describe("ChildSftpHelper", () => {
     await expect(pending).rejects.toThrow("aborted");
     expect(process.kill).toHaveBeenCalledWith("SIGTERM");
     await expect(helper.request("hello", {})).rejects.toThrow("helper_closed");
+  });
+
+  it("cleans transfer abort listeners after a successful transfer", async () => {
+    const process = child();
+    const helper = new ChildSftpHelper(process);
+    const controlWrites: string[] = [];
+    process.stdin.on("data", (chunk: Buffer) =>
+      controlWrites.push(chunk.toString("utf8")),
+    );
+    const controller = new AbortController();
+    const add = vi.spyOn(controller.signal, "addEventListener");
+    const remove = vi.spyOn(controller.signal, "removeEventListener");
+    const transfer = helper.upload(
+      new PassThrough(),
+      { path: "/tmp/b", bytes: 1, overwrite: false },
+      controller.signal,
+    );
+
+    await vi.waitFor(() => expect(controlWrites.join("")).toContain('"id":1'));
+    process.stdout.write('{"version":1,"id":1,"data":{"bytes":1}}\n');
+    await expect(transfer).resolves.toEqual({ bytes: 1 });
+
+    expect(add).toHaveBeenCalledTimes(3);
+    expect(remove).toHaveBeenCalledTimes(3);
+    expect(remove).toHaveBeenNthCalledWith(1, "abort", expect.any(Function));
   });
 });

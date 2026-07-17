@@ -512,14 +512,18 @@ export class FileSession {
     this.transferTail = new Promise<void>((resolve) => {
       release = resolve;
     });
-    await Promise.race([
-      previous,
-      new Promise<never>((_, reject) =>
-        signal.addEventListener("abort", () => reject(new Error("aborted")), {
-          once: true,
+    let abortDuringWait: (() => void) | undefined;
+    try {
+      await Promise.race([
+        previous,
+        new Promise<never>((_, reject) => {
+          abortDuringWait = () => reject(new Error("aborted"));
+          signal.addEventListener("abort", abortDuringWait, { once: true });
         }),
-      ),
-    ]);
+      ]);
+    } finally {
+      if (abortDuringWait) signal.removeEventListener("abort", abortDuringWait);
+    }
     if (signal.aborted) {
       release();
       throw new Error("aborted");
