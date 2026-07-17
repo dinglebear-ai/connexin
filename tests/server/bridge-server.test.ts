@@ -145,7 +145,7 @@ describe("startBridgeServer", () => {
     }
   });
 
-  it("rejects startup when the bridge port is already in use", async () => {
+  it("rejects startup when the bridge port stays in use past the retry window", async () => {
     const occupied = http.createServer();
     await new Promise<void>((resolve) =>
       occupied.listen(0, "127.0.0.1", resolve),
@@ -163,13 +163,61 @@ describe("startBridgeServer", () => {
 
     try {
       await expect(
-        startBridgeServer({ config: runtimeConfig, manager }),
+        startBridgeServer({
+          config: runtimeConfig,
+          manager,
+          bindRetry: { windowMs: 30, intervalMs: 5 },
+        }),
       ).rejects.toMatchObject({ code: "EADDRINUSE" });
     } finally {
       manager.closeAll();
       await new Promise<void>((resolve, reject) => {
         occupied.close((error) => (error ? reject(error) : resolve()));
       });
+    }
+  });
+
+  it("binds after retrying when a draining instance releases the port", async () => {
+    const occupied = http.createServer();
+    await new Promise<void>((resolve) =>
+      occupied.listen(0, "127.0.0.1", resolve),
+    );
+    const address = occupied.address();
+    if (address === null || typeof address === "string")
+      throw new Error("test server did not bind");
+    const occupiedPort = address.port;
+    const runtimeConfig = testRuntimeConfig({ bridgePort: occupiedPort });
+    const manager = new QuickShellSessionManager({
+      config: runtimeConfig,
+      allowedHosts: new Set(["test-device"]),
+      ptyFactory: () => new FakePty(),
+    });
+    const auditEvents: string[] = [];
+    const recordSpy = vi
+      .spyOn(manager, "recordAuditEvent")
+      .mockImplementation((event) => {
+        auditEvents.push(event);
+      });
+    // Release the port shortly after startup begins, mimicking an old pool
+    // instance draining during a gateway swap-and-drain reload.
+    const releaseTimer = setTimeout(() => occupied.close(), 40);
+
+    let bridge: Awaited<ReturnType<typeof startBridgeServer>> | undefined;
+    try {
+      bridge = await startBridgeServer({
+        config: runtimeConfig,
+        manager,
+        bindRetry: { windowMs: 2_000, intervalMs: 10 },
+      });
+      expect(bridge.listenUrl).toContain(`:${occupiedPort}`);
+      expect(auditEvents).toContain("bridge_bind_retry");
+    } finally {
+      clearTimeout(releaseTimer);
+      recordSpy.mockRestore();
+      manager.closeAll();
+      if (bridge) await bridge.close();
+      if (occupied.listening)
+        await new Promise<void>((resolve) => occupied.close(() => resolve()));
     }
   });
 

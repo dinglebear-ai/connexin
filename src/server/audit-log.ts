@@ -5,6 +5,7 @@ export type AuditEvent =
   | "runtime_started"
   | "runtime_closed"
   | "bridge_listening"
+  | "bridge_bind_retry"
   | "bridge_connection_rejected"
   | "bridge_connected"
   | "bridge_disconnected"

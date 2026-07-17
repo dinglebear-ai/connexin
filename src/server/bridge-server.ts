@@ -21,6 +21,14 @@ const MAX_PENDING_AUTH_CONNECTIONS = 32;
 const MAX_WS_CLOSE_REASON_BYTES = 123;
 const REJECTION_AUDIT_LIMIT = 10;
 const REJECTION_AUDIT_WINDOW_MS = 60_000;
+// During a Labby gateway swap-and-drain reload, the previous quick-shell
+// instance still holds the fixed bridge port until the old pool drains and its
+// child exits. A fresh instance that crashed on EADDRINUSE would fail its MCP
+// initialize and drop the terminal, so the bind is retried for a bounded window
+// when a fixed port is configured (port 0 asks the OS for a free port and
+// cannot collide).
+const BRIDGE_BIND_RETRY_WINDOW_MS = 15_000;
+const BRIDGE_BIND_RETRY_INTERVAL_MS = 250;
 
 async function handleFileRequest(
   req: http.IncomingMessage,
@@ -203,6 +211,12 @@ export interface BridgeServer {
 export interface StartBridgeServerOptions {
   config: RuntimeConfig;
   manager: QuickShellSessionManager;
+  /**
+   * Bounds for retrying an EADDRINUSE bridge bind (see `listenWithBindRetry`).
+   * Defaults to the production window/interval; tests override with small
+   * values to exercise the retry path without real delays.
+   */
+  bindRetry?: { windowMs: number; intervalMs: number };
 }
 
 interface ActiveConnection {
@@ -356,6 +370,43 @@ function listenHttpServer(
     httpServer.once("listening", handleListening);
     httpServer.listen(port, host);
   });
+}
+
+function isAddrInUse(error: unknown): boolean {
+  return (error as NodeJS.ErrnoException | undefined)?.code === "EADDRINUSE";
+}
+
+/**
+ * Retry the bridge bind on EADDRINUSE for a bounded window when a fixed port is
+ * requested. A concurrently-draining previous instance releases the port within
+ * that window; only a genuinely persistent conflict (or port 0, which cannot
+ * collide) surfaces as a startup failure. `onRetry` records an observable
+ * breadcrumb so a slow drain does not fail silently.
+ */
+async function listenWithBindRetry(
+  httpServer: http.Server,
+  port: number,
+  host: string,
+  extraErrorEmitter: ErrorEmitter | undefined,
+  bounds: { windowMs: number; intervalMs: number },
+  onRetry: (fields: { attempt: number; elapsedMs: number }) => void,
+): Promise<void> {
+  const startedAt = Date.now();
+  let attempt = 0;
+  for (;;) {
+    try {
+      await listenHttpServer(httpServer, port, host, extraErrorEmitter);
+      return;
+    } catch (error) {
+      const elapsedMs = Date.now() - startedAt;
+      const canRetry =
+        port !== 0 && isAddrInUse(error) && elapsedMs < bounds.windowMs;
+      if (!canRetry) throw error;
+      attempt += 1;
+      onRetry({ attempt, elapsedMs });
+      await new Promise((resolve) => setTimeout(resolve, bounds.intervalMs));
+    }
+  }
 }
 
 export async function startBridgeServer(
@@ -730,12 +781,25 @@ export async function startBridgeServer(
     },
   );
 
+  const bindRetryBounds = options.bindRetry ?? {
+    windowMs: BRIDGE_BIND_RETRY_WINDOW_MS,
+    intervalMs: BRIDGE_BIND_RETRY_INTERVAL_MS,
+  };
   try {
-    await listenHttpServer(
+    await listenWithBindRetry(
       httpServer,
       config.bridgePort,
       config.bridgeHost,
       wss,
+      bindRetryBounds,
+      ({ attempt, elapsedMs }) =>
+        manager.recordAuditEvent("bridge_bind_retry", {
+          port: config.bridgePort,
+          host: config.bridgeHost,
+          attempt,
+          elapsedMs,
+          reason: "address_in_use",
+        }),
     );
   } catch (error) {
     sessionClosedSubscription.dispose();
