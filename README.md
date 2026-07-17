@@ -1,11 +1,13 @@
 # quick-shell
 
-quick-shell is a local MCP App for short, human-approved SSH terminal sessions. An agent can request `open_quick_shell` for an SSH-configured device alias, but the user controls the terminal, decides whether to insert any suggested command, runs commands manually, reviews output, and explicitly confirms anything sent back to the conversation.
+quick-shell is a local MCP App for short, human-approved SSH terminal sessions and confined SFTP file operations. An agent can request `open_quick_shell` for an SSH-configured device alias, but the user controls the terminal and file explorer.
 
 ## Developer Setup
 
 ```bash
 npm install
+go test ./...
+go vet ./...
 npm run lint
 npm run format:check
 npm run typecheck
@@ -83,6 +85,8 @@ The local CLI does not accept `--reason`. Use the MCP API `reason` field when th
 | `QUICK_SHELL_IDLE_GRACE_MS`                  | `300000`                                     | Idle lifetime before cleanup.                                                                                                                                                                                                                          |
 | `QUICK_SHELL_CLEANUP_INTERVAL_MS`            | `30000`                                      | Session cleanup interval.                                                                                                                                                                                                                              |
 
+File explorer limits use `QUICK_SHELL_MAX_FILE_ENTRIES=1000`, `QUICK_SHELL_MAX_FILE_PATH_BYTES=4096`, `QUICK_SHELL_MAX_FILE_COMPONENT_BYTES=255`, `QUICK_SHELL_MAX_FILE_PATH_DEPTH=64`, `QUICK_SHELL_MAX_FILE_QUEUED_OPERATIONS=8`, `QUICK_SHELL_MAX_TRANSFER_BYTES=536870912`, `QUICK_SHELL_MAX_EMBEDDED_DOWNLOAD_BYTES=8388608`, and `QUICK_SHELL_FILE_OPERATION_LEASE_TTL_MS=60000`. `QUICK_SHELL_SFTP_HELPER` may override the bundled `dist/bin/quick-shell-sftp` path.
+
 ## Devices
 
 V1 accepts only explicit `Host` aliases from the configured SSH config. Parsed membership is authoritative for names, so safe aliases such as `home/lab` are accepted; aliases beginning with `-` or containing whitespace/control characters are rejected as unsafe SSH arguments. Wildcards such as `Host *`, `prod-*`, and negated aliases are ignored. Escaped `Host` patterns are rejected conservatively so a partial token cannot become an alias.
@@ -128,7 +132,7 @@ Metadata supports only `[devices.<alias>]` tables with quoted string values for 
 
 ## Secure Remote Bridge
 
-The terminal bridge is localhost-only by default. For remote MCP App hosts, expose only `/terminal` through a TLS reverse proxy and advertise that public base URL:
+The bridge is localhost-only by default. For remote MCP App hosts, expose `/terminal`, `/files/upload`, and `/files/download` through a TLS reverse proxy and advertise that public base URL:
 
 ```bash
 QUICK_SHELL_BRIDGE_HOST=0.0.0.0 \
@@ -143,6 +147,7 @@ Remote bridge requirements:
 - Proxy only the bridge path needed by the app: `/terminal`.
 - Set `QUICK_SHELL_BRIDGE_PUBLIC_URL` to an origin with no path prefix; v1 serves `/terminal` at that origin's root.
 - Preserve WebSocket upgrade headers.
+- Disable proxy buffering on file routes and enforce compatible body and timeout limits.
 - Use HTTPS for `QUICK_SHELL_BRIDGE_PUBLIC_URL`; the app receives a `wss://` terminal URL.
 - Set `QUICK_SHELL_ALLOWED_ORIGINS` to the MCP App host origin or a comma-separated list. When the list is non-empty, requests without a matching `Origin` are rejected before WebSocket upgrade. Hosts that sandbox app iframes on rotating per-connector origins (Claude uses `{hash}.claudemcpcontent.com`) need a wildcard entry such as `https://*.claudemcpcontent.com`; wildcards match exactly one subdomain label, and the per-session WebSocket token remains the actual authentication.
 - Keep `QUICK_SHELL_ALLOWED_ORIGINS` empty only for local-only deployments. It is required whenever `QUICK_SHELL_BRIDGE_PUBLIC_URL` is set: the server refuses to start on that combination, even if a proxy in front of it already enforces origins.
@@ -156,9 +161,11 @@ quick-shell follows the MCP Apps standard first. `open_quick_shell` declares `_m
 
 App resource:
 
-| Resource                           | MIME type                   | Notes                                                                |
-| ---------------------------------- | --------------------------- | -------------------------------------------------------------------- |
-| `ui://quick-shell/mcp-app.v2.html` | `text/html;profile=mcp-app` | Includes CSP metadata with bridge HTTP(S) and WS(S) connect domains. |
+| Resource                           | MIME type                   | Notes                                                      |
+| ---------------------------------- | --------------------------- | ---------------------------------------------------------- |
+| `ui://quick-shell/mcp-app.v3.html` | `text/html;profile=mcp-app` | Canonical terminal and Files app with bridge CSP metadata. |
+| `ui://quick-shell/mcp-app.v2.html` | `text/html;profile=mcp-app` | Legacy compatibility URI.                                  |
+| `ui://quick-shell/mcp-app.html`    | `text/html;profile=mcp-app` | V1 legacy compatibility URI.                               |
 
 Tools:
 
@@ -173,6 +180,19 @@ Tools:
 | `resize_quick_shell_session`          | app        | App-only terminal resize fallback.                                                                                                           |
 | `close_quick_shell_session`           | app        | App-owned session close.                                                                                                                     |
 | `record_quick_shell_output_confirmed` | app        | Audit breadcrumb after the user confirms output return.                                                                                      |
+| `list_quick_shell_files`              | app        | Bounded root-relative SFTP directory listing in hidden metadata.                                                                             |
+| `prepare_quick_shell_file_operation`  | app        | Creates a short-lived one-use lease for a mutation or transfer.                                                                              |
+| `mkdir_quick_shell_path`              | app        | Creates a directory using a fresh operation lease.                                                                                           |
+| `rename_quick_shell_path`             | app        | Renames a path using a fresh operation lease.                                                                                                |
+| `delete_quick_shell_path`             | app        | Deletes a path using a fresh operation lease.                                                                                                |
+
+## SFTP Safety Model
+
+The Files view starts its helper lazily and uses system OpenSSH with the same configured alias, keys, agent, host verification, and `ProxyJump` behavior as the terminal. Authentication is noninteractive (`BatchMode=yes`), so accept a new host key or unlock a key through the terminal first when necessary.
+
+Paths are relative to the remote account's canonical home. The server bounds path bytes, component bytes, depth, directory entries, pending operations, transfer bytes, and lease lifetime. This is a user-safety boundary, not race-proof isolation from a malicious process running as the same remote user. Symlinks are listed distinctly and destructive operations require explicit UI confirmation plus a fresh one-use lease.
+
+Transfers use fixed bridge routes with a separate file bearer in request headers. Capabilities, leases, and paths do not appear in URLs or model-visible MCP content. Downloads are bounded and appear only when the host advertises `downloadFile`; larger or resumable transfers remain out of scope.
 
 `open_quick_shell` returns model-visible text plus structured public session fields: `sessionId`, `device`, optional `reason`, optional `suggestedCommand`, and optional device metadata. The model-visible text says the session is prepared, not opened: the SSH PTY starts only after a compatible MCP App host renders the app and attaches through the bridge or app-only fallback. Hidden `_meta.quickShell` contains the app token. Hidden `_meta.quickShellSession` may also include bridge URL, WebSocket token, limits, and ping cadence so the app can attach immediately.
 

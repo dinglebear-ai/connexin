@@ -90,7 +90,7 @@ export function createAuditRateLimiter(options: {
 }
 
 const REDACTED_FIELD_PATTERN =
-  /token|output|suggestedcommand|suggested_command/i;
+  /token|output|suggestedcommand|suggested_command|path|filename|url|authorization|headers|nonce|lease|capability|secret|contents/i;
 
 /**
  * Keys that match REDACTED_FIELD_PATTERN by substring but carry no secret. The
