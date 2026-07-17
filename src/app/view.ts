@@ -1,11 +1,14 @@
 export interface ShellElements {
   container: HTMLElement;
   status: HTMLParagraphElement;
+  terminalTab: HTMLButtonElement;
+  filesTab: HTMLButtonElement;
   sessionSummary: HTMLDivElement;
   commandStrip: HTMLFormElement;
   commandInput: HTMLInputElement;
   insertButton: HTMLButtonElement;
   terminalMount: HTMLDivElement;
+  filesMount: HTMLDivElement;
   transcript: HTMLPreElement;
   actions: HTMLDivElement;
   connectButton: HTMLButtonElement;
@@ -52,6 +55,21 @@ export function buildShell(): ShellElements {
   status.dataset.tone = "neutral";
   header.append(identity, status);
 
+  const tabs = document.createElement("div");
+  tabs.className = "shell__tabs";
+  tabs.setAttribute("role", "tablist");
+  const terminalTab = document.createElement("button");
+  terminalTab.type = "button";
+  terminalTab.textContent = "Terminal";
+  terminalTab.setAttribute("role", "tab");
+  terminalTab.setAttribute("aria-selected", "true");
+  const filesTab = document.createElement("button");
+  filesTab.type = "button";
+  filesTab.textContent = "Files";
+  filesTab.setAttribute("role", "tab");
+  filesTab.setAttribute("aria-selected", "false");
+  tabs.append(terminalTab, filesTab);
+
   const sessionSummary = document.createElement("div");
   sessionSummary.className = "shell__summary";
   sessionSummary.hidden = true;
@@ -80,6 +98,12 @@ export function buildShell(): ShellElements {
   transcript.className = "terminal-transcript sr-only";
   transcript.setAttribute("aria-label", "Terminal transcript");
   transcript.setAttribute("aria-live", "polite");
+
+  const filesMount = document.createElement("div");
+  filesMount.className = "files";
+  filesMount.hidden = true;
+  filesMount.setAttribute("role", "tabpanel");
+  filesMount.setAttribute("aria-label", "Remote files");
 
   const actions = document.createElement("div");
   actions.className = "actions";
@@ -156,9 +180,11 @@ export function buildShell(): ShellElements {
 
   container.append(
     header,
+    tabs,
     sessionSummary,
     commandStrip,
     terminalMount,
+    filesMount,
     transcript,
     actions,
     dialog,
@@ -167,11 +193,14 @@ export function buildShell(): ShellElements {
   return {
     container,
     status,
+    terminalTab,
+    filesTab,
     sessionSummary,
     commandStrip,
     commandInput,
     insertButton,
     terminalMount,
+    filesMount,
     transcript,
     actions,
     connectButton,

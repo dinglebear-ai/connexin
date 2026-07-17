@@ -1,0 +1,122 @@
+import type { QuickShellHiddenMeta } from "../shared/protocol.js";
+
+export interface FileEntry {
+  name: string;
+  path: string;
+  kind: "file" | "directory" | "symlink" | "other";
+  size: number;
+  modified: number;
+  mode: number;
+  fingerprint: string;
+}
+interface ToolClient {
+  callServerTool(call: {
+    name: string;
+    arguments: Record<string, unknown>;
+  }): Promise<{
+    isError?: boolean;
+    content?: Array<{ type?: string; text?: string }>;
+    _meta?: Record<string, unknown>;
+  }>;
+}
+
+export class FileApi {
+  constructor(
+    private readonly client: ToolClient,
+    private readonly capability: QuickShellHiddenMeta["quickShell"],
+    private readonly fileBaseUrl: string,
+    private readonly fileToken: string,
+  ) {}
+
+  async list(
+    path: string,
+    signal?: AbortSignal,
+  ): Promise<{ entries: FileEntry[]; maxEmbeddedDownloadBytes: number }> {
+    if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
+    const result = await this.client.callServerTool({
+      name: "list_quick_shell_files",
+      arguments: { ...this.capability, path },
+    });
+    if (result.isError)
+      throw new Error(result.content?.[0]?.text ?? "Unable to list files");
+    const meta = result._meta?.quickShellFiles as
+      { entries?: FileEntry[]; maxEmbeddedDownloadBytes?: number } | undefined;
+    if (!meta || !Array.isArray(meta.entries))
+      throw new Error("Invalid file listing");
+    return {
+      entries: meta.entries,
+      maxEmbeddedDownloadBytes: meta.maxEmbeddedDownloadBytes ?? 0,
+    };
+  }
+
+  async mutate(
+    operation: "mkdir" | "rename" | "delete",
+    paths: string[],
+    overwrite = false,
+  ): Promise<void> {
+    const prepared = await this.client.callServerTool({
+      name: "prepare_quick_shell_file_operation",
+      arguments: { ...this.capability, operation, paths, overwrite },
+    });
+    const lease = (
+      prepared._meta?.quickShellFiles as { lease?: string } | undefined
+    )?.lease;
+    if (prepared.isError || !lease)
+      throw new Error("Unable to prepare file operation");
+    const names = {
+      mkdir: "mkdir_quick_shell_path",
+      rename: "rename_quick_shell_path",
+      delete: "delete_quick_shell_path",
+    } as const;
+    const result = await this.client.callServerTool({
+      name: names[operation],
+      arguments: { ...this.capability, lease },
+    });
+    if (result.isError)
+      throw new Error(result.content?.[0]?.text ?? "File operation failed");
+  }
+
+  async upload(path: string, file: File, signal: AbortSignal): Promise<void> {
+    const lease = await this.prepareTransfer("upload", path);
+    const response = await fetch(new URL("/files/upload", this.fileBaseUrl), {
+      method: "PUT",
+      headers: {
+        Authorization: `Bearer ${this.fileToken}`,
+        "X-Quick-Shell-File-Lease": lease,
+        "Content-Type": file.type || "application/octet-stream",
+      },
+      body: file,
+      signal,
+    });
+    if (!response.ok) throw new Error("Upload failed");
+  }
+
+  async download(path: string, signal: AbortSignal): Promise<ArrayBuffer> {
+    const lease = await this.prepareTransfer("download", path);
+    const response = await fetch(new URL("/files/download", this.fileBaseUrl), {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${this.fileToken}`,
+        "X-Quick-Shell-File-Lease": lease,
+      },
+      signal,
+    });
+    if (!response.ok) throw new Error("Download failed");
+    return response.arrayBuffer();
+  }
+
+  private async prepareTransfer(
+    operation: "upload" | "download",
+    path: string,
+  ): Promise<string> {
+    const result = await this.client.callServerTool({
+      name: "prepare_quick_shell_file_operation",
+      arguments: { ...this.capability, operation, paths: [path] },
+    });
+    const lease = (
+      result._meta?.quickShellFiles as { lease?: string } | undefined
+    )?.lease;
+    if (result.isError || !lease) throw new Error("Unable to prepare transfer");
+    return lease;
+  }
+}

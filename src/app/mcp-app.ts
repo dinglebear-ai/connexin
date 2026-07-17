@@ -42,6 +42,8 @@ import {
 } from "./output.js";
 import { loadGhosttyRuntime } from "./ghostty-loader.js";
 import { buildShell } from "./view.js";
+import { FileApi } from "./file-api.js";
+import { FileExplorerController } from "./file-explorer.js";
 import "./styles.css";
 
 type HostCapabilities = NonNullable<ReturnType<App["getHostCapabilities"]>>;
@@ -130,6 +132,7 @@ let connectionFailed = false;
 let sending = false;
 let hostContext: HostContext = {};
 let lastModelContextKey: string | undefined;
+let fileExplorer: FileExplorerController | undefined;
 
 const elements = buildShell();
 root.replaceChildren(elements.container);
@@ -169,6 +172,10 @@ async function start(): Promise<void> {
 }
 
 function wireShellEvents(): void {
+  elements.terminalTab.addEventListener("click", () => showTerminal());
+  elements.filesTab.addEventListener("click", () => {
+    void showFiles().catch((error) => renderError(error));
+  });
   elements.commandStrip.addEventListener("submit", (event) => {
     event.preventDefault();
     const payload = buildInsertPayload(elements.commandInput.value);
@@ -617,6 +624,7 @@ function sendResize(): void {
 }
 
 function scheduleResize(): void {
+  if (elements.terminalMount.hidden) return;
   if (resizeFrame !== undefined) return;
   resizeFrame = window.requestAnimationFrame(() => {
     resizeFrame = undefined;
@@ -1159,6 +1167,9 @@ async function cleanup(
     sessionCapability = undefined;
     connectionFailed = false;
     elements.dialog.close();
+    fileExplorer?.dispose();
+    fileExplorer = undefined;
+    showTerminal();
     updateSessionSummary();
     resetOutputBuffers();
     updateModelContext(closeSession ? "closed" : "idle");
@@ -1174,6 +1185,74 @@ async function cleanup(
     updateControls();
   }
   return false;
+}
+
+function showTerminal(): void {
+  elements.terminalTab.setAttribute("aria-selected", "true");
+  elements.filesTab.setAttribute("aria-selected", "false");
+  elements.commandStrip.hidden = false;
+  elements.terminalMount.hidden = false;
+  elements.transcript.hidden = false;
+  elements.actions.hidden = false;
+  elements.filesMount.hidden = true;
+  scheduleResize();
+}
+
+async function showFiles(): Promise<void> {
+  if (
+    !session ||
+    !sessionCapability ||
+    !session.fileBaseUrl ||
+    !session.fileToken
+  ) {
+    setStatus("Connect before browsing files");
+    return;
+  }
+  elements.terminalTab.setAttribute("aria-selected", "false");
+  elements.filesTab.setAttribute("aria-selected", "true");
+  elements.commandStrip.hidden = true;
+  elements.terminalMount.hidden = true;
+  elements.transcript.hidden = true;
+  elements.actions.hidden = true;
+  elements.filesMount.hidden = false;
+  if (!fileExplorer) {
+    const canDownload = app.getHostCapabilities()?.downloadFile !== undefined;
+    fileExplorer = new FileExplorerController(
+      elements.filesMount,
+      new FileApi(
+        app,
+        sessionCapability,
+        session.fileBaseUrl,
+        session.fileToken,
+      ),
+      setStatus,
+      canDownload ? downloadRemoteFile : undefined,
+    );
+  }
+  await fileExplorer.load();
+}
+
+async function downloadRemoteFile(
+  name: string,
+  bytes: ArrayBuffer,
+): Promise<void> {
+  const data = new Uint8Array(bytes);
+  let binary = "";
+  for (let offset = 0; offset < data.length; offset += 32_768)
+    binary += String.fromCharCode(...data.subarray(offset, offset + 32_768));
+  const result = await app.downloadFile({
+    contents: [
+      {
+        type: "resource",
+        resource: {
+          uri: `file:///${encodeURIComponent(name)}`,
+          mimeType: "application/octet-stream",
+          blob: btoa(binary),
+        },
+      },
+    ],
+  });
+  if (result.isError) throw new Error("Download cancelled");
 }
 
 async function closeUnusedSession(
