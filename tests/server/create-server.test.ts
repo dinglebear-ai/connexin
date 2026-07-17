@@ -388,13 +388,13 @@ describe("createServer", () => {
 
       expect(appOnly?._meta).toMatchObject({
         ui: {
-          resourceUri: APP_RESOURCE_URI,
           visibility: ["app"],
         },
-        "openai/outputTemplate": APP_RESOURCE_URI,
         "openai/widgetAccessible": true,
         "openai/visibility": "private",
       });
+      expect(appOnly?._meta?.ui).not.toHaveProperty("resourceUri");
+      expect(appOnly?._meta).not.toHaveProperty("openai/outputTemplate");
     } finally {
       await server.close();
       await client.close();
@@ -548,6 +548,10 @@ describe("createServer", () => {
       );
       expect(appOnly?._meta?.ui).toMatchObject({ visibility: ["app"] });
       expect(closeOnly?._meta?.ui).toMatchObject({ visibility: ["app"] });
+      expect(appOnly?._meta?.ui).not.toHaveProperty("resourceUri");
+      expect(closeOnly?._meta?.ui).not.toHaveProperty("resourceUri");
+      expect(appOnly?._meta).not.toHaveProperty("openai/outputTemplate");
+      expect(closeOnly?._meta).not.toHaveProperty("openai/outputTemplate");
     } finally {
       await server.close();
       await client.close();

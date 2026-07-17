@@ -47,10 +47,10 @@ export function toolMeta(
   const modelVisible = visibility.includes("model");
   return {
     ui: {
-      resourceUri: APP_RESOURCE_URI,
+      ...(modelVisible ? { resourceUri: APP_RESOURCE_URI } : {}),
       visibility,
     },
-    "openai/outputTemplate": APP_RESOURCE_URI,
+    ...(modelVisible ? { "openai/outputTemplate": APP_RESOURCE_URI } : {}),
     "openai/widgetAccessible": appVisible,
     "openai/visibility": modelVisible ? "public" : "private",
     ...(status?.invoking
