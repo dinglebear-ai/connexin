@@ -55,6 +55,10 @@ type ToolResultParams = {
   content?: Array<{ type?: string; text?: string }>;
 };
 
+type OpenAiBridge = {
+  toolResponseMetadata?: unknown;
+};
+
 interface QueuedFallbackInput {
   data: string;
   bytes: number;
@@ -282,6 +286,24 @@ function readQuickShellPoll(value: unknown): QuickShellPoll | undefined {
   return parsed.success ? parsed.data : undefined;
 }
 
+function readOpenAiToolResult(): ToolResultParams | undefined {
+  const bridge = (window as unknown as { openai?: OpenAiBridge }).openai;
+  if (!bridge?.toolResponseMetadata) return undefined;
+  const metadata = bridge.toolResponseMetadata;
+  if (typeof metadata !== "object" || metadata === null) return undefined;
+  const record = metadata as Record<string, unknown>;
+  for (const candidate of [
+    record.mcp_tool_result,
+    record.call_tool_result,
+    metadata,
+  ]) {
+    if (typeof candidate !== "object" || candidate === null) continue;
+    const result = candidate as ToolResultParams;
+    if (result._meta || result.structuredContent || result.content) return result;
+  }
+  return undefined;
+}
+
 async function handleToolResult(
   params: ToolResultParams,
   order: number,
@@ -294,8 +316,9 @@ async function handleToolResult(
   connecting = false;
   connectingGeneration = undefined;
   const nextPublicSession = readPublicSession(params.structuredContent);
-  const quickShell = readQuickShellMeta(params._meta);
-  const quickShellSession = readAppSession(params._meta?.quickShellSession);
+  const hiddenMeta = params._meta ?? readOpenAiToolResult()?._meta;
+  const quickShell = readQuickShellMeta(hiddenMeta);
+  const quickShellSession = readAppSession(hiddenMeta?.quickShellSession);
   if (
     !nextPublicSession ||
     !quickShell ||
@@ -1402,8 +1425,16 @@ function handleConnectFailure(
   )
     return;
   connectionFailed = true;
-  renderError(error);
+  renderError(connectFailureMessage(error));
   updateControls();
+}
+
+function connectFailureMessage(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  if (/-32000\b.*MCP proxy request failed/i.test(message)) {
+    return "Quick Shell could not attach through Labby. Reopen this shell; if it still fails, reconnect Labby. (MCP -32000)";
+  }
+  return message;
 }
 
 function toolResultText(

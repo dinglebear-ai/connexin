@@ -507,6 +507,49 @@ describe("quick-shell MCP app", () => {
     expect(harness.sockets[0]?.url).toContain("session=s1");
   });
 
+  it("hydrates the app capability from Codex tool response metadata", async () => {
+    (
+      window as unknown as {
+        openai: {
+          toolResponseMetadata: Record<string, unknown>;
+        };
+      }
+    ).openai = {
+      toolResponseMetadata: {
+        mcp_tool_result: {
+          structuredContent: { sessionId: "s1", device: "fileserver" },
+          _meta: {
+            quickShell: { sessionId: "s1", appToken: "app-s1" },
+          },
+        },
+      },
+    };
+    const app = await loadApp();
+    app.callServerToolImpl = async (call) => {
+      if (call.name === "get_quick_shell_session")
+        return detailsResult("s1", "fileserver");
+      return { structuredContent: { closed: true } };
+    };
+
+    app.ontoolresult?.({
+      structuredContent: { sessionId: "s1", device: "fileserver" },
+    });
+
+    await waitForCondition(() => harness.sockets.length === 1);
+
+    expect(app.serverToolCalls).toContainEqual({
+      name: "get_quick_shell_session",
+      arguments: { sessionId: "s1", appToken: "app-s1" },
+    });
+    expect(
+      JSON.stringify({
+        sessionId: "s1",
+        device: "fileserver",
+      }),
+    ).not.toContain("app-s1");
+    delete (window as unknown as { openai?: unknown }).openai;
+  });
+
   it("auto-connects when the initial tool result includes hidden bridge details", async () => {
     const app = await loadApp();
 
@@ -1593,6 +1636,21 @@ describe("quick-shell MCP app", () => {
     expect(button("Insert").disabled).toBe(true);
     expect(button("Send output").disabled).toBe(true);
     expect(button("Close").disabled).toBe(false);
+  });
+
+  it("explains a Codex MCP proxy attach failure", async () => {
+    const app = await loadApp();
+    app.callServerToolImpl = async () => {
+      throw new Error("MCP error -32000: MCP proxy request failed");
+    };
+
+    app.ontoolresult?.(openedResult("s1", "fileserver"));
+
+    await waitForCondition(() => statusText().includes("reconnect Labby"));
+    expect(statusText()).toBe(
+      "Quick Shell could not attach through Labby. Reopen this shell; if it still fails, reconnect Labby. (MCP -32000)",
+    );
+    expect(button("Reconnect").disabled).toBe(false);
   });
 
   it("does not call the app close tool for an active terminal", async () => {
