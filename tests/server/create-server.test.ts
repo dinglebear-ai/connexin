@@ -17,7 +17,8 @@ import { QuickShellPublicSessionSchema } from "../../src/shared/protocol.js";
 import { FakePty } from "./helpers/fake-pty.js";
 import { testRuntimeConfig } from "./helpers/runtime-config.js";
 
-const APP_RESOURCE_URI = "ui://quick-shell/mcp-app.v4.html";
+const APP_RESOURCE_URI = "ui://quick-shell/mcp-app.v5.html";
+const V4_APP_RESOURCE_URI = "ui://quick-shell/mcp-app.v4.html";
 const V3_APP_RESOURCE_URI = "ui://quick-shell/mcp-app.v3.html";
 const V2_APP_RESOURCE_URI = "ui://quick-shell/mcp-app.v2.html";
 const LEGACY_APP_RESOURCE_URI = "ui://quick-shell/mcp-app.html";
@@ -794,6 +795,7 @@ describe("createServer", () => {
       });
       const v2 = await client.readResource({ uri: V2_APP_RESOURCE_URI });
       const v3 = await client.readResource({ uri: V3_APP_RESOURCE_URI });
+      const v4 = await client.readResource({ uri: V4_APP_RESOURCE_URI });
       await writeFile(APP_HTML_PATH, "<html>second</html>");
       resetAppHtmlCacheForTests();
       const second = await client.readResource({ uri: APP_RESOURCE_URI });
@@ -823,6 +825,7 @@ describe("createServer", () => {
       });
       expect(v2.contents[0]).toMatchObject({ uri: V2_APP_RESOURCE_URI });
       expect(v3.contents[0]).toMatchObject({ uri: V3_APP_RESOURCE_URI });
+      expect(v4.contents[0]).toMatchObject({ uri: V4_APP_RESOURCE_URI });
       expect(second.contents[0]).toMatchObject({ text: "<html>second</html>" });
     } finally {
       resetAppHtmlCacheForTests();

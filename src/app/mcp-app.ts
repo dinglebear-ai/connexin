@@ -292,6 +292,9 @@ function readOpenAiToolResult(): ToolResultParams | undefined {
   const metadata = bridge.toolResponseMetadata;
   if (typeof metadata !== "object" || metadata === null) return undefined;
   const record = metadata as Record<string, unknown>;
+  if (record.quickShell || record.quickShellSession) {
+    return { _meta: record };
+  }
   for (const candidate of [
     record.mcp_tool_result,
     record.call_tool_result,

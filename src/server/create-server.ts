@@ -17,6 +17,7 @@ import {
   LEGACY_APP_RESOURCE_URI,
   V2_APP_RESOURCE_URI,
   V3_APP_RESOURCE_URI,
+  V4_APP_RESOURCE_URI,
   SERVER_INSTRUCTIONS,
   appCapabilityInputSchema,
   appResourceMeta,
@@ -891,6 +892,7 @@ export function createServer(options: CreateServerOptions): McpServer {
 
   for (const [name, uri] of [
     ["quick-shell", APP_RESOURCE_URI],
+    ["quick-shell-v4", V4_APP_RESOURCE_URI],
     ["quick-shell-v3", V3_APP_RESOURCE_URI],
     ["quick-shell-v2", V2_APP_RESOURCE_URI],
     ["quick-shell-legacy", LEGACY_APP_RESOURCE_URI],

@@ -550,6 +550,30 @@ describe("quick-shell MCP app", () => {
     delete (window as unknown as { openai?: unknown }).openai;
   });
 
+  it("uses direct Codex response metadata without calling the private callback", async () => {
+    const hidden = openedResultWithSession("s1", "fileserver")._meta;
+    (
+      window as unknown as {
+        openai: {
+          toolResponseMetadata: Record<string, unknown>;
+        };
+      }
+    ).openai = {
+      toolResponseMetadata: hidden,
+    };
+    const app = await loadApp();
+
+    app.ontoolresult?.({
+      structuredContent: { sessionId: "s1", device: "fileserver" },
+    });
+
+    await waitForCondition(() => harness.sockets.length === 1);
+
+    expect(app.serverToolCalls).toEqual([]);
+    expect(harness.sockets[0]?.url).toContain("session=s1");
+    delete (window as unknown as { openai?: unknown }).openai;
+  });
+
   it("auto-connects when the initial tool result includes hidden bridge details", async () => {
     const app = await loadApp();
 

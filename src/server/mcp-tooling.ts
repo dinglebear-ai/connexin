@@ -16,7 +16,8 @@ import type {
 } from "../shared/protocol.js";
 import { utf8ByteLength } from "../shared/utf8.js";
 
-export const APP_RESOURCE_URI = "ui://quick-shell/mcp-app.v4.html";
+export const APP_RESOURCE_URI = "ui://quick-shell/mcp-app.v5.html";
+export const V4_APP_RESOURCE_URI = "ui://quick-shell/mcp-app.v4.html";
 export const V3_APP_RESOURCE_URI = "ui://quick-shell/mcp-app.v3.html";
 export const V2_APP_RESOURCE_URI = "ui://quick-shell/mcp-app.v2.html";
 export const LEGACY_APP_RESOURCE_URI = "ui://quick-shell/mcp-app.html";
