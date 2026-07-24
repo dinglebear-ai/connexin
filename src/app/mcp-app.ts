@@ -302,7 +302,8 @@ function readOpenAiToolResult(): ToolResultParams | undefined {
   ]) {
     if (typeof candidate !== "object" || candidate === null) continue;
     const result = candidate as ToolResultParams;
-    if (result._meta || result.structuredContent || result.content) return result;
+    if (result._meta || result.structuredContent || result.content)
+      return result;
   }
   return undefined;
 }
