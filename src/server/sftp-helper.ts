@@ -190,11 +190,38 @@ export class ChildSftpHelper implements SftpHelper {
       const stream = this.child.stdio[4];
       if (!stream || !("pipe" in stream))
         throw protocolError("transfer_unavailable");
-      (stream as Readable).pipe(target, { end: false });
+      const source = stream as Readable;
+      // The control-stream result (byte count) and the file bytes on fd 4 travel
+      // over separate pipes with no ordering guarantee, so the result can resolve
+      // before the tail of the payload has finished flowing into `target`.
+      // Unpiping at that point drops the final chunk(s) and the caller sees a
+      // short/mismatched download. Count delivered bytes and, once the helper
+      // tells us how many to expect, wait for them all before unpiping.
+      let received = 0;
+      let expected = Number.POSITIVE_INFINITY;
+      let onEnough: (() => void) | undefined;
+      const countChunk = (chunk: Buffer) => {
+        received += chunk.length;
+        if (received >= expected) onEnough?.();
+      };
+      source.on("data", countChunk);
+      source.pipe(target, { end: false });
       try {
-        return await this.request<TransferResult>("download", request, signal);
+        const result = await this.request<TransferResult>(
+          "download",
+          request,
+          signal,
+        );
+        expected = result.bytes;
+        if (received < expected) {
+          await new Promise<void>((resolve) => {
+            onEnough = resolve;
+          });
+        }
+        return result;
       } finally {
-        (stream as Readable).unpipe(target);
+        source.off("data", countChunk);
+        source.unpipe(target);
       }
     });
   }
