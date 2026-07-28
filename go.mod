@@ -1,4 +1,4 @@
-module github.com/jmagar/quick-shell
+module github.com/dinglebear-ai/quick-shell
 
 go 1.25
 

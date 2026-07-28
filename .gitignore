@@ -1,2 +1,23 @@
+# Dependencies
+node_modules/
+
+# Build output
 dist/
 coverage/
+*.tsbuildinfo
+.vite/
+
+# Secrets — .env.example is tracked, real env files are not
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+npm-debug.log*
+yarn-error.log*
+
+# Agent / editor / OS scratch
+.claude/
+.DS_Store
+Thumbs.db
