@@ -175,7 +175,19 @@ describe("main transports", () => {
         requestInit: { headers: { authorization: "Bearer secret" } },
       },
     );
-    const client = new Client({ name: "http-test-client", version: "0.1.0" });
+    const client = new Client(
+      { name: "http-test-client", version: "0.1.0" },
+      {
+        capabilities: {
+          // open_quick_shell refuses hosts that do not advertise MCP Apps.
+          extensions: {
+            "io.modelcontextprotocol/ui": {
+              mimeTypes: ["text/html;profile=mcp-app"],
+            },
+          },
+        } as never,
+      },
+    );
     try {
       await client.connect(transport);
 

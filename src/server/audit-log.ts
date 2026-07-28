@@ -14,6 +14,10 @@ export type AuditEvent =
   | "bridge_io_failed"
   | "session_opened"
   | "session_open_failed"
+  /** Client does not advertise MCP Apps support; no session or token minted. */
+  | "session_open_refused"
+  /** Capabilities were unavailable (stateless HTTP), so the gate did not run. */
+  | "app_host_check_skipped"
   | "session_started"
   | "session_exited"
   | "session_closed"
@@ -105,8 +109,22 @@ const REDACTED_FIELD_PATTERN =
  * redacted by default; anything provably safe is named here instead of loosening
  * it. `hasAppToken` is a boolean that distinguishes "no token supplied" from
  * "wrong token supplied" during incident review.
+ *
+ * The four startup fields are local config paths and the bridge's own loopback
+ * URLs -- operator-known deployment facts, not credentials. They matched
+ * `path`/`url` by substring and were silently dropped, which left
+ * runtime_started and bridge_listening with none of the detail they were
+ * written to capture and broke the deployment verifier's documented baseUrl
+ * check (scripts/verify-deployment.ts), since it greps for a field that could
+ * never be written.
  */
-const SAFE_FIELD_ALLOWLIST = new Set(["hasAppToken"]);
+const SAFE_FIELD_ALLOWLIST = new Set([
+  "hasAppToken",
+  "sshConfigPath",
+  "quickShellConfigPath",
+  "baseUrl",
+  "listenUrl",
+]);
 
 function isRedactedKey(key: string): boolean {
   if (SAFE_FIELD_ALLOWLIST.has(key)) return false;

@@ -182,6 +182,7 @@ function wireShellEvents(): void {
   elements.filesTab.addEventListener("click", () => {
     void showFiles().catch((error) => renderError(error));
   });
+  wireTabKeyboardNavigation();
   elements.commandStrip.addEventListener("submit", (event) => {
     event.preventDefault();
     const payload = buildInsertPayload(elements.commandInput.value);
@@ -434,7 +435,9 @@ async function connectTerminal(
   details: QuickShellAppSession,
   generation: number,
 ): Promise<void> {
-  disposeTerminal();
+  // Keep queued keystrokes: this runs on reconnect too, and they are flushed
+  // once the replacement socket reports ready.
+  disposeTerminal({ retainPendingInput: true });
   outputBuffer.clear();
   resetAccessibleTranscript();
   await loadGhosttyRuntime();
@@ -510,7 +513,12 @@ async function connectTerminal(
     }
   });
   socket.addEventListener("close", (event) => {
-    if (isCurrentSocketBinding(binding) && !binding.ready) {
+    // Capture readiness before clearing it: the fallback path below depends on
+    // whether this socket had ever come up, but everything afterwards must see
+    // a binding that is no longer usable for sending.
+    const wasReady = binding.ready;
+    binding.ready = false;
+    if (isCurrentSocketBinding(binding) && !wasReady) {
       startFallback();
       return;
     }
@@ -523,9 +531,11 @@ async function connectTerminal(
     }
   });
   socket.addEventListener("error", () => {
+    const wasReady = binding.ready;
+    binding.ready = false;
     if (!isCurrentSocketBinding(binding)) return;
     setStatus("Connection error");
-    if (!binding.ready) startFallback();
+    if (!wasReady) startFallback();
   });
 }
 
@@ -658,8 +668,9 @@ function scheduleResize(): void {
   });
 }
 
-function sendTerminalMessage(message: ClientTerminalMessage): void {
-  if (ws) sendTerminalTransportMessage(ws, message);
+/** Returns whether the message reached the socket. */
+function sendTerminalMessage(message: ClientTerminalMessage): boolean {
+  return ws ? sendTerminalTransportMessage(ws, message) : false;
 }
 
 function utf8Bytes(data: string): number {
@@ -692,10 +703,15 @@ function sendTerminalInput(data: string): void {
     return;
   }
 
-  if (socketBinding?.ready && isCurrentSocketBinding(socketBinding)) {
-    sendTerminalMessage({ type: "input", data });
+  // Fall through to the pending buffer if the send did not actually happen.
+  // Trusting `ready` alone dropped every keystroke typed during the reconnect
+  // window, which is exactly what pendingInput exists to catch.
+  if (
+    socketBinding?.ready &&
+    isCurrentSocketBinding(socketBinding) &&
+    sendTerminalMessage({ type: "input", data })
+  )
     return;
-  }
 
   if (pendingInputBytes + bytes > MAX_PENDING_INPUT_BYTES) {
     setStatus("Waiting for connection; input buffer full.");
@@ -1065,16 +1081,19 @@ async function confirmSend(
       return;
     }
     const byteCount = new TextEncoder().encode(prepared.text).byteLength;
-    if (
+    // If the bridge send fails, fall through to the MCP tool rather than
+    // silently skipping it: without one of the two, the model has been handed
+    // terminal output with no human-confirmation record in the audit log.
+    const recordedViaBridge = Boolean(
       capturedSocket?.ready &&
       socketBinding === capturedSocket &&
-      isCurrentSocketBinding(capturedSocket)
-    ) {
+      isCurrentSocketBinding(capturedSocket) &&
       sendTerminalTransportMessage(capturedSocket.socket, {
         type: "output_confirmed",
         byteCount,
-      });
-    } else if (capturedCapability) {
+      }),
+    );
+    if (!recordedViaBridge && capturedCapability) {
       await app
         .callServerTool({
           name: "record_quick_shell_output_confirmed",
@@ -1126,7 +1145,16 @@ function updateDialogMeta(
   );
 }
 
-function disposeTerminal(): void {
+/**
+ * Tear down the terminal and its transport.
+ *
+ * `retainPendingInput` is for the reconnect path only. Reconnecting runs
+ * through connectTerminal, which disposes first; clearing the queue there threw
+ * away the very keystrokes the queue exists to hold across a drop, so they were
+ * lost even once the socket came back. Every other caller is ending the
+ * session, where discarding queued input is correct.
+ */
+function disposeTerminal(options: { retainPendingInput?: boolean } = {}): void {
   const socket = ws;
   stopPing();
   stopPolling();
@@ -1140,8 +1168,10 @@ function disposeTerminal(): void {
   terminalDataDisposable?.dispose();
   fitAddon?.dispose();
   terminal?.dispose();
-  pendingInput = [];
-  pendingInputBytes = 0;
+  if (!options.retainPendingInput) {
+    pendingInput = [];
+    pendingInputBytes = 0;
+  }
   pendingResize = undefined;
   fallbackInputQueue = undefined;
   fallbackResizeQueue = undefined;
@@ -1201,16 +1231,22 @@ async function cleanup(
   const capability = expectedCapability;
   const ownsCurrentSession = sessionCapability === expectedCapability;
   const binding = ownsCurrentSession ? socketBinding : undefined;
-  const closeViaBridge = Boolean(
+  const mayCloseViaBridge = Boolean(
     closeSession &&
     binding?.ready &&
     binding.capability === capability &&
     isCurrentSocketBinding(binding),
   );
 
-  if (closeViaBridge && binding) {
-    sendTerminalTransportMessage(binding.socket, { type: "close" });
-  }
+  // Gate on the send actually landing, not on `ready`. Closing during a
+  // reconnect used to post {type:"close"} into a dead socket, drop it, and
+  // still take the early return below -- telling the user and the model the
+  // session was closed while the remote PTY kept running until the idle
+  // sweeper reaped it.
+  const closedViaBridge =
+    mayCloseViaBridge && binding
+      ? sendTerminalTransportMessage(binding.socket, { type: "close" })
+      : false;
 
   if (ownsCurrentSession) {
     activeGeneration += 1;
@@ -1231,7 +1267,7 @@ async function cleanup(
     updateControls();
   }
 
-  if (!closeSession || !capability || closeViaBridge) return true;
+  if (!closeSession || !capability || closedViaBridge) return true;
   const error = await closeRemoteSession(capability);
   if (!error) return true;
   console.error("quick-shell session close failed", error);
@@ -1242,9 +1278,40 @@ async function cleanup(
   return false;
 }
 
+/**
+ * Arrow/Home/End navigation across the tablist, per the WAI-ARIA tabs pattern.
+ * Activation follows focus, which matches how both panels already behave on
+ * click. Selecting Files can fail (no session yet), so errors surface the same
+ * way the click handler reports them.
+ */
+function wireTabKeyboardNavigation(): void {
+  const tabs = [elements.terminalTab, elements.filesTab];
+  for (const tab of tabs) {
+    tab.addEventListener("keydown", (event) => {
+      const current = tabs.indexOf(tab);
+      let next = current;
+      if (event.key === "ArrowRight") next = (current + 1) % tabs.length;
+      else if (event.key === "ArrowLeft")
+        next = (current - 1 + tabs.length) % tabs.length;
+      else if (event.key === "Home") next = 0;
+      else if (event.key === "End") next = tabs.length - 1;
+      else return;
+
+      event.preventDefault();
+      const target = tabs[next]!;
+      target.focus();
+      if (target === elements.filesTab)
+        void showFiles().catch((error) => renderError(error));
+      else showTerminal();
+    });
+  }
+}
+
 function showTerminal(): void {
   elements.terminalTab.setAttribute("aria-selected", "true");
   elements.filesTab.setAttribute("aria-selected", "false");
+  elements.terminalTab.tabIndex = 0;
+  elements.filesTab.tabIndex = -1;
   elements.commandStrip.hidden = false;
   elements.terminalMount.hidden = false;
   elements.transcript.hidden = false;
@@ -1265,6 +1332,8 @@ async function showFiles(): Promise<void> {
   }
   elements.terminalTab.setAttribute("aria-selected", "false");
   elements.filesTab.setAttribute("aria-selected", "true");
+  elements.terminalTab.tabIndex = -1;
+  elements.filesTab.tabIndex = 0;
   elements.commandStrip.hidden = true;
   elements.terminalMount.hidden = true;
   elements.transcript.hidden = true;

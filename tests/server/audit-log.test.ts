@@ -92,6 +92,51 @@ describe("audit logging", () => {
     );
   });
 
+  it("keeps startup deployment fields that the verifier greps for", () => {
+    const sink = createMemoryAuditSink();
+    const audit = createAuditLogger({ sink });
+
+    audit.record("runtime_started", {
+      mode: "stdio",
+      sshConfigPath: "/home/op/.ssh/config",
+      quickShellConfigPath: "/home/op/.config/quick-shell.json",
+    });
+    audit.record("bridge_listening", {
+      baseUrl: "http://127.0.0.1:8765",
+      listenUrl: "http://127.0.0.1:8765",
+    });
+
+    expect(sink.records[0]).toMatchObject({
+      event: "runtime_started",
+      sshConfigPath: "/home/op/.ssh/config",
+      quickShellConfigPath: "/home/op/.config/quick-shell.json",
+    });
+    // scripts/verify-deployment.ts greps the log for exactly this shape.
+    expect(JSON.stringify(sink.records[1])).toContain(
+      '"baseUrl":"http://127.0.0.1:8765"',
+    );
+    expect(sink.records[1]).toMatchObject({
+      listenUrl: "http://127.0.0.1:8765",
+    });
+  });
+
+  it("still redacts secret-bearing path and url fields", () => {
+    const sink = createMemoryAuditSink();
+    const audit = createAuditLogger({ sink });
+
+    // The allowlist is exact-key, so nothing else matching path/url leaks.
+    audit.record("file_operation_completed", {
+      path: "/srv/secrets/key.pem",
+      filename: "key.pem",
+      downloadUrl: "https://example.test/?token=abc",
+      lease: "lease-token",
+    });
+
+    expect(JSON.stringify(sink.records[0])).not.toMatch(
+      /key\.pem|secrets|token=abc|lease-token/,
+    );
+  });
+
   it("keeps the hasAppToken diagnostic, which carries no secret", () => {
     const sink = createMemoryAuditSink();
     const audit = createAuditLogger({ sink });
@@ -202,7 +247,19 @@ describe("audit logging", () => {
     });
     const [clientTransport, serverTransport] =
       InMemoryTransport.createLinkedPair();
-    const client = new Client({ name: "audit-test", version: "0.1.0" });
+    const client = new Client(
+      { name: "audit-test", version: "0.1.0" },
+      {
+        capabilities: {
+          // open_quick_shell refuses hosts that do not advertise MCP Apps.
+          extensions: {
+            "io.modelcontextprotocol/ui": {
+              mimeTypes: ["text/html;profile=mcp-app"],
+            },
+          },
+        } as never,
+      },
+    );
     await Promise.all([
       server.connect(serverTransport),
       client.connect(clientTransport),

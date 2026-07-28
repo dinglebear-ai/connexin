@@ -37,6 +37,7 @@ export function testRuntimeConfig(
     fileMetadataTimeoutMs: 30_000,
     fileTransferMaxDurationMs: 30 * 60_000,
     fileShutdownTimeoutMs: 5_000,
+    requireAppHost: true,
     ...overrides,
   };
 }

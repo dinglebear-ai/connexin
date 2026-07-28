@@ -327,4 +327,96 @@ describe("FileSession", () => {
       ]),
     ).resolves.toBe(1);
   });
+  it("recycles the helper after a failed transfer so stale pipe bytes cannot leak", async () => {
+    // Bulk payloads ride dedicated fds that are never resynchronized. A
+    // rejected upload leaves its bytes queued; if the same helper is reused,
+    // the next upload reads them as its own head and every length check still
+    // passes, so the wrong content is written and audited as success.
+    const rejecting = {
+      ...helper(),
+      upload: vi.fn(async () => {
+        throw new Error("already_exists");
+      }),
+    };
+    const replacement = helper();
+    const factory = vi
+      .fn()
+      .mockReturnValueOnce(rejecting)
+      .mockReturnValueOnce(replacement);
+    const session = new FileSession(testRuntimeConfig(), factory);
+
+    const lease = await session.prepare({
+      operation: "upload",
+      path: "b.txt",
+      bytes: 4,
+      overwrite: false,
+    });
+    await expect(
+      session.upload(
+        lease,
+        Readable.from(Buffer.from("data")),
+        4,
+        new AbortController().signal,
+      ),
+    ).rejects.toThrow();
+
+    // The poisoned helper must be disposed, not handed to the next transfer.
+    expect(rejecting.dispose).toHaveBeenCalled();
+
+    const nextLease = await session.prepare({
+      operation: "upload",
+      path: "c.txt",
+      bytes: 4,
+      overwrite: false,
+    });
+    await session.upload(
+      nextLease,
+      Readable.from(Buffer.from("safe")),
+      4,
+      new AbortController().signal,
+    );
+    expect(factory).toHaveBeenCalledTimes(2);
+    expect(replacement.upload).toHaveBeenCalled();
+  });
+
+  it("keeps the helper when a transfer succeeds", async () => {
+    const value = helper();
+    const factory = vi.fn().mockReturnValue(value);
+    const session = new FileSession(testRuntimeConfig(), factory);
+    const entry = await listed(session, "a.txt");
+    const lease = await session.prepare({
+      operation: "download",
+      path: entry.path,
+      expectedFingerprint: entry.fingerprint,
+      bytes: entry.size,
+    });
+    await session.downloadBuffer(lease, new AbortController().signal);
+
+    expect(value.dispose).not.toHaveBeenCalled();
+    expect(factory).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects an over-delivering download instead of buffering past the lease", async () => {
+    // The old guard called combined.throwIfAborted(), which only throws when
+    // the signal is ALREADY aborted -- so it never capped anything.
+    const value = {
+      ...helper(),
+      download: vi.fn(async (target: any, req: any) => {
+        target.write(Buffer.alloc(req.maxBytes + 64, 1));
+        return { bytes: req.maxBytes };
+      }),
+    };
+    const session = new FileSession(testRuntimeConfig(), () => value);
+    const entry = await listed(session, "a.txt");
+    const lease = await session.prepare({
+      operation: "download",
+      path: entry.path,
+      expectedFingerprint: entry.fingerprint,
+      bytes: entry.size,
+    });
+
+    await expect(
+      session.downloadBuffer(lease, new AbortController().signal),
+    ).rejects.toThrow();
+  });
 });

@@ -12,8 +12,7 @@ export type SftpAction =
   | "rename"
   | "remove"
   | "upload"
-  | "download"
-  | "close";
+  | "download";
 
 export interface SftpCloseReason {
   code: number | null;
@@ -199,11 +198,21 @@ export class ChildSftpHelper implements SftpHelper {
       // tells us how many to expect, wait for them all before unpiping.
       let received = 0;
       let expected = Number.POSITIVE_INFINITY;
-      let onEnough: (() => void) | undefined;
+      let settle: ((error?: Error) => void) | undefined;
       const countChunk = (chunk: Buffer) => {
         received += chunk.length;
-        if (received >= expected) onEnough?.();
+        if (received >= expected) settle?.();
       };
+      // The tail may never arrive: the helper can die, the SSH link can drop,
+      // or the caller can abort after the control response has landed. Any of
+      // those must reject the download. Waiting only on `data` wedged the
+      // session's whole transfer lane forever, because the release in
+      // exclusiveTransfer's finally never ran.
+      const failTail = (error: Error) => () => settle?.(error);
+      const onSourceEnd = failTail(protocolError("transfer_truncated"));
+      const onSourceError = failTail(protocolError("transfer_failed"));
+      const onAbort = failTail(protocolError("transfer_aborted"));
+
       source.on("data", countChunk);
       source.pipe(target, { end: false });
       try {
@@ -214,13 +223,27 @@ export class ChildSftpHelper implements SftpHelper {
         );
         expected = result.bytes;
         if (received < expected) {
-          await new Promise<void>((resolve) => {
-            onEnough = resolve;
+          await new Promise<void>((resolve, reject) => {
+            settle = (error) => {
+              settle = undefined;
+              if (error) reject(error);
+              else resolve();
+            };
+            source.once("end", onSourceEnd);
+            source.once("close", onSourceEnd);
+            source.once("error", onSourceError);
+            if (signal.aborted) onAbort();
+            else signal.addEventListener("abort", onAbort, { once: true });
           });
         }
         return result;
       } finally {
+        settle = undefined;
         source.off("data", countChunk);
+        source.off("end", onSourceEnd);
+        source.off("close", onSourceEnd);
+        source.off("error", onSourceError);
+        signal.removeEventListener("abort", onAbort);
         source.unpipe(target);
       }
     });

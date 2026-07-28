@@ -24,6 +24,13 @@ const target = `${directory}/marker.bin`;
 const renamed = `${directory}/renamed.bin`;
 const first = Buffer.from("first-marker");
 const second = Buffer.from("atomic-overwrite-marker");
+// Deliberately distinct from `second`, and a different length. The rejected
+// upload below streams this into the shared upload pipe; if those bytes are not
+// drained or the helper is not recycled, they become the head of the NEXT
+// upload. Reusing `second` here made stale bytes indistinguishable from the
+// intended ones, so this script demonstrated the corruption instead of catching
+// it.
+const rejectedPayload = Buffer.from("REJECTED-PAYLOAD-SHOULD-NEVER-LAND-xxxxx");
 
 try {
   await helper.request("mkdir", { path: directory });
@@ -36,8 +43,8 @@ try {
   let rejected = false;
   try {
     await helper.upload(
-      Readable.from(second),
-      { path: target, bytes: second.length, overwrite: false },
+      Readable.from(rejectedPayload),
+      { path: target, bytes: rejectedPayload.length, overwrite: false },
       new AbortController().signal,
     );
   } catch (error) {

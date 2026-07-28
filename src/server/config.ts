@@ -36,6 +36,14 @@ export interface RuntimeConfig {
   fileMetadataTimeoutMs: number;
   fileTransferMaxDurationMs: number;
   fileShutdownTimeoutMs: number;
+  /**
+   * Refuse to mint a session (and its tokens) unless the client advertises MCP
+   * Apps support. Defaults on. The escape hatch exists because this is a gate
+   * on host-advertised capability: if a host renders apps correctly but does
+   * not advertise the extension, setting QUICK_SHELL_REQUIRE_APP_HOST=0
+   * restores the previous fail-open behaviour.
+   */
+  requireAppHost: boolean;
 }
 
 const DEFAULTS = {
@@ -59,12 +67,27 @@ const DEFAULTS = {
   maxFileQueuedOperations: 8,
   maxTransferBytes: 512 * 1024 * 1024,
   maxEmbeddedDownloadBytes: 8 * 1024 * 1024,
+  requireAppHost: true,
   fileOperationLeaseTtlMs: 60_000,
   maxFileOperationLeases: 16,
   fileMetadataTimeoutMs: 30_000,
   fileTransferMaxDurationMs: 30 * 60_000,
   fileShutdownTimeoutMs: 5_000,
 } as const;
+
+/** Only an explicit "0"/"false"/"no" disables; anything else keeps the default. */
+function booleanFromEnv(
+  env: NodeJS.ProcessEnv,
+  key: string,
+  fallback: boolean,
+): boolean {
+  const raw = env[key];
+  if (raw === undefined || raw.trim() === "") return fallback;
+  const normalized = raw.trim().toLowerCase();
+  if (["0", "false", "no", "off"].includes(normalized)) return false;
+  if (["1", "true", "yes", "on"].includes(normalized)) return true;
+  throw new Error(`${key} must be a boolean`);
+}
 
 function numberFromEnv(
   env: NodeJS.ProcessEnv,
@@ -362,6 +385,11 @@ export function loadRuntimeConfig(
       env,
       "QUICK_SHELL_MAX_EMBEDDED_DOWNLOAD_BYTES",
       DEFAULTS.maxEmbeddedDownloadBytes,
+    ),
+    requireAppHost: booleanFromEnv(
+      env,
+      "QUICK_SHELL_REQUIRE_APP_HOST",
+      DEFAULTS.requireAppHost,
     ),
     fileOperationLeaseTtlMs: numberFromEnv(
       env,
