@@ -335,14 +335,11 @@ See `docs/manual-app-smoke.md` for the scenario matrix covering baseline app att
 
 ## License
 
-Copyright (C) 2026 Jacob Magar.
+Copyright 2026 Jacob Magar.
 
-Dual licensed:
+[PolyForm Noncommercial 1.0.0](LICENSE.md) — free for personal, hobby,
+research, and educational use. **Any commercial use requires a separate
+license**; open an issue to enquire.
 
-- **[GNU AGPL v3](LICENSE)** — free to use, modify and self-host. Because
-  AGPL section 13 covers network use, if you run a modified version and let
-  others interact with it over a network, you must offer them the
-  corresponding source.
-- **Commercial license** — if you want to use Connexin in a product or
-  service without the AGPL's source-disclosure obligations, a separate
-  commercial license is available. Open an issue to enquire.
+This is a source-available license, not an OSI-approved open source
+license.
