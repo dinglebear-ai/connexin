@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "type": "module",
   "description": "Human-approved quick shell MCP App for SSH-backed unblock commands",
-  "license": "PolyForm-Noncommercial-1.0.0",
+  "license": "AGPL-3.0-only",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/dinglebear-ai/connexin.git"
@@ -24,7 +24,7 @@
     "scripts/install-sftp-helper.mjs",
     "scripts/sftp-helper-target.mjs",
     "README.md",
-    "LICENSE.md"
+    "LICENSE"
   ],
   "main": "dist/server/server/main.js",
   "packageManager": "npm@11.16.0",
