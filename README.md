@@ -332,3 +332,12 @@ See `docs/manual-app-smoke.md` for the scenario matrix covering baseline app att
 - Remote or multi-user auth
 - Windows PTY guarantees
 - Durable transcripts or session resume
+
+## License
+
+[PolyForm Noncommercial 1.0.0](LICENSE.md). Free for personal, hobby,
+research, and educational use. **Commercial use requires a separate
+license** — open an issue to enquire.
+
+Note this is a source-available license, not an OSI-approved open source
+license.
