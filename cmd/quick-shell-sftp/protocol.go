@@ -52,20 +52,60 @@ type handler struct {
 	// are reachable without inheriting real descriptors.
 	uploadPipe   *os.File
 	downloadPipe *os.File
+	// desynced records that a bulk lane may still hold bytes from a transfer
+	// that ended early. Neither lane carries framing, so those bytes would be
+	// read as the head of the next transfer -- one caller's payload written into
+	// another caller's file. Once set, the session stops rather than serving a
+	// transfer it cannot trust.
+	desynced bool
 }
 
+// inheritedFile wraps a descriptor handed down by the parent process.
+//
+// The descriptor arrives in blocking mode and os.NewFile leaves it that way,
+// which keeps the resulting *os.File off the runtime poller. SetReadDeadline
+// then fails with "file type does not support deadline", and every
+// deadline-bounded drain below silently degrades into a no-op. The tests inject
+// os.Pipe halves, which are pollable, so they exercise a drain that production
+// never actually ran. Marking the descriptor non-blocking first makes the real
+// fds behave like the ones under test.
+func inheritedFile(fd int, name string) *os.File {
+	_ = setNonblock(fd)
+	return os.NewFile(uintptr(fd), name)
+}
+
+// The bulk pipes are memoized: handle runs on the single serve goroutine, and a
+// fresh os.NewFile per request would attach a second finalizer to the same
+// descriptor, letting GC close a lane that is still in use.
 func (h *handler) upload() *os.File {
-	if h.uploadPipe != nil {
-		return h.uploadPipe
+	if h.uploadPipe == nil {
+		h.uploadPipe = inheritedFile(3, "upload")
 	}
-	return os.NewFile(3, "upload")
+	return h.uploadPipe
 }
 
 func (h *handler) download() *os.File {
-	if h.downloadPipe != nil {
-		return h.downloadPipe
+	if h.downloadPipe == nil {
+		h.downloadPipe = inheritedFile(4, "download")
 	}
-	return os.NewFile(4, "download")
+	return h.downloadPipe
+}
+
+// discardUpload consumes the unread tail of an upload whose handler returned
+// early, so the next upload starts at a frame boundary. The drain is bounded
+// because the writer may itself have stopped early; if the lane cannot be
+// resynced -- deadlines unavailable, drain timed out, writer gone -- the helper
+// marks itself desynced instead of guessing.
+func (h *handler) discardUpload(fd *os.File, remaining int64) {
+	if err := fd.SetReadDeadline(time.Now().Add(drainTimeout)); err != nil {
+		h.desynced = true
+		return
+	}
+	n, err := io.CopyN(io.Discard, fd, remaining)
+	_ = fd.SetReadDeadline(time.Time{})
+	if err != nil || n != remaining {
+		h.desynced = true
+	}
 }
 
 func decodeRequest(line []byte) (request, error) {
@@ -227,21 +267,17 @@ func (h *handler) handle(ctx context.Context, req request) (any, error) {
 			return nil, errors.New("transfer_unavailable")
 		}
 		// Every early return below leaves the declared payload sitting in the
-		// shared upload pipe. The TypeScript side now recycles the helper after
-		// any unclean transfer, so those bytes cannot reach the next one, but
-		// drain anyway as defense in depth. The deadline matters: the writer
-		// may have stopped early, so an unbounded drain would hang the helper.
+		// shared upload pipe. The client streams the body as soon as it sends the
+		// request, without waiting to learn whether the request was accepted, so
+		// a rejection here still has a full payload in flight behind it. Drain it
+		// or the next upload reads these bytes as its own.
 		consumed := int64(0)
 		defer func() {
 			remaining := params.Bytes - consumed
 			if remaining <= 0 {
 				return
 			}
-			if err := fd.SetReadDeadline(time.Now().Add(drainTimeout)); err != nil {
-				return
-			}
-			_, _ = io.CopyN(io.Discard, fd, remaining)
-			_ = fd.SetReadDeadline(time.Time{})
+			h.discardUpload(fd, remaining)
 		}()
 		if info, statErr := h.client.Lstat(params.Path); statErr == nil {
 			if !params.Overwrite || info.Mode()&os.ModeSymlink != 0 || info.IsDir() {
@@ -304,11 +340,28 @@ func (h *handler) handle(ctx context.Context, req request) (any, error) {
 			return nil, err
 		}
 		defer file.Close()
-		n, err := io.Copy(fd, io.LimitReader(file, params.MaxBytes+1))
+		// Size the file before writing anything. Copying first and reporting
+		// too_large afterwards pushed MaxBytes+1 bytes onto the shared lane and
+		// then abandoned them, so the rejected payload became the head of the
+		// next download -- the same corruption the upload drain exists to stop.
+		info, err := file.Stat()
 		if err != nil {
 			return nil, err
 		}
+		if info.Size() > params.MaxBytes {
+			return nil, errors.New("too_large")
+		}
+		n, err := io.Copy(fd, io.LimitReader(file, params.MaxBytes+1))
+		if err != nil {
+			// Bytes already on the lane have no reader coming for them.
+			if n > 0 {
+				h.desynced = true
+			}
+			return nil, err
+		}
 		if n > params.MaxBytes {
+			// The file grew between the stat and the copy.
+			h.desynced = true
 			return nil, errors.New("too_large")
 		}
 		return map[string]int64{"bytes": n}, nil
@@ -373,6 +426,13 @@ func serveWithHandler(h *handler, input io.Reader, output io.Writer) error {
 		}
 		if err := encoder.Encode(res); err != nil {
 			return err
+		}
+		if h.desynced {
+			// The response above is still accurate -- it describes the request the
+			// caller made. What is no longer trustworthy is the bulk lane, so end
+			// the session here. The client observes the close, drops this helper,
+			// and reconnects on a clean pair of pipes.
+			return nil
 		}
 	}
 }

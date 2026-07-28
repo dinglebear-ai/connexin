@@ -27,7 +27,26 @@ const transport = new StdioClientTransport({
   env,
   stderr: "pipe",
 });
-const client = new Client({ name: "quick-shell-smoke", version: "0.1.0" });
+/**
+ * open_quick_shell refuses to mint a session for a host that does not advertise
+ * MCP Apps support, because the session tokens travel in `_meta` and only an
+ * apps-aware host keeps that away from the model. This smoke client stands in
+ * for a compliant host, so it has to declare the capability the same way the
+ * unit tests' APP_HOST_CAPABILITIES does -- otherwise the refusal is the thing
+ * being smoke-tested, and every assertion past the open is skipped.
+ */
+const client = new Client(
+  { name: "quick-shell-smoke", version: "0.1.0" },
+  {
+    capabilities: {
+      extensions: {
+        "io.modelcontextprotocol/ui": {
+          mimeTypes: ["text/html;profile=mcp-app"],
+        },
+      },
+    } as never,
+  },
+);
 let stderr = "";
 transport.stderr?.on("data", (chunk) => {
   stderr += String(chunk);
