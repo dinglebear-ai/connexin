@@ -58,16 +58,25 @@ export function buildShell(): ShellElements {
   const tabs = document.createElement("div");
   tabs.className = "shell__tabs";
   tabs.setAttribute("role", "tablist");
+  tabs.setAttribute("aria-label", "Session view");
+  // Roving tabindex: only the selected tab is in the tab order, and Left/Right
+  // move between tabs (wired in mcp-app.ts). Required for role="tablist".
   const terminalTab = document.createElement("button");
   terminalTab.type = "button";
+  terminalTab.id = "quick-shell-tab-terminal";
   terminalTab.textContent = "Terminal";
   terminalTab.setAttribute("role", "tab");
   terminalTab.setAttribute("aria-selected", "true");
+  terminalTab.setAttribute("aria-controls", "quick-shell-panel-terminal");
+  terminalTab.tabIndex = 0;
   const filesTab = document.createElement("button");
   filesTab.type = "button";
+  filesTab.id = "quick-shell-tab-files";
   filesTab.textContent = "Files";
   filesTab.setAttribute("role", "tab");
   filesTab.setAttribute("aria-selected", "false");
+  filesTab.setAttribute("aria-controls", "quick-shell-panel-files");
+  filesTab.tabIndex = -1;
   tabs.append(terminalTab, filesTab);
 
   const sessionSummary = document.createElement("div");
@@ -92,8 +101,9 @@ export function buildShell(): ShellElements {
 
   const terminalMount = document.createElement("div");
   terminalMount.className = "terminal";
-  terminalMount.setAttribute("role", "region");
-  terminalMount.setAttribute("aria-label", "Terminal output");
+  terminalMount.id = "quick-shell-panel-terminal";
+  terminalMount.setAttribute("role", "tabpanel");
+  terminalMount.setAttribute("aria-labelledby", "quick-shell-tab-terminal");
   const transcript = document.createElement("pre");
   transcript.className = "terminal-transcript sr-only";
   transcript.setAttribute("aria-label", "Terminal transcript");
@@ -101,9 +111,10 @@ export function buildShell(): ShellElements {
 
   const filesMount = document.createElement("div");
   filesMount.className = "files";
+  filesMount.id = "quick-shell-panel-files";
   filesMount.hidden = true;
   filesMount.setAttribute("role", "tabpanel");
-  filesMount.setAttribute("aria-label", "Remote files");
+  filesMount.setAttribute("aria-labelledby", "quick-shell-tab-files");
 
   const actions = document.createElement("div");
   actions.className = "actions";

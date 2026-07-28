@@ -331,15 +331,24 @@ export class FileSession {
       const sink = new PassThrough();
       const chunks: Buffer[] = [];
       let actual = 0;
+      // Owned controller so over-delivery actually stops the transfer. The
+      // previous `combined.throwIfAborted()` here was a no-op -- it only throws
+      // when the signal is already aborted -- so a helper streaming more bytes
+      // than the lease allows was buffered in full.
+      const overflow = new AbortController();
+      const guarded = AbortSignal.any([combined, overflow.signal]);
       sink.on("data", (chunk: Buffer) => {
         actual += chunk.length;
-        if (actual > lease.bytes) combined.throwIfAborted();
+        if (actual > lease.bytes) {
+          overflow.abort();
+          return;
+        }
         chunks.push(Buffer.from(chunk));
       });
       const result = await helper.download(
         sink,
         { path: lease.path, maxBytes: lease.bytes },
-        combined,
+        guarded,
       );
       if (result.bytes !== lease.bytes || actual !== lease.bytes)
         throw new Error("transfer_size_mismatch");
@@ -530,16 +539,25 @@ export class FileSession {
     }
     let helper: SftpHelper | undefined;
     let combined: AbortSignal | undefined;
+    let clean = false;
     try {
       helper = await this.getHelper();
       const timeout = AbortSignal.timeout(
         this.config.fileTransferMaxDurationMs,
       );
       combined = AbortSignal.any([signal, timeout]);
-      return await operation(helper, combined);
+      const value = await operation(helper, combined);
+      clean = true;
+      return value;
     } finally {
       release();
-      if (helper && combined?.aborted) {
+      // Recycle the helper after ANY unclean transfer, not just an abort.
+      // Bulk payloads ride dedicated fds that are never resynchronized, so a
+      // rejected upload (already_exists, permission_denied, ...) can leave
+      // bytes sitting in the kernel pipe buffer. The next transfer would read
+      // them as its own head, pass every length check, and silently write the
+      // wrong content.
+      if (helper && !clean) {
         this.poison(helper);
         await helper.drain(this.config.fileShutdownTimeoutMs);
       }

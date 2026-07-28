@@ -19,6 +19,9 @@ import (
 const protocolVersion = 1
 const maxControlLine = 256 * 1024
 
+// Bounded so a writer that stopped early cannot hang the helper.
+const drainTimeout = 5 * time.Second
+
 type request struct {
 	Version int             `json:"version"`
 	ID      uint64          `json:"id"`
@@ -44,6 +47,25 @@ type fileEntry struct {
 type handler struct {
 	client *sftp.Client
 	root   string
+	// Bulk payload pipes. Nil means the fds inherited from the parent (3 for
+	// upload, 4 for download); tests substitute their own so the transfer paths
+	// are reachable without inheriting real descriptors.
+	uploadPipe   *os.File
+	downloadPipe *os.File
+}
+
+func (h *handler) upload() *os.File {
+	if h.uploadPipe != nil {
+		return h.uploadPipe
+	}
+	return os.NewFile(3, "upload")
+}
+
+func (h *handler) download() *os.File {
+	if h.downloadPipe != nil {
+		return h.downloadPipe
+	}
+	return os.NewFile(4, "download")
 }
 
 func decodeRequest(line []byte) (request, error) {
@@ -152,7 +174,10 @@ func (h *handler) handle(ctx context.Context, req request) (any, error) {
 		if err != nil {
 			return nil, errors.New("invalid_request")
 		}
-		return map[string]bool{"ok": true}, h.client.Mkdir(params.Path)
+		if err := h.client.Mkdir(params.Path); err != nil {
+			return nil, err
+		}
+		return map[string]bool{"ok": true}, nil
 	case "rename":
 		params, err := decodeParams[struct {
 			From      string `json:"from"`
@@ -167,7 +192,10 @@ func (h *handler) handle(ctx context.Context, req request) (any, error) {
 		} else {
 			err = h.client.Rename(params.From, params.To)
 		}
-		return map[string]bool{"ok": true}, err
+		if err != nil {
+			return nil, err
+		}
+		return map[string]bool{"ok": true}, nil
 	case "remove":
 		params, err := decodeParams[struct {
 			Path      string `json:"path"`
@@ -181,7 +209,10 @@ func (h *handler) handle(ctx context.Context, req request) (any, error) {
 		} else {
 			err = h.client.Remove(params.Path)
 		}
-		return map[string]bool{"ok": true}, err
+		if err != nil {
+			return nil, err
+		}
+		return map[string]bool{"ok": true}, nil
 	case "upload":
 		params, err := decodeParams[struct {
 			Path      string `json:"path"`
@@ -191,10 +222,27 @@ func (h *handler) handle(ctx context.Context, req request) (any, error) {
 		if err != nil || params.Bytes < 0 {
 			return nil, errors.New("invalid_request")
 		}
-		fd := os.NewFile(3, "upload")
+		fd := h.upload()
 		if fd == nil {
 			return nil, errors.New("transfer_unavailable")
 		}
+		// Every early return below leaves the declared payload sitting in the
+		// shared upload pipe. The TypeScript side now recycles the helper after
+		// any unclean transfer, so those bytes cannot reach the next one, but
+		// drain anyway as defense in depth. The deadline matters: the writer
+		// may have stopped early, so an unbounded drain would hang the helper.
+		consumed := int64(0)
+		defer func() {
+			remaining := params.Bytes - consumed
+			if remaining <= 0 {
+				return
+			}
+			if err := fd.SetReadDeadline(time.Now().Add(drainTimeout)); err != nil {
+				return
+			}
+			_, _ = io.CopyN(io.Discard, fd, remaining)
+			_ = fd.SetReadDeadline(time.Time{})
+		}()
 		if info, statErr := h.client.Lstat(params.Path); statErr == nil {
 			if !params.Overwrite || info.Mode()&os.ModeSymlink != 0 || info.IsDir() {
 				return nil, errors.New("already_exists")
@@ -221,6 +269,7 @@ func (h *handler) handle(ctx context.Context, req request) (any, error) {
 			return nil, err
 		}
 		n, err := io.CopyN(file, fd, params.Bytes)
+		consumed = n
 		if err != nil {
 			_ = file.Close()
 			return nil, err
@@ -246,7 +295,7 @@ func (h *handler) handle(ctx context.Context, req request) (any, error) {
 		if err != nil || params.MaxBytes < 0 {
 			return nil, errors.New("invalid_request")
 		}
-		fd := os.NewFile(4, "download")
+		fd := h.download()
 		if fd == nil {
 			return nil, errors.New("transfer_unavailable")
 		}
@@ -263,8 +312,6 @@ func (h *handler) handle(ctx context.Context, req request) (any, error) {
 			return nil, errors.New("too_large")
 		}
 		return map[string]int64{"bytes": n}, nil
-	case "close":
-		return map[string]bool{"ok": true}, io.EOF
 	default:
 		return nil, errors.New("unsupported_action")
 	}
@@ -275,23 +322,38 @@ func serve(client *sftp.Client, input io.Reader, output io.Writer) error {
 	if err != nil {
 		return err
 	}
-	h := &handler{client: client, root: root}
-	scanner := bufio.NewScanner(input)
-	scanner.Buffer(make([]byte, 4096), maxControlLine)
+	return serveWithHandler(&handler{client: client, root: root}, input, output)
+}
+
+// serveWithHandler is the request loop, split out so tests can drive it with a
+// handler bound to an in-process sftp server.
+func serveWithHandler(h *handler, input io.Reader, output io.Writer) error {
+	reader := bufio.NewReaderSize(input, 4096)
 	encoder := json.NewEncoder(output)
-	for scanner.Scan() {
-		req, err := decodeRequest(scanner.Bytes())
+	for {
+		line, err := readControlLine(reader)
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
 		if err != nil {
+			if !errors.Is(err, errLineTooLong) {
+				return err
+			}
+			// An overlong frame is rejected on its own; the rest of the line was
+			// discarded, so the session continues with the next one. Using a
+			// bufio.Scanner here meant one bad frame killed the helper outright,
+			// because a Scanner cannot resume after ErrTooLong.
+			_ = encoder.Encode(response{Version: protocolVersion, Code: "invalid_request"})
+			continue
+		}
+		req, decodeErr := decodeRequest(line)
+		if decodeErr != nil {
 			_ = encoder.Encode(response{Version: protocolVersion, Code: "invalid_request"})
 			continue
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		data, callErr := h.handle(ctx, req)
 		cancel()
-		if errors.Is(callErr, io.EOF) {
-			_ = encoder.Encode(response{Version: protocolVersion, ID: req.ID, Data: data})
-			return nil
-		}
 		res := response{Version: protocolVersion, ID: req.ID, Data: data}
 		if callErr != nil {
 			res.Data = nil
@@ -313,7 +375,35 @@ func serve(client *sftp.Client, input io.Reader, output io.Writer) error {
 			return err
 		}
 	}
-	return scanner.Err()
+}
+
+var errLineTooLong = errors.New("control line too long")
+
+// readControlLine returns one newline-delimited frame, capped at
+// maxControlLine. On an overlong frame it discards the remainder of the line so
+// the caller can reject just that frame and keep serving.
+func readControlLine(reader *bufio.Reader) ([]byte, error) {
+	var line []byte
+	for {
+		chunk, isPrefix, err := reader.ReadLine()
+		if err != nil {
+			return nil, err
+		}
+		if len(line)+len(chunk) > maxControlLine {
+			// Drain the rest of this line before handing control back.
+			for isPrefix {
+				_, isPrefix, err = reader.ReadLine()
+				if err != nil {
+					return nil, err
+				}
+			}
+			return nil, errLineTooLong
+		}
+		line = append(line, chunk...)
+		if !isPrefix {
+			return line, nil
+		}
+	}
 }
 
 func usageError(message string) error { return fmt.Errorf("quick-shell-sftp: %s", message) }

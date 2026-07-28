@@ -52,7 +52,19 @@ describe("quick-shell fake PTY E2E", () => {
     });
     const [clientTransport, serverTransport] =
       InMemoryTransport.createLinkedPair();
-    const client = new Client({ name: "e2e-client", version: "0.1.0" });
+    const client = new Client(
+      { name: "e2e-client", version: "0.1.0" },
+      {
+        capabilities: {
+          // open_quick_shell refuses hosts that do not advertise MCP Apps.
+          extensions: {
+            "io.modelcontextprotocol/ui": {
+              mimeTypes: ["text/html;profile=mcp-app"],
+            },
+          },
+        } as never,
+      },
+    );
 
     try {
       await Promise.all([

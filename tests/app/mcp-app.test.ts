@@ -421,12 +421,14 @@ describe("quick-shell MCP app", () => {
         .querySelector(".command-strip input")
         ?.getAttribute("aria-label"),
     ).toBe("Suggested command");
+    // The terminal is the panel the Terminal tab controls, so it must be a
+    // tabpanel named by that tab -- a bare region breaks the tablist pairing.
     expect(document.querySelector(".terminal")?.getAttribute("role")).toBe(
-      "region",
+      "tabpanel",
     );
     expect(
-      document.querySelector(".terminal")?.getAttribute("aria-label"),
-    ).toBe("Terminal output");
+      document.querySelector(".terminal")?.getAttribute("aria-labelledby"),
+    ).toBe("quick-shell-tab-terminal");
     expect(
       document
         .querySelector(".terminal-transcript")
@@ -440,6 +442,48 @@ describe("quick-shell MCP app", () => {
         .querySelector(".send-dialog textarea")
         ?.getAttribute("aria-label"),
     ).toBe("Output to send");
+  });
+
+  it("wires the tablist to its panels with a roving tabindex", async () => {
+    await loadApp();
+
+    const tabs = [...document.querySelectorAll('[role="tab"]')];
+    expect(tabs).toHaveLength(2);
+    expect(
+      document.querySelector('[role="tablist"]')?.getAttribute("aria-label"),
+    ).toBe("Session view");
+
+    for (const tab of tabs) {
+      const panel = document.getElementById(tab.getAttribute("aria-controls")!);
+      expect(panel).not.toBeNull();
+      expect(panel?.getAttribute("role")).toBe("tabpanel");
+      expect(panel?.getAttribute("aria-labelledby")).toBe(tab.id);
+    }
+
+    // Exactly one tab is reachable via Tab; arrows move between them.
+    const reachable = tabs.filter((tab) => (tab as HTMLElement).tabIndex === 0);
+    expect(reachable).toHaveLength(1);
+    expect(reachable[0]?.getAttribute("aria-selected")).toBe("true");
+  });
+
+  it("moves between tabs with arrow keys", async () => {
+    await loadApp();
+
+    const terminalTab = document.getElementById("quick-shell-tab-terminal")!;
+    const filesTab = document.getElementById("quick-shell-tab-files")!;
+
+    terminalTab.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true }),
+    );
+    expect(document.activeElement).toBe(filesTab);
+
+    filesTab.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true }),
+    );
+    expect(document.activeElement).toBe(terminalTab);
+    expect(terminalTab.getAttribute("aria-selected")).toBe("true");
+    expect((terminalTab as HTMLElement).tabIndex).toBe(0);
+    expect((filesTab as HTMLElement).tabIndex).toBe(-1);
   });
 
   it("renders compact inspector-aligned application chrome", async () => {
@@ -1832,6 +1876,97 @@ describe("quick-shell MCP app", () => {
     expect(app.sendMessageCalls[0]).toEqual({
       role: "user",
       content: [{ type: "text", text: "clean" }],
+    });
+  });
+  describe("socket readiness after disconnect", () => {
+    // Regression: `binding.ready` was set true on connect and never reset, so
+    // every one of these paths acted on a socket that was already closed and
+    // silently dropped what it sent.
+    async function connectedApp(): Promise<MockApp> {
+      const app = await loadApp();
+      app.callServerToolImpl = async (call) => {
+        if (call.name === "get_quick_shell_session")
+          return detailsResult("s1", "fileserver");
+        return { structuredContent: { closed: true } };
+      };
+      app.ontoolresult?.(openedResult("s1", "fileserver"));
+      await waitForCondition(() => harness.sockets.length === 1);
+      openSocketWithReady(harness.sockets[0]);
+      return app;
+    }
+
+    it("buffers input typed while the socket is closed instead of dropping it", async () => {
+      const app = await connectedApp();
+      const socket = harness.sockets[0]!;
+      const sentBeforeClose = socket.sent.length;
+
+      socket.close();
+      harness.terminals[0]?.emitData("whoami\r");
+
+      // Nothing may reach the dead socket...
+      expect(socket.sent).toHaveLength(sentBeforeClose);
+      // ...and the input must be queued for the reconnect, which the status
+      // line reports.
+      expect(statusText()).toContain("Waiting for connection");
+
+      // Reconnect and confirm the buffered keystrokes are flushed.
+      await waitForCondition(() => harness.sockets.length === 2);
+      openSocketWithReady(harness.sockets[1]);
+      await waitForCondition(() =>
+        harness.sockets[1]!.sent.some(
+          (message) => JSON.parse(message).type === "input",
+        ),
+      );
+      expect(
+        harness.sockets[1]!.sent.map((message) => JSON.parse(message)),
+      ).toContainEqual({ type: "input", data: "whoami\r" });
+      expect(app).toBeDefined();
+    });
+
+    it("still closes the remote session when Close is hit on a dead socket", async () => {
+      const app = await connectedApp();
+      harness.sockets[0]!.close();
+
+      const closeButton = [
+        ...document.querySelectorAll<HTMLButtonElement>(".actions button"),
+      ].find((button) => button.textContent === "Close")!;
+      closeButton.click();
+
+      // The bridge send cannot land, so cleanup must fall through to the MCP
+      // tool. Otherwise the PTY keeps running while the UI claims it closed.
+      await waitForCondition(() =>
+        app.serverToolCalls.some(
+          (call) => call.name === "close_quick_shell_session",
+        ),
+      );
+    });
+
+    it("records output_confirmed via the tool when the socket send fails", async () => {
+      const app = await connectedApp();
+      harness.sockets[0]!.message({ type: "output", data: "some output" });
+      flushAnimationFrame();
+
+      const sendButton = [
+        ...document.querySelectorAll<HTMLButtonElement>(".actions button"),
+      ].find((button) => button.textContent === "Send output")!;
+      sendButton.click();
+
+      harness.sockets[0]!.close();
+
+      const confirm = [
+        ...document.querySelectorAll<HTMLButtonElement>(
+          ".send-dialog__actions button",
+        ),
+      ].find((button) => button.textContent === "Confirm")!;
+      confirm.click();
+
+      // The human confirmation must be recorded somewhere; losing it means the
+      // model got terminal output with no consent record in the audit log.
+      await waitForCondition(() =>
+        app.serverToolCalls.some(
+          (call) => call.name === "record_quick_shell_output_confirmed",
+        ),
+      );
     });
   });
 });

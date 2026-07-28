@@ -1,48 +1,57 @@
+@import "./aurora-tokens.css";
+
+/* Token resolution order, outermost first:
+ *   1. `--color-*` / `--font-*` — supplied by the MCP App host (Claude) so the
+ *      embedded iframe tracks the host's own light/dark theme. These MUST win.
+ *   2. `--aurora-*` — the Aurora design system subset in aurora-tokens.css.
+ *   3. Literals — only for surfaces Aurora has no token for (the terminal well).
+ *
+ * Never inline an Aurora hex here. Add it to aurora-tokens.css instead, or the
+ * app forks from the design system.
+ */
 :root {
   color-scheme: light dark;
-  --qs-page: var(--color-background-primary, #07131c);
-  --qs-panel: var(--color-background-secondary, #13293a);
-  --qs-panel-top: var(--color-background-tertiary, #173245);
-  --qs-control: #0c1a24;
+  --qs-page: var(--color-background-primary, var(--aurora-page-bg));
+  --qs-panel: var(--color-background-secondary, var(--aurora-panel-strong));
+  --qs-panel-top: var(
+    --color-background-tertiary,
+    var(--aurora-panel-strong-top)
+  );
+  --qs-control: var(--aurora-control-surface);
+  /* Terminal well sits deeper than the Aurora page surface on purpose, so the
+     scrollback reads as an inset rather than another panel. No Aurora token
+     matches; read back by terminal-theme.ts, so keep these plain colors. */
   --qs-terminal-bg: #030a0f;
   --qs-terminal-text: #e6f4fb;
-  --qs-text: var(--color-text-primary, #e6f4fb);
-  --qs-muted: var(--color-text-secondary, #a7bcc9);
-  --qs-border: var(--color-border-primary, #1d3d4e);
-  --qs-border-strong: #24536c;
-  --qs-accent: var(--color-text-info, #29b6f6);
-  --qs-accent-strong: #67cbfa;
-  --qs-success: #7dd3c7;
-  --qs-warn: var(--color-text-warning, #c6a36b);
-  --qs-error: var(--color-text-danger, #c78490);
-  --qs-hover: #17364b;
+  --qs-text: var(--color-text-primary, var(--aurora-text-primary));
+  --qs-muted: var(--color-text-secondary, var(--aurora-text-muted));
+  --qs-border: var(--color-border-primary, var(--aurora-border-default));
+  --qs-border-strong: var(--aurora-border-strong);
+  --qs-accent: var(--color-text-info, var(--aurora-accent-primary));
+  --qs-accent-strong: var(--aurora-accent-strong);
+  --qs-success: var(--aurora-success);
+  --qs-warn: var(--color-text-warning, var(--aurora-warn));
+  --qs-error: var(--color-text-danger, var(--aurora-error));
+  --qs-neutral: var(--aurora-neutral);
+  --qs-hover: var(--aurora-hover-bg);
+  /* Compact operator radius. Aurora's --aurora-radius-* (14/18/22px) is tuned
+     for the marketing and app shell, not a dense terminal panel. */
   --qs-radius: var(--border-radius-md, 6px);
   --qs-safe-area-top: 0px;
   --qs-safe-area-right: 0px;
   --qs-safe-area-bottom: 0px;
   --qs-safe-area-left: 0px;
-  font-family: var(--font-sans, Inter, "Segoe UI", system-ui, sans-serif);
+  --qs-mono: var(--font-mono, var(--aurora-font-mono));
+  font-family: var(--font-sans, var(--aurora-font-sans));
   background: transparent;
   color: var(--qs-text);
 }
 
 :root[data-theme="light"] {
-  --qs-page: var(--color-background-primary, #f0f6f8);
-  --qs-panel: var(--color-background-secondary, #edf4f7);
-  --qs-panel-top: var(--color-background-tertiary, #e4eff3);
-  --qs-control: #e8f2f5;
+  /* Light-mode surface values come from aurora-tokens.css; the terminal well
+     keeps its dark treatment so scrollback contrast survives a light host. */
   --qs-terminal-bg: #07131c;
   --qs-terminal-text: #e6f4fb;
-  --qs-text: var(--color-text-primary, #162126);
-  --qs-muted: var(--color-text-secondary, #4a6872);
-  --qs-border: var(--color-border-primary, #c5dae2);
-  --qs-border-strong: #9fbfcc;
-  --qs-accent: var(--color-text-info, #0288d1);
-  --qs-accent-strong: #0277bd;
-  --qs-success: #2d7d6e;
-  --qs-warn: #8a6914;
-  --qs-error: #9c3545;
-  --qs-hover: #dcedf2;
 }
 
 * {
@@ -63,13 +72,13 @@ textarea {
 }
 
 button {
-  min-height: 28px;
+  min-height: 30px;
   border: 1px solid color-mix(in srgb, var(--qs-border) 70%, transparent);
   border-radius: var(--qs-radius);
   background: color-mix(in srgb, var(--qs-control) 86%, transparent);
   color: var(--qs-muted);
-  padding: 0 10px;
-  font-size: 11px;
+  padding: 0 11px;
+  font-size: 11.5px;
   font-weight: 650;
   cursor: pointer;
   transition:
@@ -112,10 +121,15 @@ button:disabled {
     var(--qs-safe-area-bottom) var(--qs-safe-area-left);
 }
 
+/* Flex column rather than fixed grid rows: the shell hides different children
+   per tab (command strip and actions in Files mode, the files panel in
+   Terminal mode), so a fixed row template put the visible panel in whichever
+   track auto-placement happened to reach and stranded the flexible track
+   empty. Flex lets whichever panel is showing claim the leftover height. */
 .shell {
-  display: grid;
+  display: flex;
   min-height: 100vh;
-  grid-template-rows: auto auto auto auto minmax(280px, 1fr) auto auto;
+  flex-direction: column;
   overflow: hidden;
   border: 1px solid color-mix(in srgb, var(--qs-border) 55%, var(--qs-page));
   border-radius: 8px;
@@ -159,14 +173,7 @@ button:disabled {
 .shell__mark {
   flex: none;
   color: var(--qs-accent-strong);
-  font-family: var(
-    --font-mono,
-    "JetBrains Mono",
-    ui-monospace,
-    SFMono-Regular,
-    Menlo,
-    monospace
-  );
+  font-family: var(--qs-mono);
   font-size: 12px;
   font-weight: 800;
 }
@@ -194,7 +201,7 @@ button:disabled {
   margin: 0 0 0 auto;
   overflow: hidden;
   color: var(--qs-muted);
-  font-size: 10.5px;
+  font-size: 11px;
   font-weight: 650;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -231,7 +238,7 @@ button:disabled {
   border-bottom: 1px solid color-mix(in srgb, var(--qs-border) 35%, transparent);
   background: color-mix(in srgb, var(--qs-page) 18%, transparent);
   color: var(--qs-muted);
-  font-size: 10.5px;
+  font-size: 11px;
   line-height: 1.35;
 }
 
@@ -271,17 +278,11 @@ button:disabled {
 }
 
 .command-strip input {
-  min-height: 28px;
+  /* Matches the button min-height so the strip's two grid cells align. */
+  min-height: 30px;
   padding: 0 8px;
-  font-family: var(
-    --font-mono,
-    "JetBrains Mono",
-    ui-monospace,
-    SFMono-Regular,
-    Menlo,
-    monospace
-  );
-  font-size: 11px;
+  font-family: var(--qs-mono);
+  font-size: 11.5px;
 }
 
 .command-strip input::placeholder {
@@ -289,13 +290,34 @@ button:disabled {
 }
 
 .terminal {
+  /* Claims the leftover height in the flex column shell. */
   min-height: 280px;
+  flex: 1 1 auto;
   overflow: hidden;
   background: var(--qs-terminal-bg);
 }
 
+/* Pre-connect state. The mount is empty until the terminal runtime attaches a
+   child, so :empty clears this automatically — no lifecycle wiring needed. */
+.terminal:empty {
+  display: grid;
+  place-items: center;
+  padding: 24px;
+}
+
+.terminal:empty::before {
+  color: color-mix(in srgb, var(--qs-terminal-text) 42%, transparent);
+  content: "Not connected";
+  font-family: var(--qs-mono);
+  font-size: 11.5px;
+  letter-spacing: 0.04em;
+}
+
 .files {
+  /* Claims the leftover height in the flex column shell; `overflow: auto` also
+     makes this the scroll container the sticky column header anchors to. */
   min-height: 280px;
+  flex: 1 1 auto;
   overflow: auto;
   background: color-mix(in srgb, var(--qs-page) 48%, var(--qs-panel));
 }
@@ -321,20 +343,80 @@ button:disabled {
   display: grid;
 }
 
-.files__row {
+.files__row,
+.files__head {
   display: grid;
-  grid-template-columns: minmax(140px, 1fr) 90px 90px auto;
-  min-height: 38px;
+  /* The action column is a fixed width, not `auto`: every row is its own grid
+     container, so an intrinsic track would resolve differently per row (rows
+     with a Download button would be sized differently from rows without, and
+     the header from both) and the columns would not line up. Actions are
+     right-aligned inside the track, so short rows still agree at the edge. */
+  grid-template-columns: minmax(140px, 1fr) 80px 110px 190px;
   align-items: center;
   gap: 8px;
   padding: 4px 10px;
-  border-top: 1px solid color-mix(in srgb, var(--qs-border) 45%, transparent);
   color: var(--qs-muted);
   font-size: 11px;
 }
 
+.files__row {
+  min-height: 38px;
+  border-top: 1px solid color-mix(in srgb, var(--qs-border) 45%, transparent);
+}
+
+.files__row:hover {
+  background: color-mix(in srgb, var(--qs-hover) 45%, transparent);
+}
+
+/* Column header — sort controls, not a data row. Intentionally does NOT carry
+   .files__row so that selector only ever matches entries. */
+.files__head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  min-height: 30px;
+  border-bottom: 1px solid color-mix(in srgb, var(--qs-border) 60%, transparent);
+  background: color-mix(in srgb, var(--qs-page) 55%, var(--qs-panel));
+}
+
+.files__sort {
+  min-height: 24px;
+  justify-self: stretch;
+  padding: 0 4px;
+  border: 0;
+  background: transparent;
+  color: var(--qs-muted);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-align: left;
+  text-transform: uppercase;
+}
+
+.files__sort:hover {
+  background: transparent;
+  color: var(--qs-text);
+}
+
+.files__sort[data-active]::after {
+  margin-left: 4px;
+  content: "▲";
+  font-size: 8px;
+}
+
+.files__sort[data-active="desc"]::after {
+  content: "▼";
+}
+
+.files__sort[data-active] {
+  color: var(--qs-accent-strong);
+}
+
 .files__name {
+  display: flex;
   min-width: 0;
+  align-items: center;
+  gap: 7px;
   overflow: hidden;
   border: 0;
   background: transparent;
@@ -347,6 +429,34 @@ button:disabled {
 .files__name:disabled {
   opacity: 1;
 }
+
+.files__icon {
+  width: 14px;
+  height: 14px;
+  flex: none;
+  fill: none;
+  stroke: var(--qs-muted);
+  stroke-width: 1.3;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.files__row[data-kind="directory"] .files__icon {
+  stroke: var(--qs-accent);
+}
+
+.files__row[data-kind="directory"] .files__name:hover {
+  color: var(--qs-accent-strong);
+}
+
+.files__size,
+.files__modified {
+  overflow: hidden;
+  font-variant-numeric: tabular-nums;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .files__row-actions {
   display: flex;
   gap: 4px;
@@ -358,11 +468,38 @@ button:disabled {
   color: var(--qs-muted);
 }
 
+/* Loading skeleton — the mount carries data-state from FileExplorerController.
+   Placeholder bars stand in for rows so the panel keeps its height. */
+.files[data-state="loading"] .files__list {
+  position: relative;
+  min-height: 152px;
+}
+
+.files[data-state="loading"] .files__list::before {
+  position: absolute;
+  inset: 0;
+  background-image: repeating-linear-gradient(
+    to bottom,
+    color-mix(in srgb, var(--qs-muted) 13%, transparent) 0 12px,
+    transparent 12px 38px
+  );
+  background-repeat: no-repeat;
+  content: "";
+  animation: files-skeleton 1.1s ease-in-out infinite;
+}
+
+@keyframes files-skeleton {
+  50% {
+    opacity: 0.4;
+  }
+}
+
 @media (max-width: 560px) {
   .files__row {
     grid-template-columns: minmax(0, 1fr) auto;
   }
-  .files__row > span:not(.files__row-actions) {
+  .files__row > span:not(.files__row-actions),
+  .files__sort:not([data-key="name"]) {
     display: none;
   }
 }
@@ -419,14 +556,7 @@ button:disabled {
   min-height: 180px;
   resize: vertical;
   padding: 9px;
-  font-family: var(
-    --font-mono,
-    "JetBrains Mono",
-    ui-monospace,
-    SFMono-Regular,
-    Menlo,
-    monospace
-  );
+  font-family: var(--qs-mono);
   font-size: 11px;
   line-height: 1.5;
 }
@@ -434,7 +564,7 @@ button:disabled {
 .send-dialog__meta {
   margin: 7px 0;
   color: var(--qs-muted);
-  font-size: 10.5px;
+  font-size: 11px;
   font-variant-numeric: tabular-nums;
 }
 
@@ -450,8 +580,106 @@ button:disabled {
   border-color: var(--qs-error);
 }
 
-:root[data-display-mode="fullscreen"] .shell {
-  grid-template-rows: auto auto auto minmax(420px, 1fr) auto auto;
+/* Prompt/confirm modals — narrower than the send-output dialog, which needs
+   room for a transcript. Panel chrome is inherited from .send-dialog. */
+.modal {
+  width: min(420px, calc(100vw - 24px));
+}
+
+.modal__field {
+  display: grid;
+  gap: 5px;
+  margin-bottom: 10px;
+}
+
+.modal__field > span {
+  color: var(--qs-muted);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.modal__field input {
+  width: 100%;
+  min-height: 30px;
+  padding: 0 8px;
+  border: 1px solid color-mix(in srgb, var(--qs-border) 65%, transparent);
+  border-radius: var(--qs-radius);
+  background: color-mix(in srgb, var(--qs-page) 38%, var(--qs-control));
+  color: var(--qs-text);
+  font-family: var(--qs-mono);
+  font-size: 11.5px;
+}
+
+.modal__message {
+  margin: 0 0 12px;
+  color: var(--qs-text);
+  font-size: 11.5px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.modal__hint {
+  margin: 0 0 10px;
+  color: var(--qs-muted);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+/* Read-only file viewer. Wider and taller than the prompt modals because it is
+   for reading; panel chrome is inherited from .send-dialog. */
+.file-viewer {
+  width: min(860px, calc(100vw - 24px));
+  max-height: min(80vh, 760px);
+}
+
+/* Scoped to [open]: an unqualified `display` here would beat the UA's
+   `dialog:not([open]) { display: none }`, since author styles always win that
+   cascade, and a closed viewer would stay on screen. */
+.file-viewer[open] {
+  display: flex;
+  flex-direction: column;
+}
+
+.file-viewer__title {
+  overflow: hidden;
+  font-family: var(--qs-mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-viewer__body {
+  flex: 1;
+  min-height: 120px;
+  margin: 0 0 10px;
+  padding: 10px;
+  overflow: auto;
+  border: 1px solid color-mix(in srgb, var(--qs-border) 65%, transparent);
+  border-radius: var(--qs-radius);
+  background: var(--qs-terminal-bg);
+  color: var(--qs-terminal-text);
+  font-family: var(--qs-mono);
+  font-size: 11.5px;
+  line-height: 1.55;
+  tab-size: 4;
+  /* Long lines scroll horizontally rather than reflowing — wrapping would
+     misrepresent the file's real shape (config files, logs, code). */
+  white-space: pre;
+}
+
+.file-viewer[data-state="loading"] .file-viewer__body,
+.file-viewer[data-state="notice"] .file-viewer__body {
+  color: var(--qs-muted);
+  font-family: var(--font-sans, var(--aurora-font-sans));
+  white-space: pre-wrap;
+}
+
+.file-viewer[data-state="notice"] .file-viewer__body {
+  color: var(--qs-warn);
+}
+
+:root[data-display-mode="fullscreen"] .terminal,
+:root[data-display-mode="fullscreen"] .files {
+  min-height: 420px;
 }
 
 :root[data-platform="mobile"] button,
@@ -493,5 +721,9 @@ button:disabled {
 @media (prefers-reduced-motion: reduce) {
   button {
     transition: none;
+  }
+
+  .files[data-state="loading"] .files__list::before {
+    animation: none;
   }
 }

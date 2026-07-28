@@ -1,4 +1,5 @@
 import {
+  getUiCapability,
   registerAppResource,
   registerAppTool,
   RESOURCE_MIME_TYPE,
@@ -59,6 +60,28 @@ function toolError(text: string) {
     isError: true as const,
     content: [{ type: "text" as const, text }],
   };
+}
+
+/**
+ * Whether the connected client advertises MCP Apps support for our resource
+ * type.
+ *
+ * "unknown" is a real third state, not a stand-in for "no". In stateless
+ * `--http` mode a fresh server is constructed per request, so any request other
+ * than `initialize` reaches a server that never saw the handshake and has no
+ * capabilities to inspect. Refusing there would break HTTP mode outright, and
+ * silently treating it as support would hide that the check did not run --
+ * hence the explicit state, which the caller audits.
+ */
+type AppHostSupport = "supported" | "unsupported" | "unknown";
+
+function hostRendersApps(server: McpServer): AppHostSupport {
+  const capabilities = server.server.getClientCapabilities();
+  if (!capabilities) return "unknown";
+  const capability = getUiCapability(capabilities);
+  return capability?.mimeTypes?.includes(RESOURCE_MIME_TYPE)
+    ? "supported"
+    : "unsupported";
 }
 
 function requireAppCapability(
@@ -210,6 +233,40 @@ export function createServer(options: CreateServerOptions): McpServer {
       }),
     },
     async (args) => {
+      // The whole consent model assumes the app renders and the host keeps
+      // _meta away from the model. `ui.visibility` is advisory metadata, and a
+      // host that does not implement MCP Apps does not implement visibility
+      // filtering either -- so on such a host the tokens below would land in
+      // the transcript and the model could drive the terminal and read
+      // scrollback without the user ever pressing Send output. Verify support
+      // before minting a session rather than trusting the host to hide it.
+      const appHostSupport = hostRendersApps(server);
+      if (config.requireAppHost && appHostSupport === "unsupported") {
+        manager.recordAuditEvent("session_open_refused", {
+          device: args.device,
+          error: "host_lacks_mcp_apps",
+        });
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text",
+              text: `This host does not advertise MCP Apps support, so the quick-shell terminal cannot be rendered and no session was opened. Run "quick-shell ${args.device}" locally instead. (If this host does render MCP Apps but does not advertise the capability, set QUICK_SHELL_REQUIRE_APP_HOST=0.)`,
+            },
+          ],
+        };
+      }
+      if (appHostSupport === "unknown") {
+        // Stateless HTTP: the capability check could not run for this request.
+        // Access control here is the bearer token that main.ts already requires
+        // on every /mcp request, but record that the check was skipped so an
+        // operator reviewing the log can see it rather than assuming it passed.
+        manager.recordAuditEvent("app_host_check_skipped", {
+          device: args.device,
+          error: "client_capabilities_unavailable",
+        });
+      }
+
       let session;
       try {
         session = await manager.createSession({

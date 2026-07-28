@@ -1,6 +1,7 @@
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { describe, expect, it, vi } from "vitest";
 import type { RuntimeConfig } from "../../src/server/config.js";
@@ -50,10 +51,29 @@ async function withBuiltAppHtml<T>(
   }
 }
 
-async function connectClient(server = createTestServer().server) {
+/**
+ * Capabilities an MCP Apps host advertises. open_quick_shell refuses to mint a
+ * session without this, so anything standing in for a compliant host has to
+ * declare it -- see the "refuses to open a session" test for the other side.
+ */
+const APP_HOST_CAPABILITIES = {
+  extensions: {
+    "io.modelcontextprotocol/ui": {
+      mimeTypes: ["text/html;profile=mcp-app"],
+    },
+  },
+} as const;
+
+async function connectClient(
+  server = createTestServer().server,
+  capabilities: Record<string, unknown> = APP_HOST_CAPABILITIES,
+) {
   const [clientTransport, serverTransport] =
     InMemoryTransport.createLinkedPair();
-  const client = new Client({ name: "test-client", version: "0.1.0" });
+  const client = new Client(
+    { name: "test-client", version: "0.1.0" },
+    { capabilities: capabilities as never },
+  );
   await Promise.all([
     server.connect(serverTransport),
     client.connect(clientTransport),
@@ -837,5 +857,44 @@ describe("createServer", () => {
         await writeFile(APP_HTML_PATH, originalHtml);
       }
     }
+  });
+  it("refuses to open a session for a host without MCP Apps support", async () => {
+    // The consent model depends on the host hiding _meta and honouring
+    // ui.visibility. A host that does not implement MCP Apps implements
+    // neither, so tokens in _meta would reach the model directly -- which
+    // would let it drive the terminal and read scrollback with no human in the
+    // loop. Nothing may be minted for such a client.
+    const { client } = await connectClient(createTestServer().server, {});
+
+    const result = (await client.callTool({
+      name: "open_quick_shell",
+      arguments: { device: "test-device" },
+    })) as CallToolResult;
+
+    expect(result.isError).toBe(true);
+    const serialized = JSON.stringify(result);
+    expect(serialized).not.toMatch(/appToken|wsToken|fileToken/);
+    expect(result._meta?.quickShell).toBeUndefined();
+    expect(result._meta?.quickShellSession).toBeUndefined();
+    // The refusal has to name a way forward, not just dead-end the caller.
+    expect(serialized).toContain("quick-shell test-device");
+  });
+
+  it("still opens a session when the app-host requirement is disabled", async () => {
+    // Escape hatch for a host that renders apps but does not advertise the
+    // extension; without it this gate could brick a working deployment.
+    const { client } = await connectClient(
+      createTestServer("http://127.0.0.1:34567", { requireAppHost: false })
+        .server,
+      {},
+    );
+
+    const result = (await client.callTool({
+      name: "open_quick_shell",
+      arguments: { device: "test-device" },
+    })) as CallToolResult;
+
+    expect(result.isError).toBeFalsy();
+    expect(result._meta?.quickShell).toBeDefined();
   });
 });
