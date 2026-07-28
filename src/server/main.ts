@@ -10,6 +10,7 @@ import {
   type RuntimeConfig,
 } from "./config.js";
 import { loadDeviceMetadata } from "./device-metadata.js";
+import { ensureSftpHelper } from "./ensure-sftp-helper.js";
 import { loadAllowedSshHosts } from "./ssh-config.js";
 import { createServer } from "./create-server.js";
 import { startBridgeServer, type BridgeServer } from "./bridge-server.js";
@@ -80,6 +81,10 @@ export async function prepareRuntime(
   options: PrepareRuntimeOptions = {},
 ): Promise<PreparedRuntime> {
   const config = loadRuntimeConfig(options.env ?? process.env);
+  const sftpHelper = ensureSftpHelper({
+    helperPath: config.sftpHelperPath,
+    env: options.env ?? process.env,
+  });
   const [allowedHosts, deviceMetadata] = await Promise.all([
     loadAllowedSshHosts(config.sshConfigPath),
     loadDeviceMetadata(config.quickShellConfigPath),
@@ -108,6 +113,10 @@ export async function prepareRuntime(
       allowedHostCount: allowedHosts.size,
       metadataDeviceCount: deviceMetadata.devices.size,
       maxSessions: config.maxSessions,
+      sftpHelper: sftpHelper.status,
+      ...("reason" in sftpHelper
+        ? { sftpHelperReason: sftpHelper.reason }
+        : {}),
     });
     audit.record("bridge_listening", {
       baseUrl: bridge.baseUrl,

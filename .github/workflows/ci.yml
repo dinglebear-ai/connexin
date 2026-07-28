@@ -52,6 +52,11 @@ jobs:
       - name: Lint
         run: npm run lint
 
+      # Catch launcher/packaging breakage in PR CI rather than at release time,
+      # when the npm publish job is the first thing to exercise it.
+      - name: Check npm launcher and package contents
+        run: npm run check:launcher
+
       - name: Format
         run: npm run format:check
 

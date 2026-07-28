@@ -1,0 +1,190 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to build and publish (e.g. v0.2.0)"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  # Cross-compiled Go SFTP helpers. The asset names here are the contract with
+  # scripts/sftp-helper-target.mjs — changing one without the other breaks
+  # installs at postinstall time, not at build time.
+  build-helper:
+    name: Build SFTP helper (${{ matrix.goos }}/${{ matrix.goarch }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - {
+              goos: linux,
+              goarch: amd64,
+              asset: quick-shell-sftp-linux-x86_64.tar.gz,
+              binary: quick-shell-sftp,
+            }
+          - {
+              goos: linux,
+              goarch: arm64,
+              asset: quick-shell-sftp-linux-arm64.tar.gz,
+              binary: quick-shell-sftp,
+            }
+          - {
+              goos: darwin,
+              goarch: amd64,
+              asset: quick-shell-sftp-darwin-x86_64.tar.gz,
+              binary: quick-shell-sftp,
+            }
+          - {
+              goos: darwin,
+              goarch: arm64,
+              asset: quick-shell-sftp-darwin-arm64.tar.gz,
+              binary: quick-shell-sftp,
+            }
+          - {
+              goos: windows,
+              goarch: amd64,
+              asset: quick-shell-sftp-windows-x86_64.tar.gz,
+              binary: quick-shell-sftp.exe,
+            }
+          - {
+              goos: windows,
+              goarch: arm64,
+              asset: quick-shell-sftp-windows-arm64.tar.gz,
+              binary: quick-shell-sftp.exe,
+            }
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+          persist-credentials: false
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.25.x"
+          cache: true
+
+      - name: Build
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+        run: |
+          mkdir -p out artifacts
+          go build -trimpath -ldflags "-s -w" -o "out/${{ matrix.binary }}" ./cmd/quick-shell-sftp
+          tar -czf "artifacts/${{ matrix.asset }}" -C out "${{ matrix.binary }}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: helper-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: artifacts/*.tar.gz
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub Release
+    needs: build-helper
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+          persist-credentials: false
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      # The installer fetches SHA256SUMS and verifies the tarball before it
+      # writes an executable to disk, so this file is load-bearing, not a nicety.
+      - name: Generate checksums
+        working-directory: artifacts
+        run: sha256sum *.tar.gz > SHA256SUMS
+
+      - name: Verify every advertised target was built
+        working-directory: artifacts
+        run: |
+          missing=0
+          for asset in \
+            quick-shell-sftp-linux-x86_64.tar.gz \
+            quick-shell-sftp-linux-arm64.tar.gz \
+            quick-shell-sftp-darwin-x86_64.tar.gz \
+            quick-shell-sftp-darwin-arm64.tar.gz \
+            quick-shell-sftp-windows-x86_64.tar.gz \
+            quick-shell-sftp-windows-arm64.tar.gz; do
+            if [ ! -f "$asset" ]; then
+              echo "::error::missing release asset $asset (advertised by scripts/sftp-helper-target.mjs)"
+              missing=1
+            fi
+          done
+          exit $missing
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          files: |
+            artifacts/*.tar.gz
+            artifacts/SHA256SUMS
+          fail_on_unmatched_files: true
+
+  npm:
+    name: Publish npm package
+    needs: release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # npm trusted publishing (OIDC) — do NOT add NODE_AUTH_TOKEN
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+          persist-credentials: false
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.25.x"
+          cache: true
+
+      # releaseVersion() in the installer defaults to the package version, so a
+      # drift between tag and package.json would make installs fetch a release
+      # that does not exist. Fail here instead.
+      - name: Assert package version matches the tag
+        run: |
+          tag="${{ github.event.inputs.tag || github.ref_name }}"
+          pkg="v$(node -p "require('./package.json').version")"
+          if [ "$tag" != "$pkg" ]; then
+            echo "::error::tag $tag does not match package.json version $pkg"
+            exit 1
+          fi
+
+      - run: npm ci
+      - run: npm run build
+      - run: npm run check:launcher
+
+      - name: Skip if this version is already published
+        id: published
+        run: |
+          name="$(node -p "require('./package.json').name")"
+          version="$(node -p "require('./package.json').version")"
+          if npm view "$name@$version" version >/dev/null 2>&1; then
+            echo "already=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "already=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish
+        if: steps.published.outputs.already == 'false'
+        run: npm publish --access public

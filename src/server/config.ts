@@ -229,13 +229,21 @@ function defaultQuickShellConfigPath(env: NodeJS.ProcessEnv): string {
   );
 }
 
-function defaultSftpHelperPath(env: NodeJS.ProcessEnv): string {
+export function defaultSftpHelperPath(
+  env: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform = process.platform,
+): string {
   if (env.QUICK_SHELL_SFTP_HELPER?.trim())
     return env.QUICK_SHELL_SFTP_HELPER.trim();
+  // Must match helperDestination() in scripts/sftp-helper-target.mjs: the
+  // installer writes quick-shell-sftp.exe on Windows, and looking for the
+  // extensionless name there would report the helper as permanently missing.
+  const binary =
+    platform === "win32" ? "quick-shell-sftp.exe" : "quick-shell-sftp";
   const moduleDir = dirname(fileURLToPath(import.meta.url));
   return moduleDir.includes(`${join("dist", "server", "server")}`)
-    ? resolve(moduleDir, "../../bin/quick-shell-sftp")
-    : resolve(moduleDir, "../../dist/bin/quick-shell-sftp");
+    ? resolve(moduleDir, "../../bin", binary)
+    : resolve(moduleDir, "../../dist/bin", binary);
 }
 
 export function httpPortFromEnv(env: NodeJS.ProcessEnv = process.env): number {
