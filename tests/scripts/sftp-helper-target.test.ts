@@ -63,7 +63,7 @@ describe("release coordinates", () => {
 
   it("points at the canonical repo rather than a rename redirect", () => {
     expect(releaseBaseUrl({})).toBe(
-      "https://github.com/dinglebear-ai/quick-shell/releases/download",
+      "https://github.com/dinglebear-ai/connexin/releases/download",
     );
   });
 

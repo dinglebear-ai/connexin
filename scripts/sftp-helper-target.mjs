@@ -9,7 +9,7 @@ import { createRequire } from "node:module";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const DEFAULT_REPO = "dinglebear-ai/quick-shell";
+const DEFAULT_REPO = "dinglebear-ai/connexin";
 
 /** platform/arch -> release asset name and extracted binary name. */
 const TARGETS = new Map([

@@ -1,14 +1,14 @@
 {
-  "name": "quick-shell",
+  "name": "connexin",
   "version": "0.1.0",
   "type": "module",
   "description": "Human-approved quick shell MCP App for SSH-backed unblock commands",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/dinglebear-ai/quick-shell.git"
+    "url": "git+https://github.com/dinglebear-ai/connexin.git"
   },
-  "homepage": "https://github.com/dinglebear-ai/quick-shell#readme",
-  "bugs": "https://github.com/dinglebear-ai/quick-shell/issues",
+  "homepage": "https://github.com/dinglebear-ai/connexin#readme",
+  "bugs": "https://github.com/dinglebear-ai/connexin/issues",
   "keywords": [
     "mcp",
     "mcp-app",
@@ -31,6 +31,7 @@
     "npm": ">=11.0.0"
   },
   "bin": {
+    "connexin": "dist/server/cli/main.js",
     "quick-shell": "dist/server/cli/main.js"
   },
   "scripts": {

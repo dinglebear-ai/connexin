@@ -1,4 +1,4 @@
-module github.com/dinglebear-ai/quick-shell
+module github.com/dinglebear-ai/connexin
 
 go 1.25
 
