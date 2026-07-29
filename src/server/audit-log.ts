@@ -65,8 +65,9 @@ export interface AuditRateLimiter {
  *
  * - `onSuppressionStarted` fires as soon as records begin being dropped, so an
  *   in-progress flood is visible without waiting for the window to close.
- * - `onSuppressionSummary` fires at window close with the total dropped, which
- *   is only knowable then and is the first thing asked after an incident.
+ * - `onSuppressionSummary` fires when the next event observes a completed
+ *   window, with that window's total dropped. This avoids a timer solely for
+ *   audit bookkeeping while preserving the count for the next audit activity.
  */
 export function createAuditRateLimiter(options: {
   maxEvents: number;
