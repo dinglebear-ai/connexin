@@ -8,7 +8,7 @@ import {
 } from "../../src/server/audit-log.js";
 import type { RuntimeConfig } from "../../src/server/config.js";
 import { startBridgeServer } from "../../src/server/bridge-server.js";
-import { QuickShellSessionManager } from "../../src/server/session-manager.js";
+import { ConnexinSessionManager } from "../../src/server/session-manager.js";
 import { FakePty } from "./helpers/fake-pty.js";
 import { testRuntimeConfig } from "./helpers/runtime-config.js";
 
@@ -18,7 +18,7 @@ async function fixture(overrides: Partial<RuntimeConfig> = {}) {
     maxWsPayloadBytes: 256,
     ...overrides,
   });
-  const manager = new QuickShellSessionManager({
+  const manager = new ConnexinSessionManager({
     config: runtimeConfig,
     allowedHosts: new Set(["test-device"]),
     ptyFactory: () => {
@@ -155,7 +155,7 @@ describe("startBridgeServer", () => {
       throw new Error("test server did not bind");
     const occupiedPort = address.port;
     const runtimeConfig = testRuntimeConfig({ bridgePort: occupiedPort });
-    const manager = new QuickShellSessionManager({
+    const manager = new ConnexinSessionManager({
       config: runtimeConfig,
       allowedHosts: new Set(["test-device"]),
       ptyFactory: () => new FakePty(),
@@ -187,7 +187,7 @@ describe("startBridgeServer", () => {
       throw new Error("test server did not bind");
     const occupiedPort = address.port;
     const runtimeConfig = testRuntimeConfig({ bridgePort: occupiedPort });
-    const manager = new QuickShellSessionManager({
+    const manager = new ConnexinSessionManager({
       config: runtimeConfig,
       allowedHosts: new Set(["test-device"]),
       ptyFactory: () => new FakePty(),
@@ -223,11 +223,11 @@ describe("startBridgeServer", () => {
 
   it("can advertise a public bridge URL while listening locally", async () => {
     const { bridge, manager } = await fixture({
-      bridgePublicUrl: "https://quick-shell.example",
+      bridgePublicUrl: "https://connexin.example",
     });
     try {
       expect(bridge.listenUrl).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
-      expect(bridge.baseUrl).toBe("https://quick-shell.example");
+      expect(bridge.baseUrl).toBe("https://connexin.example");
     } finally {
       manager.closeAll();
       await bridge.close();
@@ -309,7 +309,7 @@ describe("startBridgeServer", () => {
     const runtimeConfig = testRuntimeConfig({
       allowedOrigins: ["https://allowed.example"],
     });
-    const manager = new QuickShellSessionManager({
+    const manager = new ConnexinSessionManager({
       config: runtimeConfig,
       allowedHosts: new Set(["test-device"]),
       audit: createAuditLogger({ sink }),
@@ -354,7 +354,7 @@ describe("startBridgeServer", () => {
   it("bounds audit writes for malformed pre-authentication messages", async () => {
     const sink = createMemoryAuditSink();
     const runtimeConfig = testRuntimeConfig();
-    const manager = new QuickShellSessionManager({
+    const manager = new ConnexinSessionManager({
       config: runtimeConfig,
       allowedHosts: new Set(["test-device"]),
       audit: createAuditLogger({ sink }),
@@ -420,7 +420,7 @@ describe("startBridgeServer", () => {
   it("starts the SSH PTY lazily when the bridge socket connects", async () => {
     const ptys: FakePty[] = [];
     const runtimeConfig = testRuntimeConfig();
-    const manager = new QuickShellSessionManager({
+    const manager = new ConnexinSessionManager({
       config: runtimeConfig,
       allowedHosts: new Set(["test-device"]),
       ptyFactory: () => {
@@ -722,7 +722,7 @@ describe("startBridgeServer", () => {
   it("rejects upgrades once too many connections sit unauthenticated", async () => {
     const sink = createMemoryAuditSink();
     const runtimeConfig = testRuntimeConfig();
-    const manager = new QuickShellSessionManager({
+    const manager = new ConnexinSessionManager({
       config: runtimeConfig,
       allowedHosts: new Set(["test-device"]),
       audit: createAuditLogger({ sink }),
@@ -764,7 +764,7 @@ describe("startBridgeServer", () => {
     const sink = createMemoryAuditSink();
     const ptys: FakePty[] = [];
     const runtimeConfig = testRuntimeConfig({ maxWsPayloadBytes: 256 });
-    const manager = new QuickShellSessionManager({
+    const manager = new ConnexinSessionManager({
       config: runtimeConfig,
       allowedHosts: new Set(["test-device"]),
       audit: createAuditLogger({ sink }),
@@ -856,7 +856,7 @@ describe("startBridgeServer", () => {
   it("closes cleanly with a code-point-safe reason after a multibyte startup error", async () => {
     const runtimeConfig = testRuntimeConfig();
     const startupError = `failed ${"🙂".repeat(100)}`;
-    const manager = new QuickShellSessionManager({
+    const manager = new ConnexinSessionManager({
       config: runtimeConfig,
       allowedHosts: new Set(["test-device"]),
       ptyFactory: () => {
@@ -922,7 +922,7 @@ describe("startBridgeServer", () => {
       expect(secondDisposed).toBe(true);
       expect(bridge.httpServer.listening).toBe(false);
       expect(error).toHaveBeenCalledWith(
-        "quick-shell bridge disposable cleanup failed",
+        "connexin bridge disposable cleanup failed",
         expect.any(Error),
       );
     } finally {
@@ -966,7 +966,7 @@ describe("file transfer bridge", () => {
     const config = testRuntimeConfig({
       allowedOrigins: ["https://app.example"],
     });
-    const manager = new QuickShellSessionManager({
+    const manager = new ConnexinSessionManager({
       config,
       allowedHosts: new Set(["test-device"]),
       ptyFactory: () => new FakePty(),
@@ -993,7 +993,7 @@ describe("file transfer bridge", () => {
         headers: {
           Origin: "https://app.example",
           Authorization: `Bearer ${session.fileToken}`,
-          "X-Quick-Shell-File-Lease": lease,
+          "X-Connexin-File-Lease": lease,
         },
       });
       expect(response.status).toBe(200);
@@ -1017,7 +1017,7 @@ describe("file transfer bridge", () => {
         headers: {
           Origin: "https://app.example",
           Authorization: `Bearer ${session.fileToken}`,
-          "X-Quick-Shell-File-Lease": lease,
+          "X-Connexin-File-Lease": lease,
         },
       });
       expect(response.status).toBe(409);
@@ -1035,7 +1035,7 @@ describe("file transfer bridge", () => {
 
   it("allows an Origin on a local-only bridge and hardens rejection responses", async () => {
     const config = testRuntimeConfig({ allowedOrigins: [] });
-    const manager = new QuickShellSessionManager({
+    const manager = new ConnexinSessionManager({
       config,
       allowedHosts: new Set(["test-device"]),
       ptyFactory: () => new FakePty(),

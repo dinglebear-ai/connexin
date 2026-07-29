@@ -11,17 +11,13 @@ import {
 // reports the binary as missing, so pin them together.
 describe("helper path agreement between installer and server", () => {
   it("uses the extensionless name off Windows", () => {
-    expect(basename(defaultSftpHelperPath({}, "linux"))).toBe(
-      "quick-shell-sftp",
-    );
-    expect(basename(defaultSftpHelperPath({}, "darwin"))).toBe(
-      "quick-shell-sftp",
-    );
+    expect(basename(defaultSftpHelperPath({}, "linux"))).toBe("connexin-sftp");
+    expect(basename(defaultSftpHelperPath({}, "darwin"))).toBe("connexin-sftp");
   });
 
   it("uses the .exe name on Windows, matching what the installer writes", () => {
     expect(basename(defaultSftpHelperPath({}, "win32"))).toBe(
-      "quick-shell-sftp.exe",
+      "connexin-sftp.exe",
     );
   });
 
@@ -42,10 +38,7 @@ describe("helper path agreement between installer and server", () => {
 
   it("still honours an explicit override verbatim", () => {
     expect(
-      defaultSftpHelperPath(
-        { QUICK_SHELL_SFTP_HELPER: "/custom/sftp" },
-        "win32",
-      ),
+      defaultSftpHelperPath({ CONNEXIN_SFTP_HELPER: "/custom/sftp" }, "win32"),
     ).toBe("/custom/sftp");
   });
 });

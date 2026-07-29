@@ -56,7 +56,7 @@ export interface ReadableLike {
   resume?(): void;
 }
 
-export interface RunQuickShellCliOptions {
+export interface RunConnexinCliOptions {
   args: string[];
   config?: RuntimeConfig;
   allowedHosts?: ReadonlySet<string>;
@@ -68,8 +68,8 @@ export interface RunQuickShellCliOptions {
 }
 
 const USAGE = `Usage:
-  quick-shell --list
-  quick-shell <device> [--suggest <command>]
+  connexin --list
+  connexin <device> [--suggest <command>]
 
 With --suggest, press Ctrl-G to insert the command without submitting it.
 `;
@@ -156,7 +156,7 @@ function formatDevices(
   return `${lines.join("\n")}${lines.length > 0 ? "\n" : ""}`;
 }
 
-async function loadDefaults(options: RunQuickShellCliOptions): Promise<{
+async function loadDefaults(options: RunConnexinCliOptions): Promise<{
   config: RuntimeConfig;
   allowedHosts: ReadonlySet<string>;
   deviceMetadata: DeviceMetadataConfig;
@@ -168,13 +168,13 @@ async function loadDefaults(options: RunQuickShellCliOptions): Promise<{
       : loadAllowedSshHosts(config.sshConfigPath),
     options.deviceMetadata
       ? Promise.resolve(options.deviceMetadata)
-      : loadDeviceMetadata(config.quickShellConfigPath),
+      : loadDeviceMetadata(config.connexinConfigPath),
   ]);
   return { config, allowedHosts, deviceMetadata };
 }
 
-export async function runQuickShellCli(
-  options: RunQuickShellCliOptions,
+export async function runConnexinCli(
+  options: RunConnexinCliOptions,
 ): Promise<CliResult> {
   const stdout = options.stdout ?? process.stdout;
   const stderr = options.stderr ?? process.stderr;
@@ -270,7 +270,7 @@ export async function runQuickShellCli(
       pty.onExit((event) => {
         cleanup();
         if (event.exitCode === null) {
-          stderr.write("quick-shell SSH session ended without an exit code\n");
+          stderr.write("connexin SSH session ended without an exit code\n");
           resolve({ exitCode: 1 });
           return;
         }
@@ -284,7 +284,7 @@ export async function runQuickShellCli(
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
-  runQuickShellCli({ args: process.argv.slice(2) })
+  runConnexinCli({ args: process.argv.slice(2) })
     .then((result) => {
       process.exitCode = result.exitCode;
     })

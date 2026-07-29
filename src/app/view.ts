@@ -28,7 +28,7 @@ export interface ShellElements {
 export function buildShell(): ShellElements {
   const container = document.createElement("section");
   container.className = "shell";
-  container.setAttribute("aria-labelledby", "quick-shell-title");
+  container.setAttribute("aria-labelledby", "connexin-title");
 
   const header = document.createElement("header");
   header.className = "shell__header";
@@ -39,9 +39,9 @@ export function buildShell(): ShellElements {
   mark.setAttribute("aria-hidden", "true");
   mark.textContent = ">_";
   const title = document.createElement("h1");
-  title.id = "quick-shell-title";
+  title.id = "connexin-title";
   title.className = "shell__product";
-  title.textContent = "Quick Shell";
+  title.textContent = "Connexin";
   const descriptor = document.createElement("span");
   descriptor.className = "shell__descriptor";
   descriptor.textContent = "SSH terminal";
@@ -63,19 +63,19 @@ export function buildShell(): ShellElements {
   // move between tabs (wired in mcp-app.ts). Required for role="tablist".
   const terminalTab = document.createElement("button");
   terminalTab.type = "button";
-  terminalTab.id = "quick-shell-tab-terminal";
+  terminalTab.id = "connexin-tab-terminal";
   terminalTab.textContent = "Terminal";
   terminalTab.setAttribute("role", "tab");
   terminalTab.setAttribute("aria-selected", "true");
-  terminalTab.setAttribute("aria-controls", "quick-shell-panel-terminal");
+  terminalTab.setAttribute("aria-controls", "connexin-panel-terminal");
   terminalTab.tabIndex = 0;
   const filesTab = document.createElement("button");
   filesTab.type = "button";
-  filesTab.id = "quick-shell-tab-files";
+  filesTab.id = "connexin-tab-files";
   filesTab.textContent = "Files";
   filesTab.setAttribute("role", "tab");
   filesTab.setAttribute("aria-selected", "false");
-  filesTab.setAttribute("aria-controls", "quick-shell-panel-files");
+  filesTab.setAttribute("aria-controls", "connexin-panel-files");
   filesTab.tabIndex = -1;
   tabs.append(terminalTab, filesTab);
 
@@ -101,9 +101,9 @@ export function buildShell(): ShellElements {
 
   const terminalMount = document.createElement("div");
   terminalMount.className = "terminal";
-  terminalMount.id = "quick-shell-panel-terminal";
+  terminalMount.id = "connexin-panel-terminal";
   terminalMount.setAttribute("role", "tabpanel");
-  terminalMount.setAttribute("aria-labelledby", "quick-shell-tab-terminal");
+  terminalMount.setAttribute("aria-labelledby", "connexin-tab-terminal");
   const transcript = document.createElement("pre");
   transcript.className = "terminal-transcript sr-only";
   transcript.setAttribute("aria-label", "Terminal transcript");
@@ -111,10 +111,10 @@ export function buildShell(): ShellElements {
 
   const filesMount = document.createElement("div");
   filesMount.className = "files";
-  filesMount.id = "quick-shell-panel-files";
+  filesMount.id = "connexin-panel-files";
   filesMount.hidden = true;
   filesMount.setAttribute("role", "tabpanel");
-  filesMount.setAttribute("aria-labelledby", "quick-shell-tab-files");
+  filesMount.setAttribute("aria-labelledby", "connexin-tab-files");
 
   const actions = document.createElement("div");
   actions.className = "actions";
@@ -153,23 +153,23 @@ export function buildShell(): ShellElements {
 
   const dialog = document.createElement("dialog");
   dialog.className = "send-dialog";
-  dialog.setAttribute("aria-labelledby", "quick-shell-send-title");
+  dialog.setAttribute("aria-labelledby", "connexin-send-title");
   dialog.setAttribute(
     "aria-describedby",
-    "quick-shell-send-meta quick-shell-send-warnings",
+    "connexin-send-meta connexin-send-warnings",
   );
   const dialogTitle = document.createElement("h2");
-  dialogTitle.id = "quick-shell-send-title";
+  dialogTitle.id = "connexin-send-title";
   dialogTitle.textContent = "Send output";
   const textarea = document.createElement("textarea");
   textarea.rows = 12;
   textarea.spellcheck = false;
   textarea.setAttribute("aria-label", "Output to send");
   const meta = document.createElement("p");
-  meta.id = "quick-shell-send-meta";
+  meta.id = "connexin-send-meta";
   meta.className = "send-dialog__meta";
   const warnings = document.createElement("ul");
-  warnings.id = "quick-shell-send-warnings";
+  warnings.id = "connexin-send-warnings";
   warnings.className = "send-dialog__warnings";
   warnings.setAttribute("aria-live", "polite");
   const fallback = document.createElement("textarea");

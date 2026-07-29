@@ -142,7 +142,7 @@ function buildViewerDialog(file: ViewableFile): ViewerDialog {
   dialog.className = "send-dialog file-viewer";
   dialog.dataset.state = "loading";
 
-  const titleId = `quick-shell-viewer-title-${++viewerSeq}`;
+  const titleId = `connexin-viewer-title-${++viewerSeq}`;
   dialog.setAttribute("aria-labelledby", titleId);
 
   const heading = document.createElement("h2");

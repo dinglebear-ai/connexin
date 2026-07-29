@@ -1,3 +1,6 @@
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   httpPortFromEnv,
@@ -7,41 +10,100 @@ import {
 
 describe("loadRuntimeConfig", () => {
   it("loads numeric overrides", () => {
-    expect(
-      loadRuntimeConfig({ QUICK_SHELL_MAX_SESSIONS: "3" }).maxSessions,
-    ).toBe(3);
+    expect(loadRuntimeConfig({ CONNEXIN_MAX_SESSIONS: "3" }).maxSessions).toBe(
+      3,
+    );
   });
 
   it("loads HTTP bearer token", () => {
-    expect(
-      loadRuntimeConfig({ QUICK_SHELL_HTTP_TOKEN: "secret" }).httpToken,
-    ).toBe("secret");
+    expect(loadRuntimeConfig({ CONNEXIN_HTTP_TOKEN: "secret" }).httpToken).toBe(
+      "secret",
+    );
+  });
+
+  it("loads runtime tuning from connexin.toml and lets explicit environment overrides win", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "connexin-config-"));
+    const path = join(directory, "connexin.toml");
+    await writeFile(
+      path,
+      '[runtime]\nmax_sessions = 9\nbridge_host = "0.0.0.0" # proxy listener\nrequire_app_host = false\n',
+    );
+
+    try {
+      expect(loadRuntimeConfig({ CONNEXIN_CONFIG: path })).toMatchObject({
+        maxSessions: 9,
+        bridgeHost: "0.0.0.0",
+        requireAppHost: false,
+      });
+      expect(
+        loadRuntimeConfig({
+          CONNEXIN_CONFIG: path,
+          CONNEXIN_MAX_SESSIONS: "2",
+        }).maxSessions,
+      ).toBe(2);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects unknown runtime keys instead of silently ignoring a typo", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "connexin-config-"));
+    const path = join(directory, "connexin.toml");
+    await writeFile(path, "[runtime]\nmax_sesions = 3\n");
+
+    try {
+      expect(() => loadRuntimeConfig({ CONNEXIN_CONFIG: path })).toThrow(
+        "unknown runtime key max_sesions",
+      );
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects duplicate runtime keys even when an environment override exists", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "connexin-config-"));
+    const path = join(directory, "connexin.toml");
+    await writeFile(
+      path,
+      "[runtime]\nrequire_app_host = false\nrequire_app_host = true\n",
+    );
+
+    try {
+      expect(() =>
+        loadRuntimeConfig({
+          CONNEXIN_CONFIG: path,
+          CONNEXIN_REQUIRE_APP_HOST: "true",
+        }),
+      ).toThrow("duplicate runtime key require_app_host");
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
   });
 
   it("defaults file operations to server-enforced confinement", () => {
     expect(loadRuntimeConfig({}).fileRootConfinementEnforced).toBe(false);
     expect(
-      loadRuntimeConfig({ QUICK_SHELL_FILE_ROOT_CONFINEMENT_ENFORCED: "1" })
+      loadRuntimeConfig({ CONNEXIN_FILE_ROOT_CONFINEMENT_ENFORCED: "1" })
         .fileRootConfinementEnforced,
     ).toBe(true);
   });
 
   it("rejects invalid numeric overrides", () => {
-    expect(() => loadRuntimeConfig({ QUICK_SHELL_MAX_SESSIONS: "0" })).toThrow(
+    expect(() => loadRuntimeConfig({ CONNEXIN_MAX_SESSIONS: "0" })).toThrow(
       "positive integer",
     );
-    expect(() =>
-      loadRuntimeConfig({ QUICK_SHELL_MAX_SESSIONS: "nope" }),
-    ).toThrow("positive integer");
-    expect(() =>
-      loadRuntimeConfig({ QUICK_SHELL_MAX_SESSIONS: "1.5" }),
-    ).toThrow("positive integer");
+    expect(() => loadRuntimeConfig({ CONNEXIN_MAX_SESSIONS: "nope" })).toThrow(
+      "positive integer",
+    );
+    expect(() => loadRuntimeConfig({ CONNEXIN_MAX_SESSIONS: "1.5" })).toThrow(
+      "positive integer",
+    );
   });
 
   it("parses allowed origins", () => {
     expect(
       loadRuntimeConfig({
-        QUICK_SHELL_ALLOWED_ORIGINS:
+        CONNEXIN_ALLOWED_ORIGINS:
           " https://one.example/,https://two.example/path ,, ",
       }).allowedOrigins,
     ).toEqual(["https://one.example", "https://two.example"]);
@@ -50,13 +112,13 @@ describe("loadRuntimeConfig", () => {
   it("parses wildcard subdomain origin entries", () => {
     expect(
       loadRuntimeConfig({
-        QUICK_SHELL_ALLOWED_ORIGINS:
+        CONNEXIN_ALLOWED_ORIGINS:
           "https://*.claudemcpcontent.com,https://claude.ai",
       }).allowedOrigins,
     ).toEqual(["https://*.claudemcpcontent.com", "https://claude.ai"]);
     expect(
       loadRuntimeConfig({
-        QUICK_SHELL_ALLOWED_ORIGINS: "http://*.local.example:8080",
+        CONNEXIN_ALLOWED_ORIGINS: "http://*.local.example:8080",
       }).allowedOrigins,
     ).toEqual(["http://*.local.example:8080"]);
   });
@@ -69,7 +131,7 @@ describe("loadRuntimeConfig", () => {
       "https://*.",
     ]) {
       expect(() =>
-        loadRuntimeConfig({ QUICK_SHELL_ALLOWED_ORIGINS: entry }),
+        loadRuntimeConfig({ CONNEXIN_ALLOWED_ORIGINS: entry }),
       ).toThrow();
     }
   });
@@ -77,73 +139,73 @@ describe("loadRuntimeConfig", () => {
   it("loads bridge listen and public URL settings", () => {
     expect(
       loadRuntimeConfig({
-        QUICK_SHELL_BRIDGE_HOST: "0.0.0.0",
-        QUICK_SHELL_BRIDGE_PORT: "48765",
-        QUICK_SHELL_BRIDGE_PUBLIC_URL: "https://quick-shell.example/",
-        QUICK_SHELL_ALLOWED_ORIGINS: "https://chatgpt.com",
+        CONNEXIN_BRIDGE_HOST: "0.0.0.0",
+        CONNEXIN_BRIDGE_PORT: "48765",
+        CONNEXIN_BRIDGE_PUBLIC_URL: "https://connexin.example/",
+        CONNEXIN_ALLOWED_ORIGINS: "https://chatgpt.com",
       }),
     ).toMatchObject({
       bridgeHost: "0.0.0.0",
       bridgePort: 48765,
-      bridgePublicUrl: "https://quick-shell.example",
+      bridgePublicUrl: "https://connexin.example",
     });
   });
 
   it("rejects invalid bridge ports and public URL schemes", () => {
-    expect(() =>
-      loadRuntimeConfig({ QUICK_SHELL_BRIDGE_PORT: "70000" }),
-    ).toThrow("TCP port");
-    expect(() => httpPortFromEnv({ QUICK_SHELL_HTTP_PORT: "-1" })).toThrow(
+    expect(() => loadRuntimeConfig({ CONNEXIN_BRIDGE_PORT: "70000" })).toThrow(
+      "TCP port",
+    );
+    expect(() => httpPortFromEnv({ CONNEXIN_HTTP_PORT: "-1" })).toThrow(
       "TCP port",
     );
     expect(() =>
       loadRuntimeConfig({
-        QUICK_SHELL_BRIDGE_PUBLIC_URL: "ftp://quick-shell.example",
+        CONNEXIN_BRIDGE_PUBLIC_URL: "ftp://connexin.example",
       }),
     ).toThrow("http:// or https://");
     expect(() =>
-      loadRuntimeConfig({ QUICK_SHELL_ALLOWED_ORIGINS: "not a url" }),
+      loadRuntimeConfig({ CONNEXIN_ALLOWED_ORIGINS: "not a url" }),
     ).toThrow("valid URL origins");
   });
 
   it("requires TLS for non-loopback public bridge URLs", () => {
     expect(() =>
       loadRuntimeConfig({
-        QUICK_SHELL_BRIDGE_PUBLIC_URL: "http://quick-shell.example",
-        QUICK_SHELL_ALLOWED_ORIGINS: "https://chatgpt.com",
+        CONNEXIN_BRIDGE_PUBLIC_URL: "http://connexin.example",
+        CONNEXIN_ALLOWED_ORIGINS: "https://chatgpt.com",
       }),
     ).toThrow("must use https://");
     expect(
       loadRuntimeConfig({
-        QUICK_SHELL_BRIDGE_PUBLIC_URL: "http://127.0.0.1:40123",
-        QUICK_SHELL_ALLOWED_ORIGINS: "https://chatgpt.com",
+        CONNEXIN_BRIDGE_PUBLIC_URL: "http://127.0.0.1:40123",
+        CONNEXIN_ALLOWED_ORIGINS: "https://chatgpt.com",
       }).bridgePublicUrl,
     ).toBe("http://127.0.0.1:40123");
     expect(
       loadRuntimeConfig({
-        QUICK_SHELL_BRIDGE_PUBLIC_URL: "http://quick-shell.example",
-        QUICK_SHELL_ALLOWED_ORIGINS: "https://chatgpt.com",
-        QUICK_SHELL_ALLOW_INSECURE_PUBLIC_BRIDGE: "1",
+        CONNEXIN_BRIDGE_PUBLIC_URL: "http://connexin.example",
+        CONNEXIN_ALLOWED_ORIGINS: "https://chatgpt.com",
+        CONNEXIN_ALLOW_INSECURE_PUBLIC_BRIDGE: "1",
       }).bridgePublicUrl,
-    ).toBe("http://quick-shell.example");
+    ).toBe("http://connexin.example");
   });
 
   it("requires explicit allowed origins when a public bridge URL is configured", () => {
     expect(() =>
       loadRuntimeConfig({
-        QUICK_SHELL_BRIDGE_PUBLIC_URL: "https://quick-shell.example",
+        CONNEXIN_BRIDGE_PUBLIC_URL: "https://connexin.example",
       }),
-    ).toThrow("QUICK_SHELL_ALLOWED_ORIGINS");
+    ).toThrow("CONNEXIN_ALLOWED_ORIGINS");
   });
 
   it("rejects public bridge URL path prefixes", () => {
     expect(() =>
       loadRuntimeConfig({
-        QUICK_SHELL_BRIDGE_PUBLIC_URL: "https://quick-shell.example/prefix/",
-        QUICK_SHELL_ALLOWED_ORIGINS: "https://chatgpt.com",
+        CONNEXIN_BRIDGE_PUBLIC_URL: "https://connexin.example/prefix/",
+        CONNEXIN_ALLOWED_ORIGINS: "https://chatgpt.com",
       }),
     ).toThrow(
-      "QUICK_SHELL_BRIDGE_PUBLIC_URL must not include a path prefix because quick-shell v1 proxies /terminal at the origin root",
+      "CONNEXIN_BRIDGE_PUBLIC_URL must not include a path prefix because connexin v1 proxies /terminal at the origin root",
     );
   });
 });

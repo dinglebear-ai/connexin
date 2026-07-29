@@ -10,7 +10,7 @@ import { FakePty } from "./helpers/fake-pty.js";
 import WebSocket from "ws";
 
 async function sshConfigPath(): Promise<string> {
-  const dir = await mkdtemp(join(tmpdir(), "quick-shell-e2e-"));
+  const dir = await mkdtemp(join(tmpdir(), "connexin-e2e-"));
   const path = join(dir, "config");
   await writeFile(path, "Host test-device\n  HostName 127.0.0.1\n");
   return path;
@@ -39,11 +39,11 @@ async function waitForCondition(condition: () => boolean): Promise<void> {
   }
 }
 
-describe("quick-shell fake PTY E2E", () => {
+describe("connexin fake PTY E2E", () => {
   it("opens a session, authenticates app lookup, bridges terminal IO, and closes", async () => {
     const ptys: FakePty[] = [];
     const runtime = await prepareRuntime({
-      env: { QUICK_SHELL_SSH_CONFIG: await sshConfigPath() },
+      env: { CONNEXIN_SSH_CONFIG: await sshConfigPath() },
       ptyFactory: () => {
         const pty = new FakePty();
         ptys.push(pty);
@@ -56,7 +56,7 @@ describe("quick-shell fake PTY E2E", () => {
       { name: "e2e-client", version: "0.1.0" },
       {
         capabilities: {
-          // open_quick_shell refuses hosts that do not advertise MCP Apps.
+          // open_connexin refuses hosts that do not advertise MCP Apps.
           extensions: {
             "io.modelcontextprotocol/ui": {
               mimeTypes: ["text/html;profile=mcp-app"],
@@ -72,7 +72,7 @@ describe("quick-shell fake PTY E2E", () => {
         client.connect(clientTransport),
       ]);
       const opened = await client.callTool({
-        name: "open_quick_shell",
+        name: "open_connexin",
         arguments: { device: "test-device", suggested_command: "uptime" },
       });
 
@@ -81,20 +81,20 @@ describe("quick-shell fake PTY E2E", () => {
         /appToken|wsToken/,
       );
 
-      const quickShell = opened._meta?.quickShell as {
+      const connexin = opened._meta?.connexin as {
         sessionId: string;
         appToken: string;
       };
       expect(ptys).toHaveLength(0);
       const details = await client.callTool({
-        name: "get_quick_shell_session",
-        arguments: quickShell,
+        name: "get_connexin_session",
+        arguments: connexin,
       });
       expect(ptys).toHaveLength(1);
       expect(JSON.stringify(details.structuredContent)).not.toMatch(
         /wsUrl|wsToken|token=/,
       );
-      const { wsToken, wsUrl } = details._meta?.quickShellSession as {
+      const { wsToken, wsUrl } = details._meta?.connexinSession as {
         wsToken: string;
         wsUrl: string;
       };

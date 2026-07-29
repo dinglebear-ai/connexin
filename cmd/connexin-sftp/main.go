@@ -12,7 +12,7 @@ import (
 
 func main() {
 	if err := run(); err != nil {
-		fmt.Fprintln(os.Stderr, "quick-shell-sftp: unavailable")
+		fmt.Fprintln(os.Stderr, "connexin-sftp: unavailable")
 		os.Exit(1)
 	}
 }
@@ -22,7 +22,7 @@ func run() error {
 		return usageError("expected SSH config and device")
 	}
 	timeout := 15
-	if raw := os.Getenv("QUICK_SHELL_SFTP_CONNECT_TIMEOUT_SECONDS"); raw != "" {
+	if raw := os.Getenv("CONNEXIN_SFTP_CONNECT_TIMEOUT_SECONDS"); raw != "" {
 		if value, err := strconv.Atoi(raw); err == nil && value > 0 && value <= 120 {
 			timeout = value
 		}

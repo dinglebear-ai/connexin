@@ -76,8 +76,8 @@ describe("parseSshConfigHosts", () => {
 
   it("builds ssh arguments with the same config path used for validation", () => {
     expect(
-      buildSshCommandArgs("/tmp/quick-shell-ssh-config", "fileserver"),
-    ).toEqual(["-F", "/tmp/quick-shell-ssh-config", "fileserver"]);
+      buildSshCommandArgs("/tmp/connexin-ssh-config", "fileserver"),
+    ).toEqual(["-F", "/tmp/connexin-ssh-config", "fileserver"]);
   });
 
   it("rejects Match exec blocks because ssh evaluates them locally", () => {
@@ -130,7 +130,7 @@ describe("parseSshConfigHosts", () => {
   });
 
   it("loads aliases from Include globs", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "quick-shell-ssh-"));
+    const dir = await mkdtemp(join(tmpdir(), "connexin-ssh-"));
     await mkdir(join(dir, "config.d"));
     await writeFile(
       join(dir, "config"),
@@ -147,7 +147,7 @@ describe("parseSshConfigHosts", () => {
   });
 
   it("loads aliases from Include globs with keyword=value syntax", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "quick-shell-ssh-"));
+    const dir = await mkdtemp(join(tmpdir(), "connexin-ssh-"));
     await mkdir(join(dir, "config.d"));
     await writeFile(
       join(dir, "config"),
@@ -164,7 +164,7 @@ describe("parseSshConfigHosts", () => {
   });
 
   it("resolves relative Include paths under the user's .ssh directory", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "quick-shell-ssh-"));
+    const dir = await mkdtemp(join(tmpdir(), "connexin-ssh-"));
     const originalHome = process.env.HOME;
     process.env.HOME = dir;
     try {
@@ -198,7 +198,7 @@ describe("parseSshConfigHosts", () => {
   );
 
   it("does not take aliases from Include directives under Host or Match blocks", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "quick-shell-ssh-"));
+    const dir = await mkdtemp(join(tmpdir(), "connexin-ssh-"));
     await writeFile(
       join(dir, "conditional-host"),
       "Host host-included\n  HostName 127.0.0.1\n",
@@ -234,7 +234,7 @@ describe("parseSshConfigHosts", () => {
   ])(
     "rejects a Host-scoped Include that smuggles in %s",
     async (_directive, line) => {
-      const dir = await mkdtemp(join(tmpdir(), "quick-shell-ssh-"));
+      const dir = await mkdtemp(join(tmpdir(), "connexin-ssh-"));
       await writeFile(join(dir, "inner"), `  ${line}\n`);
       await writeFile(
         join(dir, "config"),
@@ -253,7 +253,7 @@ describe("parseSshConfigHosts", () => {
   );
 
   it("rejects an unsafe directive nested behind two Host-scoped Includes", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "quick-shell-ssh-"));
+    const dir = await mkdtemp(join(tmpdir(), "connexin-ssh-"));
     await writeFile(join(dir, "deep"), "  ProxyCommand /bin/sh -c id\n");
     await writeFile(join(dir, "inner"), `Include ${join(dir, "deep")}\n`);
     await writeFile(
@@ -267,7 +267,7 @@ describe("parseSshConfigHosts", () => {
   });
 
   it("still admits a Host-scoped Include that holds only safe directives", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "quick-shell-ssh-"));
+    const dir = await mkdtemp(join(tmpdir(), "connexin-ssh-"));
     await writeFile(join(dir, "inner"), "  User deploy\n  Port 2222\n");
     await writeFile(
       join(dir, "config"),
@@ -280,7 +280,7 @@ describe("parseSshConfigHosts", () => {
   });
 
   it("keeps aliases from a global Include already visited by a Host-scoped scan", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "quick-shell-ssh-"));
+    const dir = await mkdtemp(join(tmpdir(), "connexin-ssh-"));
     await writeFile(join(dir, "shared"), "Host shared-alias\n  User deploy\n");
     // `nested` reaches `shared` from inside a Host block, so `shared` is
     // scanned for unsafe directives before the top-level global Include gets to
@@ -306,7 +306,7 @@ describe("parseSshConfigHosts", () => {
   });
 
   it("rejects unsafe providers in globally included configs", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "quick-shell-ssh-"));
+    const dir = await mkdtemp(join(tmpdir(), "connexin-ssh-"));
     await writeFile(
       join(dir, "config"),
       `Include ${join(dir, "provider-config")}\nHost root\n`,
@@ -322,7 +322,7 @@ describe("parseSshConfigHosts", () => {
   });
 
   it("rejects Include patterns with unsupported OpenSSH expansion", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "quick-shell-ssh-"));
+    const dir = await mkdtemp(join(tmpdir(), "connexin-ssh-"));
     await writeFile(
       join(dir, "config"),
       "Include %d/.ssh/config.d/*\nHost root\n",
@@ -350,7 +350,7 @@ describe("parseSshConfigHosts", () => {
   });
 
   it("fails when the primary SSH config cannot be read", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "quick-shell-ssh-"));
+    const dir = await mkdtemp(join(tmpdir(), "connexin-ssh-"));
 
     await expect(loadAllowedSshHosts(join(dir, "missing"))).rejects.toThrow(
       "Unable to read SSH config",

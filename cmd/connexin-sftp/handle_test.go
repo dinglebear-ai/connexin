@@ -119,7 +119,7 @@ func TestMkdirRenameRemove(t *testing.T) {
 }
 
 // The atomic-commit defer is the only thing preventing a stray
-// .<name>.quick-shell-<hex> file in the parent directory after a failed upload.
+// .<name>.connexin-<hex> file in the parent directory after a failed upload.
 func TestFailedUploadLeavesNoTempFile(t *testing.T) {
 	h, root, _ := newTestHandler(t)
 
@@ -143,7 +143,7 @@ func TestFailedUploadLeavesNoTempFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, entry := range entries {
-		if strings.Contains(entry.Name(), "quick-shell-") {
+		if strings.Contains(entry.Name(), "connexin-") {
 			t.Fatalf("failed upload left a temp file: %s", entry.Name())
 		}
 	}
@@ -223,7 +223,7 @@ func TestUploadCommitsAtomically(t *testing.T) {
 	}
 	entries, _ := os.ReadDir(root)
 	for _, entry := range entries {
-		if strings.Contains(entry.Name(), "quick-shell-") {
+		if strings.Contains(entry.Name(), "connexin-") {
 			t.Fatalf("temp file survived a successful upload: %s", entry.Name())
 		}
 	}
@@ -345,7 +345,7 @@ func TestSiblingTempPathStaysInParentAndIsUnique(t *testing.T) {
 	if filepath.Dir(first) != "/srv/data" {
 		t.Fatalf("temp escaped the parent directory: %s", first)
 	}
-	if !strings.Contains(filepath.Base(first), ".quick-shell-") {
+	if !strings.Contains(filepath.Base(first), ".connexin-") {
 		t.Fatalf("unexpected temp name: %s", first)
 	}
 	if first == second {

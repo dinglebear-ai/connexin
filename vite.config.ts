@@ -1,5 +1,6 @@
 import { defineConfig } from "vite";
 import { viteSingleFile } from "vite-plugin-singlefile";
+import { basename } from "node:path";
 
 const input = process.env.INPUT;
 if (!input) throw new Error("INPUT environment variable is not set");
@@ -14,6 +15,6 @@ export default defineConfig({
     sourcemap: isDevelopment ? "inline" : undefined,
     cssMinify: !isDevelopment,
     minify: !isDevelopment,
-    rollupOptions: { input },
+    rollupOptions: { input: { [basename(input, ".html")]: input } },
   },
 });

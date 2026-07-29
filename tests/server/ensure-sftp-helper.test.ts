@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { ensureSftpHelper } from "../../src/server/ensure-sftp-helper.js";
 
-const HELPER = "/pkg/dist/bin/quick-shell-sftp";
+const HELPER = "/pkg/dist/bin/connexin-sftp";
 const INSTALLER = "/pkg/scripts/install-sftp-helper.mjs";
 
 describe("ensureSftpHelper", () => {
@@ -39,7 +39,7 @@ describe("ensureSftpHelper", () => {
     const runInstaller = vi.fn();
     const result = ensureSftpHelper({
       helperPath: "/custom/sftp",
-      env: { QUICK_SHELL_SFTP_HELPER: "/custom/sftp" },
+      env: { CONNEXIN_SFTP_HELPER: "/custom/sftp" },
       exists: () => false,
       runInstaller,
     });

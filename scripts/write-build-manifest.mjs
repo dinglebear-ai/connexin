@@ -4,10 +4,10 @@ import { createHash } from "node:crypto";
 import { access, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, relative } from "node:path";
 
-const manifestPath = "dist/quick-shell-build-manifest.json";
-const rootFiles = ["package.json", "package-lock.json", "mcp-app.html"];
-const appFiles = ["dist/app/mcp-app.html"];
-const helperFiles = ["dist/bin/quick-shell-sftp"];
+const manifestPath = "dist/connexin-build-manifest.json";
+const rootFiles = ["package.json", "package-lock.json", "src/app/mcp-app.html"];
+const appFiles = ["dist/app/src/app/mcp-app.html"];
+const helperFiles = ["dist/bin/connexin-sftp"];
 const serverSourceRoots = ["src/server", "src/shared", "src/cli"];
 const buildRoots = ["dist/app", "dist/server", "dist/bin"];
 
@@ -122,7 +122,7 @@ if (missingFiles.length > 0) {
 
 const manifest = {
   version: 1,
-  packageName: "quick-shell",
+  packageName: "connexin",
   gitSha,
   gitDirty,
   builtAt: new Date().toISOString(),

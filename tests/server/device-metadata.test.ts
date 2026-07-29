@@ -4,15 +4,27 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   loadDeviceMetadata,
-  parseQuickShellToml,
+  parseConnexinToml,
   type DeviceMetadataConfig,
 } from "../../src/server/device-metadata.js";
-import { QuickShellSessionManager } from "../../src/server/session-manager.js";
+import { ConnexinSessionManager } from "../../src/server/session-manager.js";
 import { testRuntimeConfig } from "./helpers/runtime-config.js";
 
-describe("parseQuickShellToml", () => {
+describe("parseConnexinToml", () => {
+  it("accepts a combined runtime and device-metadata file", () => {
+    const config = parseConnexinToml(`
+      [runtime]
+      max_sessions = 9
+
+      [devices.example]
+      label = "Example"
+    `);
+
+    expect(config.devices.get("example")).toEqual({ label: "Example" });
+  });
+
   it("parses string metadata from device tables", () => {
-    const config = parseQuickShellToml(`
+    const config = parseConnexinToml(`
       [devices.devbox]
       label = "Dev Box"
       group = "dev"
@@ -38,7 +50,7 @@ describe("parseQuickShellToml", () => {
 
   it("rejects invalid danger values", () => {
     expect(() =>
-      parseQuickShellToml(`
+      parseConnexinToml(`
         [devices.fileserver]
         danger = "spicy"
       `),
@@ -46,7 +58,7 @@ describe("parseQuickShellToml", () => {
   });
 
   it("loads an empty config when the file is absent", async () => {
-    const tempDir = await mkdtemp(join(tmpdir(), "quick-shell-metadata-"));
+    const tempDir = await mkdtemp(join(tmpdir(), "connexin-metadata-"));
     try {
       const config = await loadDeviceMetadata(join(tempDir, "missing.toml"));
       expect(config.devices.size).toBe(0);
@@ -56,7 +68,7 @@ describe("parseQuickShellToml", () => {
   });
 
   it("returns a fresh empty config when the file is absent", async () => {
-    const tempDir = await mkdtemp(join(tmpdir(), "quick-shell-metadata-"));
+    const tempDir = await mkdtemp(join(tmpdir(), "connexin-metadata-"));
     try {
       const missingPath = join(tempDir, "missing.toml");
       const first = await loadDeviceMetadata(missingPath);
@@ -72,14 +84,14 @@ describe("parseQuickShellToml", () => {
 
   it("reports invalid quoted device table names with line context", () => {
     expect(() =>
-      parseQuickShellToml('[devices."unterminated]\nlabel = "bad"\n'),
-    ).toThrow("quick-shell.toml line 1: invalid device table name");
+      parseConnexinToml('[devices."unterminated]\nlabel = "bad"\n'),
+    ).toThrow("connexin.toml line 1: invalid device table name");
   });
 
   it("loads metadata from disk", async () => {
-    const tempDir = await mkdtemp(join(tmpdir(), "quick-shell-metadata-"));
+    const tempDir = await mkdtemp(join(tmpdir(), "connexin-metadata-"));
     try {
-      const configPath = join(tempDir, "quick-shell.toml");
+      const configPath = join(tempDir, "connexin.toml");
       await writeFile(
         configPath,
         '[devices.fileserver]\nlabel = "File Server"\n',
@@ -111,7 +123,7 @@ describe("device metadata integration", () => {
   };
 
   it("decorates allowed SSH aliases", async () => {
-    const manager = new QuickShellSessionManager({
+    const manager = new ConnexinSessionManager({
       config: testRuntimeConfig(),
       allowedHosts: new Set(["fileserver"]),
       deviceMetadata: metadata,
@@ -131,8 +143,8 @@ describe("device metadata integration", () => {
     });
   });
 
-  it("does not allow aliases just because they exist in quick-shell.toml", async () => {
-    const manager = new QuickShellSessionManager({
+  it("does not allow aliases just because they exist in connexin.toml", async () => {
+    const manager = new ConnexinSessionManager({
       config: testRuntimeConfig(),
       allowedHosts: new Set(["fileserver"]),
       deviceMetadata: metadata,

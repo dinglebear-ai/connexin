@@ -14,7 +14,7 @@ import {
 import { FakePty } from "./helpers/fake-pty.js";
 
 async function sshConfigPath(): Promise<string> {
-  const dir = await mkdtemp(join(tmpdir(), "quick-shell-"));
+  const dir = await mkdtemp(join(tmpdir(), "connexin-"));
   const path = join(dir, "config");
   await writeFile(path, "Host test-device\n  HostName 127.0.0.1\n");
   return path;
@@ -23,7 +23,7 @@ async function sshConfigPath(): Promise<string> {
 describe("main transports", () => {
   it("prepares stdio mode with a localhost bridge sidecar and real bridge base URL", async () => {
     const runtime = await prepareRuntime({
-      env: { QUICK_SHELL_SSH_CONFIG: await sshConfigPath() },
+      env: { CONNEXIN_SSH_CONFIG: await sshConfigPath() },
       ptyFactory: () => new FakePty(),
     });
     try {
@@ -37,15 +37,15 @@ describe("main transports", () => {
   it("prepares stdio mode with a configured public bridge URL", async () => {
     const runtime = await prepareRuntime({
       env: {
-        QUICK_SHELL_SSH_CONFIG: await sshConfigPath(),
-        QUICK_SHELL_BRIDGE_PUBLIC_URL: "https://quick-shell.example",
-        QUICK_SHELL_ALLOWED_ORIGINS: "https://chatgpt.com",
+        CONNEXIN_SSH_CONFIG: await sshConfigPath(),
+        CONNEXIN_BRIDGE_PUBLIC_URL: "https://connexin.example",
+        CONNEXIN_ALLOWED_ORIGINS: "https://chatgpt.com",
       },
       ptyFactory: () => new FakePty(),
     });
     try {
       expect(runtime.bridge.listenUrl).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
-      expect(runtime.bridge.baseUrl).toBe("https://quick-shell.example");
+      expect(runtime.bridge.baseUrl).toBe("https://connexin.example");
     } finally {
       await runtime.close();
     }
@@ -54,8 +54,8 @@ describe("main transports", () => {
   it("rejects HTTP MCP requests without bearer authorization", async () => {
     const runtime = await prepareRuntime({
       env: {
-        QUICK_SHELL_SSH_CONFIG: await sshConfigPath(),
-        QUICK_SHELL_HTTP_TOKEN: "secret",
+        CONNEXIN_SSH_CONFIG: await sshConfigPath(),
+        CONNEXIN_HTTP_TOKEN: "secret",
       },
       ptyFactory: () => new FakePty(),
     });
@@ -75,8 +75,8 @@ describe("main transports", () => {
   it("authenticates HTTP MCP requests before parsing malformed or oversized JSON", async () => {
     const runtime = await prepareRuntime({
       env: {
-        QUICK_SHELL_SSH_CONFIG: await sshConfigPath(),
-        QUICK_SHELL_HTTP_TOKEN: "secret",
+        CONNEXIN_SSH_CONFIG: await sshConfigPath(),
+        CONNEXIN_HTTP_TOKEN: "secret",
       },
       ptyFactory: () => new FakePty(),
     });
@@ -111,8 +111,8 @@ describe("main transports", () => {
       throw new Error("test server did not bind");
     const runtime = await prepareRuntime({
       env: {
-        QUICK_SHELL_SSH_CONFIG: await sshConfigPath(),
-        QUICK_SHELL_HTTP_TOKEN: "secret",
+        CONNEXIN_SSH_CONFIG: await sshConfigPath(),
+        CONNEXIN_HTTP_TOKEN: "secret",
       },
       ptyFactory: () => new FakePty(),
     });
@@ -144,9 +144,9 @@ describe("main transports", () => {
       await expect(
         runHttp({
           env: {
-            QUICK_SHELL_SSH_CONFIG: await sshConfigPath(),
-            QUICK_SHELL_HTTP_TOKEN: "secret",
-            QUICK_SHELL_HTTP_PORT: String(address.port),
+            CONNEXIN_SSH_CONFIG: await sshConfigPath(),
+            CONNEXIN_HTTP_TOKEN: "secret",
+            CONNEXIN_HTTP_PORT: String(address.port),
           },
           ptyFactory: () => new FakePty(),
         }),
@@ -163,11 +163,11 @@ describe("main transports", () => {
   it("handles multiple authorized stateless HTTP MCP requests", async () => {
     const runtime = await prepareRuntime({
       env: {
-        QUICK_SHELL_SSH_CONFIG: await sshConfigPath(),
-        QUICK_SHELL_HTTP_TOKEN: "secret",
+        CONNEXIN_SSH_CONFIG: await sshConfigPath(),
+        CONNEXIN_HTTP_TOKEN: "secret",
         // Stateless HTTP cannot retain MCP Apps capabilities between requests.
         // This is an explicit trusted-host escape hatch.
-        QUICK_SHELL_REQUIRE_APP_HOST: "0",
+        CONNEXIN_REQUIRE_APP_HOST: "0",
       },
       ptyFactory: () => new FakePty(),
     });
@@ -182,7 +182,7 @@ describe("main transports", () => {
       { name: "http-test-client", version: "0.1.0" },
       {
         capabilities: {
-          // open_quick_shell refuses hosts that do not advertise MCP Apps.
+          // open_connexin refuses hosts that do not advertise MCP Apps.
           extensions: {
             "io.modelcontextprotocol/ui": {
               mimeTypes: ["text/html;profile=mcp-app"],
@@ -196,13 +196,13 @@ describe("main transports", () => {
 
       const listed = await client.listTools();
       const opened = await client.callTool({
-        name: "open_quick_shell",
+        name: "open_connexin",
         arguments: { device: "test-device" },
       });
 
-      expect(
-        listed.tools.some((tool) => tool.name === "open_quick_shell"),
-      ).toBe(true);
+      expect(listed.tools.some((tool) => tool.name === "open_connexin")).toBe(
+        true,
+      );
       expect(opened.structuredContent).toMatchObject({ device: "test-device" });
     } finally {
       await client.close().catch(() => undefined);
@@ -214,7 +214,7 @@ describe("main transports", () => {
 
   it("can close runtime more than once", async () => {
     const runtime = await prepareRuntime({
-      env: { QUICK_SHELL_SSH_CONFIG: await sshConfigPath() },
+      env: { CONNEXIN_SSH_CONFIG: await sshConfigPath() },
       ptyFactory: () => new FakePty(),
     });
 
@@ -234,8 +234,8 @@ describe("main transports", () => {
         cwd: process.cwd(),
         env: {
           ...process.env,
-          QUICK_SHELL_SSH_CONFIG: await sshConfigPath(),
-          QUICK_SHELL_CLEANUP_INTERVAL_MS: "1000",
+          CONNEXIN_SSH_CONFIG: await sshConfigPath(),
+          CONNEXIN_CLEANUP_INTERVAL_MS: "1000",
         },
         stdio: ["pipe", "pipe", "pipe"],
       },
@@ -289,10 +289,10 @@ describe("main transports", () => {
     const ptys: FakePty[] = [];
     const runtime = await prepareRuntime({
       env: {
-        QUICK_SHELL_SSH_CONFIG: await sshConfigPath(),
-        QUICK_SHELL_MAX_SESSION_AGE_MS: "1",
-        QUICK_SHELL_IDLE_GRACE_MS: "60000",
-        QUICK_SHELL_CLEANUP_INTERVAL_MS: "5",
+        CONNEXIN_SSH_CONFIG: await sshConfigPath(),
+        CONNEXIN_MAX_SESSION_AGE_MS: "1",
+        CONNEXIN_IDLE_GRACE_MS: "60000",
+        CONNEXIN_CLEANUP_INTERVAL_MS: "5",
       },
       ptyFactory: () => {
         const pty = new FakePty();

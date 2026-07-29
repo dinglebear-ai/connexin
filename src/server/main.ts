@@ -14,14 +14,11 @@ import { ensureSftpHelper } from "./ensure-sftp-helper.js";
 import { loadAllowedSshHosts } from "./ssh-config.js";
 import { createServer } from "./create-server.js";
 import { startBridgeServer, type BridgeServer } from "./bridge-server.js";
-import {
-  QuickShellSessionManager,
-  type PtyFactory,
-} from "./session-manager.js";
+import { ConnexinSessionManager, type PtyFactory } from "./session-manager.js";
 
 export interface PreparedRuntime {
   config: RuntimeConfig;
-  manager: QuickShellSessionManager;
+  manager: ConnexinSessionManager;
   bridge: BridgeServer;
   server: ReturnType<typeof createServer>;
   cleanupTimer: NodeJS.Timeout;
@@ -87,12 +84,12 @@ export async function prepareRuntime(
   });
   const [allowedHosts, deviceMetadata] = await Promise.all([
     loadAllowedSshHosts(config.sshConfigPath),
-    loadDeviceMetadata(config.quickShellConfigPath),
+    loadDeviceMetadata(config.connexinConfigPath),
   ]);
   const audit = createAuditLogger(
     config.auditLogPath ? { path: config.auditLogPath } : {},
   );
-  const manager = new QuickShellSessionManager({
+  const manager = new ConnexinSessionManager({
     config,
     allowedHosts,
     deviceMetadata,
@@ -109,7 +106,7 @@ export async function prepareRuntime(
       pid: process.pid,
       auditLog: config.auditLogPath ? "file" : "stderr",
       sshConfigPath: config.sshConfigPath,
-      quickShellConfigPath: config.quickShellConfigPath,
+      connexinConfigPath: config.connexinConfigPath,
       allowedHostCount: allowedHosts.size,
       metadataDeviceCount: deviceMetadata.devices.size,
       maxSessions: config.maxSessions,
@@ -126,7 +123,7 @@ export async function prepareRuntime(
     });
   } catch (error) {
     await bridge.close().catch((closeError: unknown) => {
-      console.error("quick-shell bridge close failed", closeError);
+      console.error("connexin bridge close failed", closeError);
     });
     throw error;
   }
@@ -159,19 +156,19 @@ export async function prepareRuntime(
           await server.close();
         } catch (error) {
           errors.push(error);
-          console.error("quick-shell MCP server close failed", error);
+          console.error("connexin MCP server close failed", error);
         }
         try {
           await manager.closeAllAndDrain();
         } catch (error) {
           errors.push(error);
-          console.error("quick-shell PTY cleanup failed", error);
+          console.error("connexin PTY cleanup failed", error);
         }
         try {
           await bridge.close();
         } catch (error) {
           errors.push(error);
-          console.error("quick-shell bridge close failed", error);
+          console.error("connexin bridge close failed", error);
         }
         manager.recordAuditEvent("runtime_closed", {
           mode: options.mode ?? "stdio",
@@ -184,13 +181,10 @@ export async function prepareRuntime(
           await audit.flush?.();
         } catch (error) {
           errors.push(error);
-          console.error("quick-shell audit flush failed", error);
+          console.error("connexin audit flush failed", error);
         }
         if (errors.length > 0) {
-          throw new AggregateError(
-            errors,
-            "quick-shell runtime cleanup failed",
-          );
+          throw new AggregateError(errors, "connexin runtime cleanup failed");
         }
       });
       return closePromise;
@@ -208,7 +202,7 @@ export async function startHttpMcpServer(options: {
 }): Promise<HttpMcpServer> {
   const { runtime } = options;
   if (!runtime.config.httpToken) {
-    throw new Error("QUICK_SHELL_HTTP_TOKEN is required in --http mode");
+    throw new Error("CONNEXIN_HTTP_TOKEN is required in --http mode");
   }
 
   const app = express();
@@ -240,12 +234,12 @@ export async function startHttpMcpServer(options: {
       await transport
         .close()
         .catch((error) =>
-          console.error("quick-shell HTTP transport close failed", error),
+          console.error("connexin HTTP transport close failed", error),
         );
       await requestServer
         .close()
         .catch((error) =>
-          console.error("quick-shell HTTP request server close failed", error),
+          console.error("connexin HTTP request server close failed", error),
         );
     };
     requestClosers.add(closeRequest);
@@ -258,7 +252,7 @@ export async function startHttpMcpServer(options: {
       await transport.handleRequest(req, res, req.body);
     } catch (error) {
       await closeRequest();
-      console.error("quick-shell HTTP MCP request failed", error);
+      console.error("connexin HTTP MCP request failed", error);
       if (!res.headersSent) {
         res.status(500).json({ error: "internal MCP server error" });
       }
@@ -319,7 +313,7 @@ export async function runStdio(): Promise<void> {
     closePromise ??= runtime
       .close()
       .catch((error) =>
-        console.error("quick-shell runtime cleanup failed", error),
+        console.error("connexin runtime cleanup failed", error),
       );
     if (exitAfterClose) {
       void closePromise.finally(() => process.exit(0));
@@ -353,7 +347,7 @@ export async function runHttp(
     await runtime
       .close()
       .catch((closeError) =>
-        console.error("quick-shell runtime cleanup failed", closeError),
+        console.error("connexin runtime cleanup failed", closeError),
       );
     throw error;
   }
@@ -363,16 +357,16 @@ export async function runHttp(
       await httpServer.close().catch((error) => errors.push(error));
       await runtime.close().catch((error) => errors.push(error));
       if (errors.length > 0)
-        throw new AggregateError(errors, "quick-shell HTTP cleanup failed");
+        throw new AggregateError(errors, "connexin HTTP cleanup failed");
     },
   });
-  console.error(`quick-shell HTTP MCP listening at ${httpServer.baseUrl}/mcp`);
+  console.error(`connexin HTTP MCP listening at ${httpServer.baseUrl}/mcp`);
   console.error(
-    `quick-shell terminal bridge listening at ${runtime.bridge.listenUrl}`,
+    `connexin terminal bridge listening at ${runtime.bridge.listenUrl}`,
   );
   if (runtime.bridge.baseUrl !== runtime.bridge.listenUrl) {
     console.error(
-      `quick-shell terminal bridge public URL ${runtime.bridge.baseUrl}`,
+      `connexin terminal bridge public URL ${runtime.bridge.baseUrl}`,
     );
   }
 }

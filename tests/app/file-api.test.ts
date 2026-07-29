@@ -14,7 +14,7 @@ const entry: FileEntry = {
 function client() {
   return {
     callServerTool: vi.fn(async () => ({
-      _meta: { quickShellFiles: { lease: "l".repeat(24) } },
+      _meta: { connexinFiles: { lease: "l".repeat(24) } },
     })),
   };
 }

@@ -1,32 +1,32 @@
 import { readFile } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import { bridgeConnectDomains } from "./bridge-server.js";
 import type { RuntimeConfig } from "./config.js";
-import type { QuickShellSession } from "./session-manager.js";
+import type { ConnexinSession } from "./session-manager.js";
 import {
   CapabilityTokenSchema,
-  QuickShellPublicSessionSchema,
+  ConnexinPublicSessionSchema,
   SessionIdSchema,
 } from "../shared/protocol.js";
 import type {
-  QuickShellAppSession,
-  QuickShellPublicSession,
+  ConnexinAppSession,
+  ConnexinPublicSession,
 } from "../shared/protocol.js";
 import { utf8ByteLength } from "../shared/utf8.js";
 
-export const APP_RESOURCE_URI = "ui://quick-shell/mcp-app.v5.html";
-export const V4_APP_RESOURCE_URI = "ui://quick-shell/mcp-app.v4.html";
-export const V3_APP_RESOURCE_URI = "ui://quick-shell/mcp-app.v3.html";
-export const V2_APP_RESOURCE_URI = "ui://quick-shell/mcp-app.v2.html";
-export const LEGACY_APP_RESOURCE_URI = "ui://quick-shell/mcp-app.html";
+export const APP_RESOURCE_URI = "ui://connexin/mcp-app.v5.html";
+export const V4_APP_RESOURCE_URI = "ui://connexin/mcp-app.v4.html";
+export const V3_APP_RESOURCE_URI = "ui://connexin/mcp-app.v3.html";
+export const V2_APP_RESOURCE_URI = "ui://connexin/mcp-app.v2.html";
+export const LEGACY_APP_RESOURCE_URI = "ui://connexin/mcp-app.html";
 export const SERVER_INSTRUCTIONS =
-  "quick-shell opens a human-controlled SSH terminal for an allowlisted SSH config host alias. Use open_quick_shell only when a remote agent is blocked by a one-off command; suggested_command is prefilled only, and the user must run commands, review output, and explicitly send output back.";
+  "connexin opens a human-controlled SSH terminal for an allowlisted SSH config host alias. Use open_connexin only when a remote agent is blocked by a one-off command; suggested_command is prefilled only, and the user must run commands, review output, and explicitly send output back.";
 
 let appHtmlCache: string | undefined;
 
-export const quickShellPublicOutputSchema = QuickShellPublicSessionSchema.shape;
+export const connexinPublicOutputSchema = ConnexinPublicSessionSchema.shape;
 
 export const appResourceMeta = (bridgeBaseUrl: string) => ({
   csp: {
@@ -100,16 +100,16 @@ export function asStructuredContent(value: object): Record<string, unknown> {
 }
 
 export function publicStructuredContent(
-  session: QuickShellPublicSession,
-): QuickShellPublicSession {
-  return QuickShellPublicSessionSchema.parse(session);
+  session: ConnexinPublicSession,
+): ConnexinPublicSession {
+  return ConnexinPublicSessionSchema.parse(session);
 }
 
 export function appSessionFor(
-  session: QuickShellSession,
+  session: ConnexinSession,
   config: RuntimeConfig,
   bridgeBaseUrl: string,
-): QuickShellAppSession {
+): ConnexinAppSession {
   return {
     ...session.publicSummary,
     wsUrl: bridgeWsUrl(bridgeBaseUrl, session.id),
@@ -151,10 +151,19 @@ export async function readBuiltAppHtml(): Promise<string> {
     return appHtmlCache;
 
   const moduleDir = dirname(fileURLToPath(import.meta.url));
-  const candidates = [
-    resolve(moduleDir, "../../app/mcp-app.html"),
-    resolve(moduleDir, "../../dist/app/mcp-app.html"),
-  ];
+  const isBuiltServer = moduleDir.includes(
+    `${join("dist", "server", "server")}`,
+  );
+  const sourceApp = isBuiltServer
+    ? resolve(moduleDir, "../../../src/app/mcp-app.html")
+    : resolve(moduleDir, "../app/mcp-app.html");
+  const builtApp = isBuiltServer
+    ? resolve(moduleDir, "../../app/src/app/mcp-app.html")
+    : resolve(moduleDir, "../../dist/app/src/app/mcp-app.html");
+  const candidates =
+    process.env.NODE_ENV === "development"
+      ? [sourceApp, builtApp]
+      : [builtApp, sourceApp];
 
   // Every candidate's error is reported: surfacing only the last one sends the
   // operator chasing a "file not found" when the real cause was a permission

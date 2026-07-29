@@ -9,9 +9,9 @@ import { z } from "zod";
 import type { RuntimeConfig } from "./config.js";
 import { registerHealthTool } from "./health-tool.js";
 import type {
-  QuickShellSession,
-  QuickShellSessionManager,
-  StartedQuickShellSession,
+  ConnexinSession,
+  ConnexinSessionManager,
+  StartedConnexinSession,
 } from "./session-manager.js";
 import {
   APP_RESOURCE_URI,
@@ -26,7 +26,7 @@ import {
   asStructuredContent,
   modelToolMeta,
   publicStructuredContent,
-  quickShellPublicOutputSchema,
+  connexinPublicOutputSchema,
   readBuiltAppHtml,
   resetAppHtmlCacheForTests,
   safeErrorMessage,
@@ -34,7 +34,7 @@ import {
   toolMeta,
   utf8Max,
 } from "./mcp-tooling.js";
-import type { QuickShellHiddenMeta } from "../shared/protocol.js";
+import type { ConnexinHiddenMeta } from "../shared/protocol.js";
 import {
   MAX_TERMINAL_COLS,
   MAX_TERMINAL_ROWS,
@@ -45,7 +45,7 @@ import {
 export interface CreateServerOptions {
   bridgeBaseUrl: string;
   config: RuntimeConfig;
-  manager: QuickShellSessionManager;
+  manager: ConnexinSessionManager;
 }
 
 export { resetAppHtmlCacheForTests };
@@ -85,7 +85,7 @@ function hostRendersApps(server: McpServer): AppHostSupport {
 }
 
 function requireAppCapability(
-  manager: QuickShellSessionManager,
+  manager: ConnexinSessionManager,
   args: AppCapabilityArgs,
   options: {
     missingReason: string;
@@ -93,7 +93,7 @@ function requireAppCapability(
     invalidReason: string;
     auditFields?: Record<string, unknown>;
   },
-): { session: QuickShellSession } | { error: ReturnType<typeof toolError> } {
+): { session: ConnexinSession } | { error: ReturnType<typeof toolError> } {
   if (!args.sessionId || !args.appToken) {
     manager.recordAuditEvent("app_session_rejected", {
       sessionId: args.sessionId,
@@ -112,17 +112,17 @@ function requireAppCapability(
       reason: options.invalidReason,
       ...options.auditFields,
     });
-    return { error: toolError("Invalid quick-shell app capability.") };
+    return { error: toolError("Invalid connexin app capability.") };
   }
   return { session };
 }
 
 function startAppSession(
-  manager: QuickShellSessionManager,
-  session: QuickShellSession,
+  manager: ConnexinSessionManager,
+  session: ConnexinSession,
   failureReason: string,
 ):
-  | { session: StartedQuickShellSession }
+  | { session: StartedConnexinSession }
   | { error: ReturnType<typeof toolError> } {
   try {
     const started = manager.startSession(session.id);
@@ -132,7 +132,7 @@ function startAppSession(
       device: session.publicSummary.device,
       reason: "missing_session",
     });
-    return { error: toolError("Quick-shell session is no longer available.") };
+    return { error: toolError("Connexin session is no longer available.") };
   } catch (error) {
     manager.closeSession(session.id);
     const cause = safeErrorMessage(error);
@@ -144,7 +144,7 @@ function startAppSession(
     });
     return {
       error: toolError(
-        `Unable to start quick-shell SSH session for ${session.publicSummary.device}${cause ? `: ${cause}` : "."}`,
+        `Unable to start connexin SSH session for ${session.publicSummary.device}${cause ? `: ${cause}` : "."}`,
       ),
     };
   }
@@ -152,7 +152,7 @@ function startAppSession(
 
 export function createServer(options: CreateServerOptions): McpServer {
   const server = new McpServer(
-    { name: "quick-shell", version: "0.1.0" },
+    { name: "connexin", version: "0.1.0" },
     { instructions: SERVER_INSTRUCTIONS },
   );
   const { bridgeBaseUrl, config, manager } = options;
@@ -161,11 +161,11 @@ export function createServer(options: CreateServerOptions): McpServer {
 
   registerAppTool(
     server,
-    "list_quick_shell_devices",
+    "list_connexin_devices",
     {
-      title: "List Quick Shell Devices",
+      title: "List Connexin Devices",
       description:
-        "List SSH-configured quick-shell device aliases and non-secret metadata.",
+        "List SSH-configured connexin device aliases and non-secret metadata.",
       inputSchema: {},
       outputSchema: {
         devices: z.array(
@@ -178,7 +178,7 @@ export function createServer(options: CreateServerOptions): McpServer {
           }),
         ),
       },
-      annotations: toolAnnotations("List Quick Shell Devices", {
+      annotations: toolAnnotations("List Connexin Devices", {
         readOnlyHint: true,
         destructiveHint: false,
         openWorldHint: false,
@@ -197,8 +197,8 @@ export function createServer(options: CreateServerOptions): McpServer {
             type: "text",
             text:
               devices.length === 0
-                ? "No quick-shell devices are currently listed in SSH config."
-                : `Found ${devices.length} quick-shell device${devices.length === 1 ? "" : "s"}.`,
+                ? "No connexin devices are currently listed in SSH config."
+                : `Found ${devices.length} connexin device${devices.length === 1 ? "" : "s"}.`,
           },
         ],
         structuredContent: { devices },
@@ -208,9 +208,9 @@ export function createServer(options: CreateServerOptions): McpServer {
 
   registerAppTool(
     server,
-    "open_quick_shell",
+    "open_connexin",
     {
-      title: "Open Quick Shell",
+      title: "Open Connexin",
       description:
         "Request a human-controlled SSH terminal for an allowlisted SSH config host alias.",
       inputSchema: {
@@ -221,8 +221,8 @@ export function createServer(options: CreateServerOptions): McpServer {
           .max(config.maxSuggestedCommandLength)
           .optional(),
       },
-      outputSchema: quickShellPublicOutputSchema,
-      annotations: toolAnnotations("Open Quick Shell", {
+      outputSchema: connexinPublicOutputSchema,
+      annotations: toolAnnotations("Open Connexin", {
         readOnlyHint: false,
         destructiveHint: false,
         openWorldHint: true,
@@ -251,7 +251,7 @@ export function createServer(options: CreateServerOptions): McpServer {
           content: [
             {
               type: "text",
-              text: `This host does not advertise MCP Apps support, so the quick-shell terminal cannot be rendered and no session was opened. Run "quick-shell ${args.device}" locally instead. (If this host does render MCP Apps but does not advertise the capability, set QUICK_SHELL_REQUIRE_APP_HOST=0.)`,
+              text: `This host does not advertise MCP Apps support, so the connexin terminal cannot be rendered and no session was opened. Run "connexin ${args.device}" locally instead. (If this host does render MCP Apps but does not advertise the capability, set CONNEXIN_REQUIRE_APP_HOST=0.)`,
             },
           ],
         };
@@ -276,30 +276,30 @@ export function createServer(options: CreateServerOptions): McpServer {
               text:
                 error instanceof Error
                   ? error.message
-                  : "Unable to open quick-shell session.",
+                  : "Unable to open connexin session.",
             },
           ],
         };
       }
-      const quickShell = {
+      const connexin = {
         sessionId: session.id,
         appToken: session.appToken,
-      } satisfies QuickShellHiddenMeta["quickShell"];
-      const quickShellSession = appSessionFor(session, config, bridgeBaseUrl);
+      } satisfies ConnexinHiddenMeta["connexin"];
+      const connexinSession = appSessionFor(session, config, bridgeBaseUrl);
 
       return {
         content: [
           {
             type: "text",
-            text: `Prepared quick-shell session for ${session.publicSummary.device}. The SSH terminal starts only when a compatible MCP App host renders the quick-shell UI; the user controls the terminal and must explicitly send output back. If no app appears, run quick-shell ${session.publicSummary.device} locally or retry from a host with MCP Apps support.`,
+            text: `Prepared connexin session for ${session.publicSummary.device}. The SSH terminal starts only when a compatible MCP App host renders the connexin UI; the user controls the terminal and must explicitly send output back. If no app appears, run connexin ${session.publicSummary.device} locally or retry from a host with MCP Apps support.`,
           },
         ],
         structuredContent: asStructuredContent(
           publicStructuredContent(session.publicSummary),
         ),
         _meta: {
-          quickShell,
-          quickShellSession,
+          connexin,
+          connexinSession,
         },
       };
     },
@@ -307,15 +307,15 @@ export function createServer(options: CreateServerOptions): McpServer {
 
   registerAppTool(
     server,
-    "get_quick_shell_session",
+    "get_connexin_session",
     {
-      title: "Get Quick Shell Session",
-      description: "App-only quick-shell session detail lookup.",
+      title: "Get Connexin Session",
+      description: "App-only connexin session detail lookup.",
       inputSchema: {
         ...appCapabilityInputSchema(),
       },
-      outputSchema: quickShellPublicOutputSchema,
-      annotations: toolAnnotations("Get Quick Shell Session", {
+      outputSchema: connexinPublicOutputSchema,
+      annotations: toolAnnotations("Get Connexin Session", {
         readOnlyHint: false,
         destructiveHint: false,
         openWorldHint: true,
@@ -335,7 +335,7 @@ export function createServer(options: CreateServerOptions): McpServer {
       });
       const capability = requireAppCapability(manager, args, {
         missingReason: "missing_app_capability",
-        missingMessage: "Missing quick-shell app capability.",
+        missingMessage: "Missing connexin app capability.",
         invalidReason: "invalid_app_capability",
       });
       if ("error" in capability) return capability.error;
@@ -356,14 +356,14 @@ export function createServer(options: CreateServerOptions): McpServer {
         content: [
           {
             type: "text",
-            text: "Quick-shell session details are available to the app.",
+            text: "Connexin session details are available to the app.",
           },
         ],
         structuredContent: asStructuredContent(
           publicStructuredContent(started.publicSummary),
         ),
         _meta: {
-          quickShellSession: appSession,
+          connexinSession: appSession,
         },
       };
     },
@@ -371,9 +371,9 @@ export function createServer(options: CreateServerOptions): McpServer {
 
   registerAppTool(
     server,
-    "record_quick_shell_output_confirmed",
+    "record_connexin_output_confirmed",
     {
-      title: "Record Quick Shell Output Confirmed",
+      title: "Record Connexin Output Confirmed",
       description:
         "App-only audit breadcrumb for user-confirmed output return.",
       inputSchema: {
@@ -388,7 +388,7 @@ export function createServer(options: CreateServerOptions): McpServer {
       outputSchema: {
         recorded: z.boolean(),
       },
-      annotations: toolAnnotations("Record Quick Shell Output Confirmed", {
+      annotations: toolAnnotations("Record Connexin Output Confirmed", {
         readOnlyHint: false,
         destructiveHint: false,
         openWorldHint: false,
@@ -412,14 +412,14 @@ export function createServer(options: CreateServerOptions): McpServer {
           content: [
             {
               type: "text",
-              text: "Missing quick-shell output confirmation capability.",
+              text: "Missing connexin output confirmation capability.",
             },
           ],
         };
       }
       const capability = requireAppCapability(manager, args, {
         missingReason: "missing_output_confirm_capability",
-        missingMessage: "Missing quick-shell output confirmation capability.",
+        missingMessage: "Missing connexin output confirmation capability.",
         invalidReason: "invalid_output_confirm_capability",
         auditFields: { hasByteCount: true },
       });
@@ -429,7 +429,7 @@ export function createServer(options: CreateServerOptions): McpServer {
       manager.recordOutputConfirmed(session.id, args.byteCount);
       return {
         content: [
-          { type: "text", text: "Quick-shell output confirmation recorded." },
+          { type: "text", text: "Connexin output confirmation recorded." },
         ],
         structuredContent: { recorded: true },
       };
@@ -438,11 +438,11 @@ export function createServer(options: CreateServerOptions): McpServer {
 
   registerAppTool(
     server,
-    "poll_quick_shell_session",
+    "poll_connexin_session",
     {
-      title: "Poll Quick Shell Session",
+      title: "Poll Connexin Session",
       description:
-        "App-only quick-shell terminal output poll for hosts that cannot reach the WebSocket bridge.",
+        "App-only connexin terminal output poll for hosts that cannot reach the WebSocket bridge.",
       inputSchema: {
         ...appCapabilityInputSchema(),
         afterSeq: z.number().int().min(0).optional(),
@@ -453,7 +453,7 @@ export function createServer(options: CreateServerOptions): McpServer {
         exited: z.boolean(),
         exitCode: z.number().nullable(),
       },
-      annotations: toolAnnotations("Poll Quick Shell Session", {
+      annotations: toolAnnotations("Poll Connexin Session", {
         readOnlyHint: false,
         destructiveHint: false,
         openWorldHint: false,
@@ -466,7 +466,7 @@ export function createServer(options: CreateServerOptions): McpServer {
     async (args) => {
       const capability = requireAppCapability(manager, args, {
         missingReason: "missing_poll_capability",
-        missingMessage: "Missing quick-shell poll capability.",
+        missingMessage: "Missing connexin poll capability.",
         invalidReason: "invalid_poll_capability",
       });
       if ("error" in capability) return capability.error;
@@ -484,14 +484,14 @@ export function createServer(options: CreateServerOptions): McpServer {
           content: [
             {
               type: "text",
-              text: "Quick-shell session is no longer available.",
+              text: "Connexin session is no longer available.",
             },
           ],
         };
       }
       return {
         content: [
-          { type: "text", text: "Quick-shell output is available to the app." },
+          { type: "text", text: "Connexin output is available to the app." },
         ],
         structuredContent: {
           sessionId: started.id,
@@ -500,7 +500,7 @@ export function createServer(options: CreateServerOptions): McpServer {
           exitCode: poll.exitCode,
         },
         _meta: {
-          quickShellPoll: poll,
+          connexinPoll: poll,
         },
       };
     },
@@ -508,11 +508,11 @@ export function createServer(options: CreateServerOptions): McpServer {
 
   registerAppTool(
     server,
-    "write_quick_shell_input",
+    "write_connexin_input",
     {
-      title: "Write Quick Shell Input",
+      title: "Write Connexin Input",
       description:
-        "App-only quick-shell terminal input for hosts that cannot reach the WebSocket bridge.",
+        "App-only connexin terminal input for hosts that cannot reach the WebSocket bridge.",
       inputSchema: {
         ...appCapabilityInputSchema(),
         data: utf8Max(config.maxInputBytes).optional(),
@@ -520,7 +520,7 @@ export function createServer(options: CreateServerOptions): McpServer {
       outputSchema: {
         written: z.boolean(),
       },
-      annotations: toolAnnotations("Write Quick Shell Input", {
+      annotations: toolAnnotations("Write Connexin Input", {
         readOnlyHint: false,
         destructiveHint: true,
         openWorldHint: true,
@@ -542,13 +542,13 @@ export function createServer(options: CreateServerOptions): McpServer {
         return {
           isError: true,
           content: [
-            { type: "text", text: "Missing quick-shell write capability." },
+            { type: "text", text: "Missing connexin write capability." },
           ],
         };
       }
       const capability = requireAppCapability(manager, args, {
         missingReason: "missing_write_capability",
-        missingMessage: "Missing quick-shell write capability.",
+        missingMessage: "Missing connexin write capability.",
         invalidReason: "invalid_write_capability",
         auditFields: { hasData: true },
       });
@@ -570,11 +570,11 @@ export function createServer(options: CreateServerOptions): McpServer {
           reason: `write_ignored_${result.reason}`,
         });
         return toolError(
-          `Quick-shell input not delivered: session ${result.reason}.`,
+          `Connexin input not delivered: session ${result.reason}.`,
         );
       }
       return {
-        content: [{ type: "text", text: "Quick-shell input written." }],
+        content: [{ type: "text", text: "Connexin input written." }],
         structuredContent: { written: true },
       };
     },
@@ -582,11 +582,11 @@ export function createServer(options: CreateServerOptions): McpServer {
 
   registerAppTool(
     server,
-    "resize_quick_shell_session",
+    "resize_connexin_session",
     {
-      title: "Resize Quick Shell Session",
+      title: "Resize Connexin Session",
       description:
-        "App-only quick-shell terminal resize for hosts that cannot reach the WebSocket bridge.",
+        "App-only connexin terminal resize for hosts that cannot reach the WebSocket bridge.",
       inputSchema: {
         ...appCapabilityInputSchema(),
         cols: z
@@ -605,7 +605,7 @@ export function createServer(options: CreateServerOptions): McpServer {
       outputSchema: {
         resized: z.boolean(),
       },
-      annotations: toolAnnotations("Resize Quick Shell Session", {
+      annotations: toolAnnotations("Resize Connexin Session", {
         readOnlyHint: false,
         destructiveHint: false,
         openWorldHint: false,
@@ -628,13 +628,13 @@ export function createServer(options: CreateServerOptions): McpServer {
         return {
           isError: true,
           content: [
-            { type: "text", text: "Missing quick-shell resize capability." },
+            { type: "text", text: "Missing connexin resize capability." },
           ],
         };
       }
       const capability = requireAppCapability(manager, args, {
         missingReason: "missing_resize_capability",
-        missingMessage: "Missing quick-shell resize capability.",
+        missingMessage: "Missing connexin resize capability.",
         invalidReason: "invalid_resize_capability",
         auditFields: { hasCols: true, hasRows: true },
       });
@@ -654,11 +654,11 @@ export function createServer(options: CreateServerOptions): McpServer {
           reason: `resize_ignored_${result.reason}`,
         });
         return toolError(
-          `Quick-shell resize not applied: session ${result.reason}.`,
+          `Connexin resize not applied: session ${result.reason}.`,
         );
       }
       return {
-        content: [{ type: "text", text: "Quick-shell session resized." }],
+        content: [{ type: "text", text: "Connexin session resized." }],
         structuredContent: { resized: true },
       };
     },
@@ -666,10 +666,10 @@ export function createServer(options: CreateServerOptions): McpServer {
 
   registerAppTool(
     server,
-    "close_quick_shell_session",
+    "close_connexin_session",
     {
-      title: "Close Quick Shell Session",
-      description: "App-only quick-shell session close.",
+      title: "Close Connexin Session",
+      description: "App-only connexin session close.",
       inputSchema: {
         ...appCapabilityInputSchema(),
       },
@@ -677,7 +677,7 @@ export function createServer(options: CreateServerOptions): McpServer {
         closed: z.boolean(),
         alreadyClosed: z.boolean().optional(),
       },
-      annotations: toolAnnotations("Close Quick Shell Session", {
+      annotations: toolAnnotations("Close Connexin Session", {
         readOnlyHint: false,
         destructiveHint: false,
         openWorldHint: false,
@@ -698,7 +698,7 @@ export function createServer(options: CreateServerOptions): McpServer {
       });
       const closeCapability = {
         missingReason: "missing_close_capability",
-        missingMessage: "Missing quick-shell close capability.",
+        missingMessage: "Missing connexin close capability.",
         invalidReason: "invalid_close_capability",
       };
       if (!args.sessionId || !args.appToken) {
@@ -716,15 +716,13 @@ export function createServer(options: CreateServerOptions): McpServer {
       const existing = manager.getSession(args.sessionId);
       if (!existing) {
         return {
-          content: [
-            { type: "text", text: "Quick-shell session already closed." },
-          ],
+          content: [{ type: "text", text: "Connexin session already closed." }],
           structuredContent: { closed: true, alreadyClosed: true },
         };
       }
 
       if (existing.appToken !== args.appToken) {
-        return toolError("Invalid quick-shell app capability.");
+        return toolError("Invalid connexin app capability.");
       }
       const session = existing;
 
@@ -734,8 +732,8 @@ export function createServer(options: CreateServerOptions): McpServer {
           {
             type: "text",
             text: closed
-              ? "Quick-shell session closed."
-              : "Unable to close quick-shell session; termination will be retried.",
+              ? "Connexin session closed."
+              : "Unable to close connexin session; termination will be retried.",
           },
         ],
         structuredContent: { closed },
@@ -745,16 +743,16 @@ export function createServer(options: CreateServerOptions): McpServer {
 
   registerAppTool(
     server,
-    "list_quick_shell_files",
+    "list_connexin_files",
     {
-      title: "List Quick Shell Files",
+      title: "List Connexin Files",
       description: "App-only confined SFTP directory listing.",
       inputSchema: {
         ...appCapabilityInputSchema(),
         path: utf8Max(config.maxFilePathBytes).optional(),
       },
       outputSchema: { count: z.number().int().min(0) },
-      annotations: toolAnnotations("List Quick Shell Files", {
+      annotations: toolAnnotations("List Connexin Files", {
         readOnlyHint: true,
         destructiveHint: false,
         openWorldHint: true,
@@ -768,7 +766,7 @@ export function createServer(options: CreateServerOptions): McpServer {
     async (args) => {
       const capability = requireAppCapability(manager, args, {
         missingReason: "missing_file_capability",
-        missingMessage: "Missing quick-shell file capability.",
+        missingMessage: "Missing connexin file capability.",
         invalidReason: "invalid_file_capability",
       });
       if ("error" in capability) return capability.error;
@@ -780,12 +778,12 @@ export function createServer(options: CreateServerOptions): McpServer {
           content: [
             {
               type: "text",
-              text: "Quick-shell file listing is available to the app.",
+              text: "Connexin file listing is available to the app.",
             },
           ],
           structuredContent: { count: entries.length },
           _meta: {
-            quickShellFiles: {
+            connexinFiles: {
               path: args.path ?? ".",
               entries,
               maxEmbeddedDownloadBytes: config.maxEmbeddedDownloadBytes,
@@ -794,7 +792,7 @@ export function createServer(options: CreateServerOptions): McpServer {
         };
       } catch (error) {
         return toolError(
-          `Unable to list quick-shell files: ${safeFileError(error)}.`,
+          `Unable to list connexin files: ${safeFileError(error)}.`,
         );
       }
     },
@@ -802,9 +800,9 @@ export function createServer(options: CreateServerOptions): McpServer {
 
   registerAppTool(
     server,
-    "prepare_quick_shell_file_operation",
+    "prepare_connexin_file_operation",
     {
-      title: "Prepare Quick Shell File Operation",
+      title: "Prepare Connexin File Operation",
       description: "App-only short-lived file operation capability.",
       inputSchema: {
         ...appCapabilityInputSchema(),
@@ -819,7 +817,7 @@ export function createServer(options: CreateServerOptions): McpServer {
         overwrite: z.boolean().optional(),
       },
       outputSchema: { prepared: z.boolean() },
-      annotations: toolAnnotations("Prepare Quick Shell File Operation", {
+      annotations: toolAnnotations("Prepare Connexin File Operation", {
         readOnlyHint: false,
         destructiveHint: false,
         openWorldHint: true,
@@ -832,7 +830,7 @@ export function createServer(options: CreateServerOptions): McpServer {
     async (args) => {
       const capability = requireAppCapability(manager, args, {
         missingReason: "missing_file_capability",
-        missingMessage: "Missing quick-shell file capability.",
+        missingMessage: "Missing connexin file capability.",
         invalidReason: "invalid_file_capability",
       });
       if ("error" in capability) return capability.error;
@@ -850,11 +848,11 @@ export function createServer(options: CreateServerOptions): McpServer {
           content: [
             {
               type: "text",
-              text: "Quick-shell file operation prepared for the app.",
+              text: "Connexin file operation prepared for the app.",
             },
           ],
           structuredContent: { prepared: true },
-          _meta: { quickShellFiles: { lease } },
+          _meta: { connexinFiles: { lease } },
         };
       } catch (error) {
         manager.recordAuditEvent("file_operation_failed", {
@@ -865,16 +863,16 @@ export function createServer(options: CreateServerOptions): McpServer {
           errorCode: safeFileError(error),
         });
         return toolError(
-          `Unable to prepare quick-shell file operation: ${safeFileError(error)}.`,
+          `Unable to prepare connexin file operation: ${safeFileError(error)}.`,
         );
       }
     },
   );
 
   for (const [toolName, operation, title] of [
-    ["mkdir_quick_shell_path", "mkdir", "Create Quick Shell Folder"],
-    ["rename_quick_shell_path", "rename", "Rename Quick Shell Path"],
-    ["delete_quick_shell_path", "delete", "Delete Quick Shell Path"],
+    ["mkdir_connexin_path", "mkdir", "Create Connexin Folder"],
+    ["rename_connexin_path", "rename", "Rename Connexin Path"],
+    ["delete_connexin_path", "delete", "Delete Connexin Path"],
   ] as const) {
     registerAppTool(
       server,
@@ -900,7 +898,7 @@ export function createServer(options: CreateServerOptions): McpServer {
       async (args) => {
         const capability = requireAppCapability(manager, args, {
           missingReason: "missing_file_capability",
-          missingMessage: "Missing quick-shell file capability.",
+          missingMessage: "Missing connexin file capability.",
           invalidReason: "invalid_file_capability",
         });
         if ("error" in capability) return capability.error;
@@ -916,7 +914,7 @@ export function createServer(options: CreateServerOptions): McpServer {
           });
           return {
             content: [
-              { type: "text", text: "Quick-shell file operation completed." },
+              { type: "text", text: "Connexin file operation completed." },
             ],
             structuredContent: { completed: true },
           };
@@ -929,7 +927,7 @@ export function createServer(options: CreateServerOptions): McpServer {
             errorCode: safeFileError(error),
           });
           return toolError(
-            `Quick-shell file operation failed: ${safeFileError(error)}.`,
+            `Connexin file operation failed: ${safeFileError(error)}.`,
           );
         }
       },
@@ -937,18 +935,18 @@ export function createServer(options: CreateServerOptions): McpServer {
   }
 
   for (const [name, uri] of [
-    ["quick-shell", APP_RESOURCE_URI],
-    ["quick-shell-v4", V4_APP_RESOURCE_URI],
-    ["quick-shell-v3", V3_APP_RESOURCE_URI],
-    ["quick-shell-v2", V2_APP_RESOURCE_URI],
-    ["quick-shell-legacy", LEGACY_APP_RESOURCE_URI],
+    ["connexin", APP_RESOURCE_URI],
+    ["connexin-v4", V4_APP_RESOURCE_URI],
+    ["connexin-v3", V3_APP_RESOURCE_URI],
+    ["connexin-v2", V2_APP_RESOURCE_URI],
+    ["connexin-legacy", LEGACY_APP_RESOURCE_URI],
   ] as const) {
     registerAppResource(
       server,
       name,
       uri,
       {
-        description: "quick-shell MCP App",
+        description: "connexin MCP App",
         _meta: {
           ui: appResourceMeta(bridgeBaseUrl),
         },

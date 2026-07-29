@@ -2,7 +2,7 @@ import { EventEmitter } from "node:events";
 import { describe, expect, it } from "vitest";
 import {
   parseCliArgs,
-  runQuickShellCli,
+  runConnexinCli,
   type CliPtyProcess,
 } from "../../src/cli/main.js";
 import { testRuntimeConfig } from "../server/helpers/runtime-config.js";
@@ -74,11 +74,11 @@ describe("parseCliArgs", () => {
   });
 });
 
-describe("runQuickShellCli", () => {
+describe("runConnexinCli", () => {
   it("lists explicit SSH aliases with labels", async () => {
     let output = "";
 
-    const result = await runQuickShellCli({
+    const result = await runConnexinCli({
       args: ["--list"],
       config: testRuntimeConfig(),
       allowedHosts: new Set(["devbox", "fileserver"]),
@@ -97,7 +97,7 @@ describe("runQuickShellCli", () => {
   it("rejects devices that are not explicit SSH aliases", async () => {
     let error = "";
 
-    const result = await runQuickShellCli({
+    const result = await runConnexinCli({
       args: ["unknown"],
       config: testRuntimeConfig(),
       allowedHosts: new Set(["devbox"]),
@@ -115,7 +115,7 @@ describe("runQuickShellCli", () => {
     const calls: Array<{ file: string; args: string[] }> = [];
     const stdin = new FakeInput();
     let error = "";
-    const running = runQuickShellCli({
+    const running = runConnexinCli({
       args: ["devbox", "--suggest", "hostname"],
       config: testRuntimeConfig(),
       allowedHosts: new Set(["devbox"]),
@@ -150,7 +150,7 @@ describe("runQuickShellCli", () => {
 
   it("never writes an uninserted suggestion when ssh exits", async () => {
     const ptys: FakeCliPty[] = [];
-    const running = runQuickShellCli({
+    const running = runConnexinCli({
       args: ["devbox", "--suggest", "hostname"],
       config: testRuntimeConfig(),
       allowedHosts: new Set(["devbox"]),
@@ -174,7 +174,7 @@ describe("runQuickShellCli", () => {
   it("forwards ordinary input and keeps explicit insertion available", async () => {
     const ptys: FakeCliPty[] = [];
     const stdin = new FakeInput();
-    const running = runQuickShellCli({
+    const running = runConnexinCli({
       args: ["devbox", "--suggest", "hostname"],
       config: testRuntimeConfig(),
       allowedHosts: new Set(["devbox"]),
@@ -201,7 +201,7 @@ describe("runQuickShellCli", () => {
   it("reports unknown PTY termination as failure", async () => {
     const ptys: FakeCliPty[] = [];
     let error = "";
-    const running = runQuickShellCli({
+    const running = runConnexinCli({
       args: ["devbox"],
       config: testRuntimeConfig(),
       allowedHosts: new Set(["devbox"]),

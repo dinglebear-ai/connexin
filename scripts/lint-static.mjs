@@ -46,11 +46,18 @@ if (hardcodedTheme.test(appController)) {
 }
 
 const rootTsconfig = JSON.parse(read("tsconfig.json"));
+const packageManifest = read("package.json");
+const connexinBinEntries = packageManifest.match(
+  /^\s*"connexin"\s*:\s*"dist\/server\/cli\/main\.js"\s*,?$/gm,
+);
+if (connexinBinEntries?.length !== 1) {
+  fail("package.json must declare exactly one connexin CLI binary");
+}
 const expectedReferences = new Set([
-  "./tsconfig.app.json",
-  "./tsconfig.server.json",
-  "./tsconfig.scripts.json",
-  "./tsconfig.test.json",
+  "./config/typescript/tsconfig.app.json",
+  "./config/typescript/tsconfig.server.json",
+  "./config/typescript/tsconfig.scripts.json",
+  "./config/typescript/tsconfig.test.json",
 ]);
 for (const reference of rootTsconfig.references ?? []) {
   expectedReferences.delete(reference.path);

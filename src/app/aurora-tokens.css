@@ -3,7 +3,7 @@
  * Source of truth: aurora-design-system/registry/aurora/styles/aurora.css
  * (repo: ~/workspace/aurora, live: https://aurora.tootie.tv/r/aurora-tokens.json)
  *
- * This is a hand-trimmed subset containing only the tokens quick-shell uses.
+ * This is a hand-trimmed subset containing only the tokens connexin uses.
  * Do NOT hand-edit values here — change them in the Aurora registry and re-sync,
  * otherwise this file silently forks from the design system (which is exactly
  * what the previous inlined hex literals in styles.css had already done).

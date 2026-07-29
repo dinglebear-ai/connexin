@@ -13,17 +13,17 @@ import {
 describe("targetFor", () => {
   it("maps every supported platform/arch to an asset and binary name", () => {
     expect(targetFor("linux", "x64")).toEqual({
-      asset: "quick-shell-sftp-linux-x86_64.tar.gz",
-      binary: "quick-shell-sftp",
+      asset: "connexin-sftp-linux-x86_64.tar.gz",
+      binary: "connexin-sftp",
     });
     expect(targetFor("darwin", "arm64").asset).toBe(
-      "quick-shell-sftp-darwin-arm64.tar.gz",
+      "connexin-sftp-darwin-arm64.tar.gz",
     );
   });
 
   it("uses the .exe binary name on Windows", () => {
-    expect(targetFor("win32", "x64").binary).toBe("quick-shell-sftp.exe");
-    expect(targetFor("win32", "arm64").binary).toBe("quick-shell-sftp.exe");
+    expect(targetFor("win32", "x64").binary).toBe("connexin-sftp.exe");
+    expect(targetFor("win32", "arm64").binary).toBe("connexin-sftp.exe");
   });
 
   it("rejects unsupported combinations and names what is supported", () => {
@@ -49,10 +49,8 @@ describe("targetFor", () => {
 
 describe("release coordinates", () => {
   it("prefixes a bare version with v", () => {
-    expect(releaseVersion({ QUICK_SHELL_HELPER_VERSION: "1.2.3" })).toBe(
-      "v1.2.3",
-    );
-    expect(releaseVersion({ QUICK_SHELL_HELPER_VERSION: "v1.2.3" })).toBe(
+    expect(releaseVersion({ CONNEXIN_HELPER_VERSION: "1.2.3" })).toBe("v1.2.3");
+    expect(releaseVersion({ CONNEXIN_HELPER_VERSION: "v1.2.3" })).toBe(
       "v1.2.3",
     );
   });
@@ -70,39 +68,39 @@ describe("release coordinates", () => {
   it("honours a base URL override and trims trailing slashes", () => {
     expect(
       releaseBaseUrl({
-        QUICK_SHELL_RELEASE_BASE_URL: "https://mirror.test/dl//",
+        CONNEXIN_RELEASE_BASE_URL: "https://mirror.test/dl//",
       }),
     ).toBe("https://mirror.test/dl");
   });
 
   it("builds a full asset URL", () => {
     const env = {
-      QUICK_SHELL_RELEASE_BASE_URL: "https://mirror.test/dl",
-      QUICK_SHELL_HELPER_VERSION: "9.9.9",
+      CONNEXIN_RELEASE_BASE_URL: "https://mirror.test/dl",
+      CONNEXIN_HELPER_VERSION: "9.9.9",
     };
     expect(downloadUrl(targetFor("linux", "x64"), env)).toBe(
-      "https://mirror.test/dl/v9.9.9/quick-shell-sftp-linux-x86_64.tar.gz",
+      "https://mirror.test/dl/v9.9.9/connexin-sftp-linux-x86_64.tar.gz",
     );
   });
 });
 
 describe("install guards", () => {
   it("honours the skip flag", () => {
-    expect(shouldSkipDownload({ QUICK_SHELL_SKIP_HELPER_DOWNLOAD: "1" })).toBe(
+    expect(shouldSkipDownload({ CONNEXIN_SKIP_HELPER_DOWNLOAD: "1" })).toBe(
       true,
     );
-    expect(
-      shouldSkipDownload({ QUICK_SHELL_SKIP_HELPER_DOWNLOAD: "true" }),
-    ).toBe(true);
+    expect(shouldSkipDownload({ CONNEXIN_SKIP_HELPER_DOWNLOAD: "true" })).toBe(
+      true,
+    );
     expect(shouldSkipDownload({})).toBe(false);
-    expect(shouldSkipDownload({ QUICK_SHELL_SKIP_HELPER_DOWNLOAD: "0" })).toBe(
+    expect(shouldSkipDownload({ CONNEXIN_SKIP_HELPER_DOWNLOAD: "0" })).toBe(
       false,
     );
   });
 
   it("detects a source checkout by its Go sources", () => {
     const exists = (path: string) =>
-      path.endsWith("go.mod") || path.endsWith("quick-shell-sftp");
+      path.endsWith("go.mod") || path.endsWith("connexin-sftp");
     expect(isSourceCheckout("/repo", exists)).toBe(true);
     expect(isSourceCheckout("/repo", () => false)).toBe(false);
   });
@@ -111,7 +109,7 @@ describe("install guards", () => {
 describe("helperDestination", () => {
   it("matches the layout defaultSftpHelperPath() expects", () => {
     expect(helperDestination(targetFor("linux", "x64"), "/pkg")).toBe(
-      "/pkg/dist/bin/quick-shell-sftp",
+      "/pkg/dist/bin/connexin-sftp",
     );
   });
 });

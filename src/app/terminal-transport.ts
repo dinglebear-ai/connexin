@@ -1,10 +1,10 @@
 import type {
   ClientTerminalMessage,
-  QuickShellAppSession,
+  ConnexinAppSession,
 } from "../shared/protocol.js";
 
 export function openTerminalSocket(
-  session: Pick<QuickShellAppSession, "wsUrl">,
+  session: Pick<ConnexinAppSession, "wsUrl">,
 ): WebSocket {
   return new WebSocket(session.wsUrl);
 }

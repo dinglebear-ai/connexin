@@ -135,7 +135,7 @@ const REDACTED_FIELD_PATTERN =
 const SAFE_FIELD_ALLOWLIST = new Set([
   "hasAppToken",
   "sshConfigPath",
-  "quickShellConfigPath",
+  "connexinConfigPath",
   "baseUrl",
   "listenUrl",
 ]);
