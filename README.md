@@ -67,6 +67,8 @@ The local CLI does not accept `--reason`. Use the MCP API `reason` field when th
 | `QUICK_SHELL_CONFIG`                         | `$HOME/.config/quick-shell/quick-shell.toml` | Optional device metadata file. Missing file is treated as empty metadata.                                                                                                                                                                              |
 | `QUICK_SHELL_AUDIT_LOG`                      | stderr audit output                          | JSONL audit log path.                                                                                                                                                                                                                                  |
 | `QUICK_SHELL_HTTP_TOKEN`                     | unset                                        | Required bearer token for `--http` mode.                                                                                                                                                                                                               |
+| `QUICK_SHELL_REQUIRE_APP_HOST`               | `1`                                          | Refuses session tokens unless MCP Apps support can be verified. Stateless `--http` cannot retain this capability; set `0` only for a trusted app-capable host.                                                                                         |
+| `QUICK_SHELL_FILE_ROOT_CONFINEMENT_ENFORCED` | `0`                                          | Enables file operations only after the remote SFTP account enforces its root (for example, chrooted `internal-sftp`).                                                                                                                                  |
 | `QUICK_SHELL_HTTP_PORT`                      | random port                                  | Localhost HTTP MCP port for `--http` mode.                                                                                                                                                                                                             |
 | `QUICK_SHELL_ALLOWED_ORIGINS`                | empty                                        | Comma-separated WebSocket `Origin` allowlist for `/terminal`. Entries are exact origins or `https://*.example.com` wildcards matching exactly one subdomain label. Empty means no origin filter. Required when `QUICK_SHELL_BRIDGE_PUBLIC_URL` is set. |
 | `QUICK_SHELL_BRIDGE_HOST`                    | `127.0.0.1`                                  | Terminal bridge bind host. Use `0.0.0.0` only behind a trusted TLS reverse proxy.                                                                                                                                                                      |
@@ -219,6 +221,11 @@ Important sticky limits:
 - Sessions expire by absolute age and idle timeout.
 - Sessions are closed on process shutdown and process signals.
 - Bridge clients are closed on authentication timeout, invalid schema, invalid token, backpressure, or session replacement.
+
+### File-operation confinement
+
+File operations are disabled by default. Set `QUICK_SHELL_FILE_ROOT_CONFINEMENT_ENFORCED=1` only when the remote SSH account is confined by the server (for example a chrooted `internal-sftp` account) to the intended file root. Client-side SFTP pathname checks are not atomic against a concurrent symlink swap and are not a substitute for server-side confinement.
+
 - There is no durable transcript or session resume in v1.
 
 ## Output Handling

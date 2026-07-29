@@ -88,6 +88,17 @@ async function listed(session: FileSession, name: string) {
 }
 
 describe("FileSession", () => {
+  it("fails closed before starting an SFTP helper without server confinement", async () => {
+    const factory = vi.fn(helper);
+    const session = new FileSession(
+      testRuntimeConfig({ fileRootConfinementEnforced: false }),
+      factory,
+    );
+    await expect(session.list(".")).rejects.toThrow(
+      "file_root_confinement_not_enforced",
+    );
+    expect(factory).not.toHaveBeenCalled();
+  });
   it("starts one helper lazily", async () => {
     const value = helper();
     const factory = vi.fn(() => value);
@@ -212,6 +223,21 @@ describe("FileSession", () => {
     await expect(session.mutate(expired, "mkdir")).rejects.toThrow(
       "invalid_lease",
     );
+  });
+
+  it("reclaims expired leases before enforcing the lease limit", async () => {
+    const session = new FileSession(
+      testRuntimeConfig({
+        fileOperationLeaseTtlMs: 1,
+        maxFileOperationLeases: 1,
+      }),
+      () => helper(),
+    );
+    await session.prepare({ operation: "mkdir", path: "first" });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    await expect(
+      session.prepare({ operation: "mkdir", path: "second" }),
+    ).resolves.toEqual(expect.any(String));
   });
 
   it("revalidates fingerprints immediately before mutation", async () => {

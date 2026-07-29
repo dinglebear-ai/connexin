@@ -38,6 +38,7 @@ export function testRuntimeConfig(
     fileTransferMaxDurationMs: 30 * 60_000,
     fileShutdownTimeoutMs: 5_000,
     requireAppHost: true,
+    fileRootConfinementEnforced: true,
     ...overrides,
   };
 }

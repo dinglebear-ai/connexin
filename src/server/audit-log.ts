@@ -65,8 +65,7 @@ export interface AuditRateLimiter {
  *
  * - `onSuppressionStarted` fires as soon as records begin being dropped, so an
  *   in-progress flood is visible without waiting for the window to close.
- * - `onSuppressionSummary` fires at window close with the total dropped, which
- *   is only knowable then and is the first thing asked after an incident.
+ * - `onSuppressionSummary` fires at window close with the total dropped.
  */
 export function createAuditRateLimiter(options: {
   maxEvents: number;
@@ -79,12 +78,19 @@ export function createAuditRateLimiter(options: {
   let windowStartedAt = now();
   let eventCount = 0;
   let suppressedCount = 0;
+  let summaryTimer: NodeJS.Timeout | undefined;
+
+  const flushSummary = () => {
+    if (summaryTimer) clearTimeout(summaryTimer);
+    summaryTimer = undefined;
+    if (suppressedCount > 0) options.onSuppressionSummary(suppressedCount);
+  };
 
   return {
     record(writeDetailedRecord) {
       const currentTime = now();
       if (currentTime - windowStartedAt >= options.windowMs) {
-        if (suppressedCount > 0) options.onSuppressionSummary(suppressedCount);
+        flushSummary();
         windowStartedAt = currentTime;
         eventCount = 0;
         suppressedCount = 0;
@@ -95,7 +101,15 @@ export function createAuditRateLimiter(options: {
         return;
       }
       suppressedCount += 1;
-      if (suppressedCount === 1) options.onSuppressionStarted();
+      if (suppressedCount === 1) {
+        options.onSuppressionStarted();
+        const remaining = Math.max(
+          0,
+          options.windowMs - (currentTime - windowStartedAt),
+        );
+        summaryTimer = setTimeout(flushSummary, remaining);
+        summaryTimer.unref();
+      }
     },
   };
 }

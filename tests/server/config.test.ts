@@ -18,13 +18,24 @@ describe("loadRuntimeConfig", () => {
     ).toBe("secret");
   });
 
+  it("defaults file operations to server-enforced confinement", () => {
+    expect(loadRuntimeConfig({}).fileRootConfinementEnforced).toBe(false);
+    expect(
+      loadRuntimeConfig({ QUICK_SHELL_FILE_ROOT_CONFINEMENT_ENFORCED: "1" })
+        .fileRootConfinementEnforced,
+    ).toBe(true);
+  });
+
   it("rejects invalid numeric overrides", () => {
     expect(() => loadRuntimeConfig({ QUICK_SHELL_MAX_SESSIONS: "0" })).toThrow(
-      "positive number",
+      "positive integer",
     );
     expect(() =>
       loadRuntimeConfig({ QUICK_SHELL_MAX_SESSIONS: "nope" }),
-    ).toThrow("positive number");
+    ).toThrow("positive integer");
+    expect(() =>
+      loadRuntimeConfig({ QUICK_SHELL_MAX_SESSIONS: "1.5" }),
+    ).toThrow("positive integer");
   });
 
   it("parses allowed origins", () => {

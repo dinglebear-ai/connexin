@@ -257,10 +257,18 @@ export class ChildSftpHelper implements SftpHelper {
   }
 
   async drain(timeoutMs: number): Promise<void> {
-    await Promise.race([
-      this.closed.then(() => undefined),
-      new Promise<void>((resolve) => setTimeout(resolve, timeoutMs)),
-    ]);
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      await Promise.race([
+        this.closed.then(() => undefined),
+        new Promise<void>((resolve) => {
+          timer = setTimeout(resolve, timeoutMs);
+          timer.unref();
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
     if (this.child.exitCode === null && this.child.signalCode === null)
       this.kill("SIGKILL");
   }
