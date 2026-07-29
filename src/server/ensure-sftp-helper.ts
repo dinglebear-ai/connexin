@@ -40,10 +40,10 @@ export function ensureSftpHelper(
 
   // An explicit override means the operator manages this binary themselves;
   // downloading over their chosen path would be presumptuous.
-  if (env.QUICK_SHELL_SFTP_HELPER?.trim()) {
+  if (env.CONNEXIN_SFTP_HELPER?.trim()) {
     return {
       status: "user-managed",
-      reason: `QUICK_SHELL_SFTP_HELPER points at ${helperPath}, which does not exist`,
+      reason: `CONNEXIN_SFTP_HELPER points at ${helperPath}, which does not exist`,
     };
   }
 

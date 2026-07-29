@@ -75,7 +75,7 @@ export function spawnSftpHelper(options: SpawnSftpHelperOptions): SftpHelper {
       cwd: options.cwd,
       env: {
         ...options.env,
-        QUICK_SHELL_SFTP_CONNECT_TIMEOUT_SECONDS: String(
+        CONNEXIN_SFTP_CONNECT_TIMEOUT_SECONDS: String(
           options.connectTimeoutSeconds ?? 15,
         ),
       },

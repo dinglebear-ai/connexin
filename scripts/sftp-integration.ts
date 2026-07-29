@@ -19,7 +19,7 @@ const helper = spawnSftpHelper({
   connectTimeoutSeconds: 10,
 });
 const root = await helper.request<{ path: string }>("root", {});
-const directory = `${root.path}/.quick-shell-integration-${randomUUID()}`;
+const directory = `${root.path}/.connexin-integration-${randomUUID()}`;
 const target = `${directory}/marker.bin`;
 const renamed = `${directory}/renamed.bin`;
 const first = Buffer.from("first-marker");

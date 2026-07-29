@@ -466,12 +466,12 @@ func readControlLine(reader *bufio.Reader) ([]byte, error) {
 	}
 }
 
-func usageError(message string) error { return fmt.Errorf("quick-shell-sftp: %s", message) }
+func usageError(message string) error { return fmt.Errorf("connexin-sftp: %s", message) }
 
 func siblingTempPath(target string) (string, error) {
 	var suffix [12]byte
 	if _, err := rand.Read(suffix[:]); err != nil {
 		return "", err
 	}
-	return path.Join(path.Dir(target), fmt.Sprintf(".%s.quick-shell-%x", path.Base(target), suffix[:])), nil
+	return path.Join(path.Dir(target), fmt.Sprintf(".%s.connexin-%x", path.Base(target), suffix[:])), nil
 }

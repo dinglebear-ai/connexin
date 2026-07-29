@@ -61,18 +61,18 @@ async function writeManifestFixture(root: string): Promise<void> {
   const files: Record<string, string> = {
     "package.json": "{}\n",
     "package-lock.json": "{}\n",
-    "mcp-app.html": "<html></html>\n",
+    "src/app/mcp-app.html": "<html></html>\n",
     "src/server/main.ts": "export const server = 1;\n",
     "src/shared/protocol.ts": "export const protocol = 1;\n",
     "src/cli/main.ts": "export const cli = 1;\n",
-    "dist/app/mcp-app.html": "<html>built</html>\n",
+    "dist/app/src/app/mcp-app.html": "<html>built</html>\n",
     "dist/server/server/main.js": "export const server = 1;\n",
     "dist/server/server/main.d.ts": "export declare const server = 1;\n",
     "dist/server/shared/protocol.js": "export const protocol = 1;\n",
     "dist/server/shared/protocol.d.ts": "export declare const protocol = 1;\n",
     "dist/server/cli/main.js": "export const cli = 1;\n",
     "dist/server/cli/main.d.ts": "export declare const cli = 1;\n",
-    "dist/bin/quick-shell-sftp": "helper\n",
+    "dist/bin/connexin-sftp": "helper\n",
   };
   await Promise.all(
     Object.entries(files).map(([path, contents]) =>
@@ -84,9 +84,9 @@ async function writeManifestFixture(root: string): Promise<void> {
   await runGitOk(
     [
       "-c",
-      "user.name=Quick Shell",
+      "user.name=Connexin",
       "-c",
-      "user.email=quick-shell@example.invalid",
+      "user.email=connexin@example.invalid",
       "commit",
       "-m",
       "fixture",
@@ -97,7 +97,7 @@ async function writeManifestFixture(root: string): Promise<void> {
 
 describe("write-build-manifest", () => {
   it("fails when git metadata cannot be read", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "quick-shell-manifest-"));
+    const dir = await mkdtemp(join(tmpdir(), "connexin-manifest-"));
 
     const result = await runNode(
       [resolve("scripts/write-build-manifest.mjs")],
@@ -111,7 +111,7 @@ describe("write-build-manifest", () => {
   });
 
   it("rejects unexpected stale artifacts instead of adding them to the manifest", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "quick-shell-manifest-"));
+    const dir = await mkdtemp(join(tmpdir(), "connexin-manifest-"));
     await writeManifestFixture(dir);
     await writeFixtureFile(
       dir,

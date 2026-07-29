@@ -31,6 +31,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Audit production and development dependencies
+        run: npm audit --audit-level=high
+
       - name: Test SFTP helper
         run: go test ./... && go vet ./...
 
@@ -39,15 +42,15 @@ jobs:
 
       - name: Real OpenSSH SFTP integration
         run: |
-          mkdir -p "$HOME/.ssh" /tmp/quick-shell-sshd
-          ssh-keygen -q -t ed25519 -N '' -f /tmp/quick-shell-sshd/id
-          cat /tmp/quick-shell-sshd/id.pub >> "$HOME/.ssh/authorized_keys"
+          mkdir -p "$HOME/.ssh" /tmp/connexin-sshd
+          ssh-keygen -q -t ed25519 -N '' -f /tmp/connexin-sshd/id
+          cat /tmp/connexin-sshd/id.pub >> "$HOME/.ssh/authorized_keys"
           chmod 700 "$HOME/.ssh"
           chmod 600 "$HOME/.ssh/authorized_keys"
           sudo mkdir -p /run/sshd
           sudo /usr/sbin/sshd -p 22229
-          printf 'Host quick-shell-ci\n  HostName 127.0.0.1\n  Port 22229\n  User %s\n  IdentityFile /tmp/quick-shell-sshd/id\n  StrictHostKeyChecking no\n  UserKnownHostsFile /dev/null\n' "$USER" > /tmp/quick-shell-sshd/config
-          npm run test:sftp-integration -- "$PWD/dist/bin/quick-shell-sftp" /tmp/quick-shell-sshd/config quick-shell-ci
+          printf 'Host connexin-ci\n  HostName 127.0.0.1\n  Port 22229\n  User %s\n  IdentityFile /tmp/connexin-sshd/id\n  StrictHostKeyChecking no\n  UserKnownHostsFile /dev/null\n' "$USER" > /tmp/connexin-sshd/config
+          npm run test:sftp-integration -- "$PWD/dist/bin/connexin-sftp" /tmp/connexin-sshd/config connexin-ci
 
       - name: Lint
         run: npm run lint

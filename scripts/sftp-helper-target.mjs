@@ -16,43 +16,43 @@ const TARGETS = new Map([
   [
     "linux/x64",
     {
-      asset: "quick-shell-sftp-linux-x86_64.tar.gz",
-      binary: "quick-shell-sftp",
+      asset: "connexin-sftp-linux-x86_64.tar.gz",
+      binary: "connexin-sftp",
     },
   ],
   [
     "linux/arm64",
     {
-      asset: "quick-shell-sftp-linux-arm64.tar.gz",
-      binary: "quick-shell-sftp",
+      asset: "connexin-sftp-linux-arm64.tar.gz",
+      binary: "connexin-sftp",
     },
   ],
   [
     "darwin/x64",
     {
-      asset: "quick-shell-sftp-darwin-x86_64.tar.gz",
-      binary: "quick-shell-sftp",
+      asset: "connexin-sftp-darwin-x86_64.tar.gz",
+      binary: "connexin-sftp",
     },
   ],
   [
     "darwin/arm64",
     {
-      asset: "quick-shell-sftp-darwin-arm64.tar.gz",
-      binary: "quick-shell-sftp",
+      asset: "connexin-sftp-darwin-arm64.tar.gz",
+      binary: "connexin-sftp",
     },
   ],
   [
     "win32/x64",
     {
-      asset: "quick-shell-sftp-windows-x86_64.tar.gz",
-      binary: "quick-shell-sftp.exe",
+      asset: "connexin-sftp-windows-x86_64.tar.gz",
+      binary: "connexin-sftp.exe",
     },
   ],
   [
     "win32/arm64",
     {
-      asset: "quick-shell-sftp-windows-arm64.tar.gz",
-      binary: "quick-shell-sftp.exe",
+      asset: "connexin-sftp-windows-arm64.tar.gz",
+      binary: "connexin-sftp.exe",
     },
   ],
 ]);
@@ -85,12 +85,12 @@ export function packageVersion() {
  * must assert that the npm version and the git tag match exactly.
  */
 export function releaseVersion(env = process.env) {
-  const raw = env.QUICK_SHELL_HELPER_VERSION?.trim() || packageVersion();
+  const raw = env.CONNEXIN_HELPER_VERSION?.trim() || packageVersion();
   return raw.startsWith("v") ? raw : `v${raw}`;
 }
 
 export function releaseBaseUrl(env = process.env) {
-  const base = env.QUICK_SHELL_RELEASE_BASE_URL?.trim();
+  const base = env.CONNEXIN_RELEASE_BASE_URL?.trim();
   if (base) return base.replace(/\/+$/, "");
   // Canonical repo, not a rename redirect — fresh installs must not depend on
   // GitHub forwarding an old owner/name.
@@ -107,7 +107,7 @@ export function helperDestination(target, root = packageRoot()) {
 }
 
 export function shouldSkipDownload(env = process.env) {
-  const flag = env.QUICK_SHELL_SKIP_HELPER_DOWNLOAD?.trim();
+  const flag = env.CONNEXIN_SKIP_HELPER_DOWNLOAD?.trim();
   return flag === "1" || flag === "true";
 }
 
@@ -121,6 +121,6 @@ export function shouldSkipDownload(env = process.env) {
 export function isSourceCheckout(root = packageRoot(), exists = existsSync) {
   return (
     exists(resolve(root, "go.mod")) &&
-    exists(resolve(root, "cmd", "quick-shell-sftp"))
+    exists(resolve(root, "cmd", "connexin-sftp"))
   );
 }

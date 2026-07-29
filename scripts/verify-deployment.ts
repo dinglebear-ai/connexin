@@ -46,28 +46,26 @@ function envList(name: string, fallback: string[]): string[] {
   return value.split(/\s+/).filter(Boolean);
 }
 
-const UPSTREAM = envValue("QUICK_SHELL_VERIFY_UPSTREAM", "quick-shell");
-const CONTAINER_NAME = optionalEnvValue("QUICK_SHELL_VERIFY_CONTAINER");
-const CONTAINER_USER = optionalEnvValue("QUICK_SHELL_VERIFY_USER");
-const CONTAINER_HOME = optionalEnvValue("QUICK_SHELL_VERIFY_HOME");
-const GATEWAY_CLI = envValue("QUICK_SHELL_VERIFY_GATEWAY_CLI", "gatewayctl");
-const GATEWAY_CONFIG_PATH = optionalEnvValue(
-  "QUICK_SHELL_VERIFY_GATEWAY_CONFIG",
-);
-const CONTAINER_PATH = envValue("QUICK_SHELL_VERIFY_PATH", "/opt/quick-shell");
-const EXPECTED_GATEWAY_COMMAND = envValue("QUICK_SHELL_VERIFY_COMMAND", "node");
-const EXPECTED_GATEWAY_ARGS = envList("QUICK_SHELL_VERIFY_ARGS", [
+const UPSTREAM = envValue("CONNEXIN_VERIFY_UPSTREAM", "connexin");
+const CONTAINER_NAME = optionalEnvValue("CONNEXIN_VERIFY_CONTAINER");
+const CONTAINER_USER = optionalEnvValue("CONNEXIN_VERIFY_USER");
+const CONTAINER_HOME = optionalEnvValue("CONNEXIN_VERIFY_HOME");
+const GATEWAY_CLI = envValue("CONNEXIN_VERIFY_GATEWAY_CLI", "gatewayctl");
+const GATEWAY_CONFIG_PATH = optionalEnvValue("CONNEXIN_VERIFY_GATEWAY_CONFIG");
+const CONTAINER_PATH = envValue("CONNEXIN_VERIFY_PATH", "/opt/connexin");
+const EXPECTED_GATEWAY_COMMAND = envValue("CONNEXIN_VERIFY_COMMAND", "node");
+const EXPECTED_GATEWAY_ARGS = envList("CONNEXIN_VERIFY_ARGS", [
   `${CONTAINER_PATH}/dist/server/server/main.js`,
   "--stdio",
 ]);
-const EXPECTED_AUDIT_LOG = optionalEnvValue("QUICK_SHELL_VERIFY_AUDIT_LOG");
-const EXPECTED_BRIDGE_HOST = optionalEnvValue("QUICK_SHELL_VERIFY_BRIDGE_HOST");
-const EXPECTED_BRIDGE_PORT = optionalEnvValue("QUICK_SHELL_VERIFY_BRIDGE_PORT");
+const EXPECTED_AUDIT_LOG = optionalEnvValue("CONNEXIN_VERIFY_AUDIT_LOG");
+const EXPECTED_BRIDGE_HOST = optionalEnvValue("CONNEXIN_VERIFY_BRIDGE_HOST");
+const EXPECTED_BRIDGE_PORT = optionalEnvValue("CONNEXIN_VERIFY_BRIDGE_PORT");
 const EXPECTED_BRIDGE_PUBLIC_URL = optionalEnvValue(
-  "QUICK_SHELL_VERIFY_BRIDGE_PUBLIC_URL",
+  "CONNEXIN_VERIFY_BRIDGE_PUBLIC_URL",
 );
-const APP_RESOURCE_URI = "ui://quick-shell/mcp-app.v3.html";
-const BUILD_MANIFEST_PATH = "dist/quick-shell-build-manifest.json";
+const APP_RESOURCE_URI = "ui://connexin/mcp-app.v3.html";
+const BUILD_MANIFEST_PATH = "dist/connexin-build-manifest.json";
 const manifestFilePathSchema = z
   .string()
   .min(1)
@@ -168,35 +166,35 @@ const EXPECTED_GATEWAY_PROCESS = {
   args: EXPECTED_GATEWAY_ARGS,
 };
 // Tool ids are namespaced by the gateway upstream name, so they follow
-// QUICK_SHELL_VERIFY_UPSTREAM rather than hardcoding the default.
+// CONNEXIN_VERIFY_UPSTREAM rather than hardcoding the default.
 const qualifiedTool = (name: string) => `${UPSTREAM}::${name}`;
 const REQUIRED_MODEL_TOOLS = [
-  "check_quick_shell",
-  "list_quick_shell_devices",
-  "open_quick_shell",
+  "check_connexin",
+  "list_connexin_devices",
+  "open_connexin",
 ].map(qualifiedTool);
 const APP_ONLY_TOOLS = [
-  "get_quick_shell_session",
-  "poll_quick_shell_session",
-  "write_quick_shell_input",
-  "resize_quick_shell_session",
-  "close_quick_shell_session",
-  "record_quick_shell_output_confirmed",
-  "list_quick_shell_files",
-  "prepare_quick_shell_file_operation",
-  "mkdir_quick_shell_path",
-  "rename_quick_shell_path",
-  "delete_quick_shell_path",
+  "get_connexin_session",
+  "poll_connexin_session",
+  "write_connexin_input",
+  "resize_connexin_session",
+  "close_connexin_session",
+  "record_connexin_output_confirmed",
+  "list_connexin_files",
+  "prepare_connexin_file_operation",
+  "mkdir_connexin_path",
+  "rename_connexin_path",
+  "delete_connexin_path",
 ].map(qualifiedTool);
 const REQUIRED_RUNTIME_TOOLS = [...REQUIRED_MODEL_TOOLS, ...APP_ONLY_TOOLS];
 const REQUIRED_RUNTIME_TOOL_NAMES = REQUIRED_RUNTIME_TOOLS.map((tool) =>
-  tool.replace(/^quick-shell::/, ""),
+  tool.replace(/^connexin::/, ""),
 );
 
 const RECOVERY_HINT = [
   "Recovery:",
-  "  Restart or recycle the configured gateway upstream for quick-shell.",
-  "  Then rerun npm run verify:deployment with the same QUICK_SHELL_VERIFY_* environment.",
+  "  Restart or recycle the configured gateway upstream for connexin.",
+  "  Then rerun npm run verify:deployment with the same CONNEXIN_VERIFY_* environment.",
 ].join("\n");
 
 function insideDeploymentTarget(): boolean {
@@ -524,16 +522,16 @@ export async function runVerifyDeployment(
 
   const envExpectations = [
     EXPECTED_AUDIT_LOG
-      ? `QUICK_SHELL_AUDIT_LOG = "${EXPECTED_AUDIT_LOG}"`
+      ? `CONNEXIN_AUDIT_LOG = "${EXPECTED_AUDIT_LOG}"`
       : undefined,
     EXPECTED_BRIDGE_HOST
-      ? `QUICK_SHELL_BRIDGE_HOST = "${EXPECTED_BRIDGE_HOST}"`
+      ? `CONNEXIN_BRIDGE_HOST = "${EXPECTED_BRIDGE_HOST}"`
       : undefined,
     EXPECTED_BRIDGE_PORT
-      ? `QUICK_SHELL_BRIDGE_PORT = "${EXPECTED_BRIDGE_PORT}"`
+      ? `CONNEXIN_BRIDGE_PORT = "${EXPECTED_BRIDGE_PORT}"`
       : undefined,
     EXPECTED_BRIDGE_PUBLIC_URL
-      ? `QUICK_SHELL_BRIDGE_PUBLIC_URL = "${EXPECTED_BRIDGE_PUBLIC_URL}"`
+      ? `CONNEXIN_BRIDGE_PUBLIC_URL = "${EXPECTED_BRIDGE_PUBLIC_URL}"`
       : undefined,
   ].filter((value): value is string => Boolean(value));
   if (GATEWAY_CONFIG_PATH && envExpectations.length > 0) {
@@ -573,7 +571,7 @@ export async function runVerifyDeployment(
     : undefined;
   if (gateway) {
     if (gateway.config?.enabled !== true)
-      failures.push("gateway get: quick-shell is not enabled");
+      failures.push("gateway get: connexin is not enabled");
     if (gateway.config?.command !== EXPECTED_GATEWAY_PROCESS.command) {
       failures.push(
         `gateway get: command ${gateway.config?.command ?? "<missing>"} does not match ${EXPECTED_GATEWAY_PROCESS.command}`,
@@ -617,21 +615,21 @@ export async function runVerifyDeployment(
       )
     : undefined;
   const runtime = runtimes?.find((entry) => entry.name === UPSTREAM);
-  if (!runtime) failures.push("gateway mcp list: quick-shell not found");
+  if (!runtime) failures.push("gateway mcp list: connexin not found");
   else {
     if (runtime.connected !== true)
-      failures.push("gateway mcp list: quick-shell is not connected");
+      failures.push("gateway mcp list: connexin is not connected");
     if ((runtime.exposed_tool_count ?? 0) < REQUIRED_RUNTIME_TOOLS.length) {
       failures.push(
         `gateway mcp list: expected at least ${REQUIRED_RUNTIME_TOOLS.length} exposed tools`,
       );
     }
     if ((runtime.likely_stale_count ?? 0) > 0)
-      failures.push("gateway mcp list: quick-shell has likely stale processes");
+      failures.push("gateway mcp list: connexin has likely stale processes");
   }
 
   const code = `async () => {
-    const queries = ["quick shell terminal", "quick_shell open_quick_shell", "human ssh terminal"];
+    const queries = ["connexin terminal", "connexin open_connexin", "human ssh terminal"];
     const all = [];
     for (const query of queries) {
       const hits = await codemode.search({ query, limit: 50 });
@@ -677,7 +675,7 @@ export async function runVerifyDeployment(
   }
 
   const toolSmokeCode = `async () => {
-    const result = await callTool("quick-shell::check_quick_shell", {});
+    const result = await callTool("connexin::check_connexin", {});
     return { ok: result && result.ok === true, result };
   }`;
   const toolSmokeCommand = gatewayCommand([
@@ -705,7 +703,7 @@ export async function runVerifyDeployment(
     : undefined;
   if (toolSmoke && toolSmoke.result?.ok !== true) {
     failures.push(
-      `gateway tool smoke: ${toolSmoke.result?.message ?? "did not execute quick-shell tool through deployment"}`,
+      `gateway tool smoke: ${toolSmoke.result?.message ?? "did not execute connexin tool through deployment"}`,
     );
   }
 
@@ -740,11 +738,11 @@ const transport = new StdioClientTransport({
     HOME: process.env.HOME ?? "/tmp",
   },
 });
-const client = new Client({ name: "quick-shell-deployment-verify", version: "0.0.0" });
+const client = new Client({ name: "connexin-deployment-verify", version: "0.0.0" });
 await client.connect(transport);
 const tools = await client.listTools();
 const resource = await client.readResource({ uri: "${APP_RESOURCE_URI}" });
-const appOnlyTools = new Set(${JSON.stringify(APP_ONLY_TOOLS.map((tool) => tool.replace(/^quick-shell::/, "")))});
+const appOnlyTools = new Set(${JSON.stringify(APP_ONLY_TOOLS.map((tool) => tool.replace(/^connexin::/, "")))});
 const appOnlyMetadata = tools.tools
   .filter((tool) => appOnlyTools.has(tool.name))
   .map((tool) => ({
@@ -763,7 +761,7 @@ await client.close();
   const smokeHome = CONTAINER_HOME
     ? shellQuote(CONTAINER_HOME)
     : '"${HOME:-/tmp}"';
-  const smokePathTemplate = `${CONTAINER_PATH}/.quick-shell-resource-smoke.XXXXXX.mjs`;
+  const smokePathTemplate = `${CONTAINER_PATH}/.connexin-resource-smoke.XXXXXX.mjs`;
   const resourceSmoke = [
     ": resource_smoke",
     `smoke=$(mktemp ${shellQuote(smokePathTemplate)})`,
@@ -803,7 +801,7 @@ await client.close();
       (resource.appOnlyMetadata ?? []).map((tool) => [tool.name, tool]),
     );
     for (const appOnly of APP_ONLY_TOOLS) {
-      const name = appOnly.replace(/^quick-shell::/, "");
+      const name = appOnly.replace(/^connexin::/, "");
       const metadata = metadataByName.get(name);
       if (!metadata) {
         failures.push(`resource smoke: missing app-only metadata for ${name}`);
@@ -843,10 +841,10 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   runVerifyDeployment()
     .then((result) => {
       if (result.ok) {
-        console.log("quick-shell deployment verification passed");
+        console.log("connexin deployment verification passed");
         return;
       }
-      console.error("quick-shell deployment verification failed");
+      console.error("connexin deployment verification failed");
       for (const failure of result.failures) console.error(`- ${failure}`);
       if (result.recoveryHint) console.error(result.recoveryHint);
       process.exitCode = 1;

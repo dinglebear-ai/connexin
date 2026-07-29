@@ -1,4 +1,4 @@
-import type { QuickShellHiddenMeta } from "../shared/protocol.js";
+import type { ConnexinHiddenMeta } from "../shared/protocol.js";
 
 export interface FileEntry {
   name: string;
@@ -23,7 +23,7 @@ interface ToolClient {
 export class FileApi {
   constructor(
     private readonly client: ToolClient,
-    private readonly capability: QuickShellHiddenMeta["quickShell"],
+    private readonly capability: ConnexinHiddenMeta["connexin"],
     private readonly fileBaseUrl: string,
     private readonly fileToken: string,
   ) {}
@@ -34,12 +34,12 @@ export class FileApi {
   ): Promise<{ entries: FileEntry[]; maxEmbeddedDownloadBytes: number }> {
     if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
     const result = await this.client.callServerTool({
-      name: "list_quick_shell_files",
+      name: "list_connexin_files",
       arguments: { ...this.capability, path },
     });
     if (result.isError)
       throw new Error(result.content?.[0]?.text ?? "Unable to list files");
-    const meta = result._meta?.quickShellFiles as
+    const meta = result._meta?.connexinFiles as
       { entries?: FileEntry[]; maxEmbeddedDownloadBytes?: number } | undefined;
     if (!meta || !Array.isArray(meta.entries))
       throw new Error("Invalid file listing");
@@ -54,18 +54,18 @@ export class FileApi {
     request: Record<string, unknown>,
   ): Promise<void> {
     const prepared = await this.client.callServerTool({
-      name: "prepare_quick_shell_file_operation",
+      name: "prepare_connexin_file_operation",
       arguments: { ...this.capability, operation, ...request },
     });
     const lease = (
-      prepared._meta?.quickShellFiles as { lease?: string } | undefined
+      prepared._meta?.connexinFiles as { lease?: string } | undefined
     )?.lease;
     if (prepared.isError || !lease)
       throw new Error("Unable to prepare file operation");
     const names = {
-      mkdir: "mkdir_quick_shell_path",
-      rename: "rename_quick_shell_path",
-      delete: "delete_quick_shell_path",
+      mkdir: "mkdir_connexin_path",
+      rename: "rename_connexin_path",
+      delete: "delete_connexin_path",
     } as const;
     const result = await this.client.callServerTool({
       name: names[operation],
@@ -92,7 +92,7 @@ export class FileApi {
       method: "PUT",
       headers: {
         Authorization: `Bearer ${this.fileToken}`,
-        "X-Quick-Shell-File-Lease": lease,
+        "X-Connexin-File-Lease": lease,
         "Content-Type": file.type || "application/octet-stream",
       },
       body: file,
@@ -112,7 +112,7 @@ export class FileApi {
       method: "POST",
       headers: {
         Authorization: `Bearer ${this.fileToken}`,
-        "X-Quick-Shell-File-Lease": lease,
+        "X-Connexin-File-Lease": lease,
       },
       signal,
     });
@@ -127,11 +127,11 @@ export class FileApi {
 
   private async prepare(request: Record<string, unknown>): Promise<string> {
     const result = await this.client.callServerTool({
-      name: "prepare_quick_shell_file_operation",
+      name: "prepare_connexin_file_operation",
       arguments: { ...this.capability, ...request },
     });
     const lease = (
-      result._meta?.quickShellFiles as { lease?: string } | undefined
+      result._meta?.connexinFiles as { lease?: string } | undefined
     )?.lease;
     if (result.isError || !lease) throw new Error("Unable to prepare transfer");
     return lease;

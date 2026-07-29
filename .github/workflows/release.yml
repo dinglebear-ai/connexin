@@ -26,38 +26,38 @@ jobs:
           - {
               goos: linux,
               goarch: amd64,
-              asset: quick-shell-sftp-linux-x86_64.tar.gz,
-              binary: quick-shell-sftp,
+              asset: connexin-sftp-linux-x86_64.tar.gz,
+              binary: connexin-sftp,
             }
           - {
               goos: linux,
               goarch: arm64,
-              asset: quick-shell-sftp-linux-arm64.tar.gz,
-              binary: quick-shell-sftp,
+              asset: connexin-sftp-linux-arm64.tar.gz,
+              binary: connexin-sftp,
             }
           - {
               goos: darwin,
               goarch: amd64,
-              asset: quick-shell-sftp-darwin-x86_64.tar.gz,
-              binary: quick-shell-sftp,
+              asset: connexin-sftp-darwin-x86_64.tar.gz,
+              binary: connexin-sftp,
             }
           - {
               goos: darwin,
               goarch: arm64,
-              asset: quick-shell-sftp-darwin-arm64.tar.gz,
-              binary: quick-shell-sftp,
+              asset: connexin-sftp-darwin-arm64.tar.gz,
+              binary: connexin-sftp,
             }
           - {
               goos: windows,
               goarch: amd64,
-              asset: quick-shell-sftp-windows-x86_64.tar.gz,
-              binary: quick-shell-sftp.exe,
+              asset: connexin-sftp-windows-x86_64.tar.gz,
+              binary: connexin-sftp.exe,
             }
           - {
               goos: windows,
               goarch: arm64,
-              asset: quick-shell-sftp-windows-arm64.tar.gz,
-              binary: quick-shell-sftp.exe,
+              asset: connexin-sftp-windows-arm64.tar.gz,
+              binary: connexin-sftp.exe,
             }
     steps:
       - uses: actions/checkout@v5
@@ -77,7 +77,7 @@ jobs:
           CGO_ENABLED: "0"
         run: |
           mkdir -p out artifacts
-          go build -trimpath -ldflags "-s -w" -o "out/${{ matrix.binary }}" ./cmd/quick-shell-sftp
+          go build -trimpath -ldflags "-s -w" -o "out/${{ matrix.binary }}" ./cmd/connexin-sftp
           tar -czf "artifacts/${{ matrix.asset }}" -C out "${{ matrix.binary }}"
 
       - uses: actions/upload-artifact@v4
@@ -114,12 +114,12 @@ jobs:
         run: |
           missing=0
           for asset in \
-            quick-shell-sftp-linux-x86_64.tar.gz \
-            quick-shell-sftp-linux-arm64.tar.gz \
-            quick-shell-sftp-darwin-x86_64.tar.gz \
-            quick-shell-sftp-darwin-arm64.tar.gz \
-            quick-shell-sftp-windows-x86_64.tar.gz \
-            quick-shell-sftp-windows-arm64.tar.gz; do
+            connexin-sftp-linux-x86_64.tar.gz \
+            connexin-sftp-linux-arm64.tar.gz \
+            connexin-sftp-darwin-x86_64.tar.gz \
+            connexin-sftp-darwin-arm64.tar.gz \
+            connexin-sftp-windows-x86_64.tar.gz \
+            connexin-sftp-windows-arm64.tar.gz; do
             if [ ! -f "$asset" ]; then
               echo "::error::missing release asset $asset (advertised by scripts/sftp-helper-target.mjs)"
               missing=1

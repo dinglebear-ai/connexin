@@ -2,7 +2,7 @@
   "name": "connexin",
   "version": "0.1.0",
   "type": "module",
-  "description": "Human-approved quick shell MCP App for SSH-backed unblock commands",
+  "description": "Human-approved Connexin MCP App for SSH-backed unblock commands",
   "license": "PolyForm-Noncommercial-1.0.0",
   "repository": {
     "type": "git",
@@ -23,6 +23,8 @@
     "!dist/bin/**",
     "scripts/install-sftp-helper.mjs",
     "scripts/sftp-helper-target.mjs",
+    "config/connexin.env.example",
+    "config/connexin.toml.example",
     "README.md",
     "LICENSE.md"
   ],
@@ -33,22 +35,21 @@
     "npm": ">=11.0.0"
   },
   "bin": {
-    "connexin": "dist/server/cli/main.js",
-    "quick-shell": "dist/server/cli/main.js"
+    "connexin": "dist/server/cli/main.js"
   },
   "scripts": {
     "postinstall": "node scripts/install-sftp-helper.mjs",
-    "check:launcher": "node --check scripts/install-sftp-helper.mjs && node --check scripts/sftp-helper-target.mjs && npm pack --dry-run",
+    "check:launcher": "node --check scripts/install-sftp-helper.mjs && node --check scripts/sftp-helper-target.mjs && node scripts/check-package-contents.mjs",
     "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
-    "build": "npm run clean && npm run typecheck && cross-env INPUT=mcp-app.html vite build && tsc -p tsconfig.server.json && mkdir -p dist/bin && go build -o dist/bin/quick-shell-sftp ./cmd/quick-shell-sftp && node scripts/write-build-manifest.mjs",
-    "dev": "cross-env NODE_ENV=development QUICK_SHELL_HTTP_TOKEN=dev-local-token concurrently \"cross-env INPUT=mcp-app.html vite build --watch\" \"tsx watch src/server/main.ts --http\"",
+    "build": "npm run clean && npm run typecheck && cross-env INPUT=src/app/mcp-app.html vite build && tsc -p config/typescript/tsconfig.server.json && mkdir -p dist/bin && go build -o dist/bin/connexin-sftp ./cmd/connexin-sftp && node scripts/write-build-manifest.mjs",
+    "dev": "cross-env NODE_ENV=development CONNEXIN_HTTP_TOKEN=dev-local-token concurrently \"cross-env INPUT=src/app/mcp-app.html vite build --watch\" \"tsx watch src/server/main.ts --http\"",
     "serve": "node dist/server/server/main.js --http",
     "serve:stdio": "node dist/server/server/main.js --stdio",
     "lint": "node scripts/lint-static.mjs",
     "format:check": "prettier --check \"src/**/*.{ts,css}\" \"tests/**/*.ts\" \"scripts/**/*.{ts,mjs}\" \"*.{json,ts}\" \"docs/**/*.md\" \"README.md\" \".github/**/*.yml\"",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
-    "typecheck": "tsc -p tsconfig.app.json --noEmit && tsc -p tsconfig.server.json --noEmit && tsc -p tsconfig.scripts.json --noEmit && tsc -p tsconfig.test.json --noEmit",
+    "typecheck": "tsc -p config/typescript/tsconfig.app.json --noEmit && tsc -p config/typescript/tsconfig.server.json --noEmit && tsc -p config/typescript/tsconfig.scripts.json --noEmit && tsc -p config/typescript/tsconfig.test.json --noEmit",
     "check": "npm run build && npm run lint && npm run format:check && npm run test:coverage",
     "smoke:stdio": "npm run build && npm run smoke:stdio:built",
     "smoke:stdio:built": "tsx scripts/smoke-build-and-stdio.ts",

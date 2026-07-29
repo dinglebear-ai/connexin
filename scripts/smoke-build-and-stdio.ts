@@ -5,10 +5,10 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import WebSocket from "ws";
 
-const APP_RESOURCE_URI = "ui://quick-shell/mcp-app.v3.html";
+const APP_RESOURCE_URI = "ui://connexin/mcp-app.v3.html";
 const OPERATION_TIMEOUT_MS = 10_000;
 
-const tempDir = await mkdtemp(join(tmpdir(), "quick-shell-smoke-"));
+const tempDir = await mkdtemp(join(tmpdir(), "connexin-smoke-"));
 const sshConfigPath = join(tempDir, "config");
 await writeFile(
   sshConfigPath,
@@ -19,7 +19,7 @@ const env: Record<string, string> = {};
 for (const [key, value] of Object.entries(process.env)) {
   if (value !== undefined) env[key] = value;
 }
-env.QUICK_SHELL_SSH_CONFIG = sshConfigPath;
+env.CONNEXIN_SSH_CONFIG = sshConfigPath;
 
 const transport = new StdioClientTransport({
   command: process.execPath,
@@ -28,7 +28,7 @@ const transport = new StdioClientTransport({
   stderr: "pipe",
 });
 /**
- * open_quick_shell refuses to mint a session for a host that does not advertise
+ * open_connexin refuses to mint a session for a host that does not advertise
  * MCP Apps support, because the session tokens travel in `_meta` and only an
  * apps-aware host keeps that away from the model. This smoke client stands in
  * for a compliant host, so it has to declare the capability the same way the
@@ -36,7 +36,7 @@ const transport = new StdioClientTransport({
  * being smoke-tested, and every assertion past the open is skipped.
  */
 const client = new Client(
-  { name: "quick-shell-smoke", version: "0.1.0" },
+  { name: "connexin-smoke", version: "0.1.0" },
   {
     capabilities: {
       extensions: {
@@ -98,24 +98,24 @@ function nextMessage(ws: WebSocket): Promise<unknown> {
 try {
   await withTimeout(client.connect(transport), "MCP client connect");
   const tools = (await withTimeout(client.listTools(), "tools/list")).tools;
-  if (!tools.some((tool) => tool.name === "open_quick_shell")) {
-    throw new Error("open_quick_shell not found in tools/list");
+  if (!tools.some((tool) => tool.name === "open_connexin")) {
+    throw new Error("open_connexin not found in tools/list");
   }
-  if (!tools.some((tool) => tool.name === "list_quick_shell_devices")) {
-    throw new Error("list_quick_shell_devices not found in tools/list");
+  if (!tools.some((tool) => tool.name === "list_connexin_devices")) {
+    throw new Error("list_connexin_devices not found in tools/list");
   }
-  if (!tools.some((tool) => tool.name === "get_quick_shell_session")) {
-    throw new Error("get_quick_shell_session not found in tools/list");
+  if (!tools.some((tool) => tool.name === "get_connexin_session")) {
+    throw new Error("get_connexin_session not found in tools/list");
   }
-  if (!tools.some((tool) => tool.name === "close_quick_shell_session")) {
-    throw new Error("close_quick_shell_session not found in tools/list");
+  if (!tools.some((tool) => tool.name === "close_connexin_session")) {
+    throw new Error("close_connexin_session not found in tools/list");
   }
   for (const required of [
-    "list_quick_shell_files",
-    "prepare_quick_shell_file_operation",
-    "mkdir_quick_shell_path",
-    "rename_quick_shell_path",
-    "delete_quick_shell_path",
+    "list_connexin_files",
+    "prepare_connexin_file_operation",
+    "mkdir_connexin_path",
+    "rename_connexin_path",
+    "delete_connexin_path",
   ]) {
     if (!tools.some((tool) => tool.name === required))
       throw new Error(`${required} not found in tools/list`);
@@ -128,10 +128,10 @@ try {
   if (
     !resource.contents.some(
       (content) =>
-        "text" in content && String(content.text).includes("quick-shell"),
+        "text" in content && String(content.text).includes("connexin"),
     )
   ) {
-    throw new Error("quick-shell app resource did not load");
+    throw new Error("connexin app resource did not load");
   }
   const appHtml = resource.contents.find(
     (content) => "text" in content && typeof content.text === "string",
@@ -141,24 +141,24 @@ try {
     !("text" in appHtml) ||
     !appHtml.text.includes("data:application/wasm;base64,")
   ) {
-    throw new Error("quick-shell app resource did not inline Ghostty WASM");
+    throw new Error("connexin app resource did not inline Ghostty WASM");
   }
   const emittedAppFiles = await readdir("dist/app", { recursive: true });
   if (emittedAppFiles.some((file) => String(file).endsWith(".wasm"))) {
-    throw new Error("quick-shell app emitted a sidecar WASM file");
+    throw new Error("connexin app emitted a sidecar WASM file");
   }
 
   const opened = await withTimeout(
     client.callTool({
-      name: "open_quick_shell",
+      name: "open_connexin",
       arguments: { device: "test-device" },
     }),
-    "open_quick_shell",
+    "open_connexin",
   );
-  const quickShell = (opened._meta as Record<string, unknown> | undefined)
-    ?.quickShell as Record<string, unknown> | undefined;
-  const sessionId = requireString(quickShell?.sessionId, "sessionId");
-  const appToken = requireString(quickShell?.appToken, "appToken");
+  const connexin = (opened._meta as Record<string, unknown> | undefined)
+    ?.connexin as Record<string, unknown> | undefined;
+  const sessionId = requireString(connexin?.sessionId, "sessionId");
+  const appToken = requireString(connexin?.appToken, "appToken");
 
   const modelVisible = JSON.stringify([
     opened.content,
@@ -169,35 +169,35 @@ try {
     modelVisible.includes(appToken)
   ) {
     throw new Error(
-      "open_quick_shell leaked token material into model-visible fields",
+      "open_connexin leaked token material into model-visible fields",
     );
   }
 
   const details = await withTimeout(
     client.callTool({
-      name: "get_quick_shell_session",
+      name: "get_connexin_session",
       arguments: { sessionId, appToken },
     }),
-    "get_quick_shell_session",
+    "get_connexin_session",
   );
   if (JSON.stringify(details.structuredContent).includes("wsUrl")) {
     throw new Error(
-      "get_quick_shell_session leaked WebSocket details into structured content",
+      "get_connexin_session leaked WebSocket details into structured content",
     );
   }
   const appSession = (details._meta as Record<string, unknown> | undefined)
-    ?.quickShellSession as Record<string, unknown> | undefined;
+    ?.connexinSession as Record<string, unknown> | undefined;
   const wsUrl = requireString(appSession?.wsUrl, "wsUrl");
   const wsToken = requireString(appSession?.wsToken, "wsToken");
   if (wsUrl.includes("token=")) {
-    throw new Error("get_quick_shell_session embedded token material in wsUrl");
+    throw new Error("get_connexin_session embedded token material in wsUrl");
   }
   if (
     JSON.stringify(details.content).includes(appToken) ||
     JSON.stringify(details.content).includes(wsToken)
   ) {
     throw new Error(
-      "get_quick_shell_session leaked token material into text content",
+      "get_connexin_session leaked token material into text content",
     );
   }
 
@@ -217,16 +217,16 @@ try {
   const closed = waitForClose(ws);
   const closeResult = await withTimeout(
     client.callTool({
-      name: "close_quick_shell_session",
+      name: "close_connexin_session",
       arguments: { sessionId, appToken },
     }),
-    "close_quick_shell_session",
+    "close_connexin_session",
   );
   if (
     (closeResult.structuredContent as Record<string, unknown> | undefined)
       ?.closed !== true
   ) {
-    throw new Error("close_quick_shell_session did not close session");
+    throw new Error("close_connexin_session did not close session");
   }
   await withTimeout(closed, "terminal WebSocket close");
 
@@ -235,7 +235,7 @@ try {
     stderr.includes(wsToken) ||
     /appToken|wsToken/.test(stderr)
   ) {
-    throw new Error("stdio smoke stderr included quick-shell token material");
+    throw new Error("stdio smoke stderr included connexin token material");
   }
 
   console.log("stdio smoke passed");
@@ -243,12 +243,12 @@ try {
   await client
     .close()
     .catch((error) =>
-      console.error("quick-shell smoke client close failed", error),
+      console.error("connexin smoke client close failed", error),
     );
   await transport
     .close()
     .catch((error) =>
-      console.error("quick-shell smoke transport close failed", error),
+      console.error("connexin smoke transport close failed", error),
     );
   await rm(tempDir, { recursive: true, force: true });
 }

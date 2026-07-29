@@ -19,15 +19,13 @@ export const CapabilityTokenSchema = z
   .min(1)
   .max(256)
   .regex(/^[A-Za-z0-9._~+-]+$/);
-export const QuickShellAppCapabilitySchema = z.object({
+export const ConnexinAppCapabilitySchema = z.object({
   sessionId: SessionIdSchema,
   appToken: CapabilityTokenSchema,
 });
-export type QuickShellAppCapability = z.infer<
-  typeof QuickShellAppCapabilitySchema
->;
+export type ConnexinAppCapability = z.infer<typeof ConnexinAppCapabilitySchema>;
 
-export const QuickShellPublicSessionSchema = z.object({
+export const ConnexinPublicSessionSchema = z.object({
   sessionId: SessionIdSchema,
   device: z.string().min(1),
   reason: z.string().optional(),
@@ -37,11 +35,9 @@ export const QuickShellPublicSessionSchema = z.object({
   deviceDanger: z.enum(["normal", "caution", "danger"]).optional(),
   deviceDefaultShell: z.string().optional(),
 });
-export type QuickShellPublicSession = z.infer<
-  typeof QuickShellPublicSessionSchema
->;
+export type ConnexinPublicSession = z.infer<typeof ConnexinPublicSessionSchema>;
 
-export const QuickShellAppSessionSchema = QuickShellPublicSessionSchema.extend({
+export const ConnexinAppSessionSchema = ConnexinPublicSessionSchema.extend({
   wsUrl: z.string().min(1),
   wsToken: CapabilityTokenSchema,
   maxInputBytes: z.number().int().positive(),
@@ -52,9 +48,9 @@ export const QuickShellAppSessionSchema = QuickShellPublicSessionSchema.extend({
   fileToken: CapabilityTokenSchema.optional(),
   maxEmbeddedDownloadBytes: z.number().int().positive().optional(),
 });
-export type QuickShellAppSession = z.infer<typeof QuickShellAppSessionSchema>;
+export type ConnexinAppSession = z.infer<typeof ConnexinAppSessionSchema>;
 
-export const QuickShellOutputChunkSchema = z.object({
+export const ConnexinOutputChunkSchema = z.object({
   seq: z.number().int().min(1),
   data: z.string(),
   snapshot: z.boolean().optional(),
@@ -62,23 +58,23 @@ export const QuickShellOutputChunkSchema = z.object({
   originalBytes: z.number().int().min(0).optional(),
   retainedBytes: z.number().int().min(0).optional(),
 });
-export type QuickShellOutputChunk = z.infer<typeof QuickShellOutputChunkSchema>;
+export type ConnexinOutputChunk = z.infer<typeof ConnexinOutputChunkSchema>;
 
-export const QuickShellPollResetReasonSchema = z.enum([
+export const ConnexinPollResetReasonSchema = z.enum([
   "stale_cursor",
   "cursor_ahead",
   "truncated_output",
 ]);
-export type QuickShellPollResetReason = z.infer<
-  typeof QuickShellPollResetReasonSchema
+export type ConnexinPollResetReason = z.infer<
+  typeof ConnexinPollResetReasonSchema
 >;
 
-export const QuickShellPollSchema = z.object({
+export const ConnexinPollSchema = z.object({
   sessionId: SessionIdSchema,
-  chunks: z.array(QuickShellOutputChunkSchema),
+  chunks: z.array(ConnexinOutputChunkSchema),
   nextSeq: z.number().int().min(0),
   reset: z.boolean(),
-  resetReason: QuickShellPollResetReasonSchema.optional(),
+  resetReason: ConnexinPollResetReasonSchema.optional(),
   snapshot: z.string().optional(),
   snapshotBytes: z.number().int().min(0).optional(),
   snapshotSeq: z.number().int().min(0).optional(),
@@ -87,13 +83,13 @@ export const QuickShellPollSchema = z.object({
   exited: z.boolean(),
   exitCode: z.number().nullable(),
 });
-export type QuickShellPoll = z.infer<typeof QuickShellPollSchema>;
+export type ConnexinPoll = z.infer<typeof ConnexinPollSchema>;
 
-export const QuickShellHiddenMetaSchema = z.object({
-  quickShell: QuickShellAppCapabilitySchema,
-  quickShellSession: QuickShellAppSessionSchema.optional(),
+export const ConnexinHiddenMetaSchema = z.object({
+  connexin: ConnexinAppCapabilitySchema,
+  connexinSession: ConnexinAppSessionSchema.optional(),
 });
-export type QuickShellHiddenMeta = z.infer<typeof QuickShellHiddenMetaSchema>;
+export type ConnexinHiddenMeta = z.infer<typeof ConnexinHiddenMetaSchema>;
 
 export interface ClientTerminalMessageLimits {
   maxInputBytes: number;

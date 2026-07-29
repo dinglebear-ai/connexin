@@ -1,20 +1,20 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { RuntimeConfig } from "./config.js";
-import type { QuickShellSessionManager } from "./session-manager.js";
+import type { ConnexinSessionManager } from "./session-manager.js";
 import { toolAnnotations } from "./mcp-tooling.js";
 
 export function registerHealthTool(
   server: McpServer,
   config: RuntimeConfig,
-  manager: QuickShellSessionManager,
+  manager: ConnexinSessionManager,
 ): void {
   server.registerTool(
-    "check_quick_shell",
+    "check_connexin",
     {
-      title: "Check Quick Shell",
+      title: "Check Connexin",
       description:
-        "Side-effect-free quick-shell health check for gateway verification.",
+        "Side-effect-free connexin health check for gateway verification.",
       inputSchema: {},
       outputSchema: {
         ok: z.boolean(),
@@ -25,7 +25,7 @@ export function registerHealthTool(
         auditHealthy: z.boolean(),
         droppedAuditRecords: z.number().int().min(0),
       },
-      annotations: toolAnnotations("Check Quick Shell", {
+      annotations: toolAnnotations("Check Connexin", {
         readOnlyHint: true,
         destructiveHint: false,
         openWorldHint: false,
@@ -44,8 +44,8 @@ export function registerHealthTool(
           {
             type: "text",
             text: audit.healthy
-              ? `quick-shell is available (${summary}).`
-              : `quick-shell is degraded: audit log unwritable, ${audit.droppedRecords} record(s) dropped${
+              ? `connexin is available (${summary}).`
+              : `connexin is degraded: audit log unwritable, ${audit.droppedRecords} record(s) dropped${
                   audit.error ? ` (${audit.error})` : ""
                 } (${summary}).`,
           },

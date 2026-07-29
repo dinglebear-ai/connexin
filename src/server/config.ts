@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -15,7 +16,7 @@ export interface RuntimeConfig {
   idleGraceMs: number;
   cleanupIntervalMs: number;
   sshConfigPath: string;
-  quickShellConfigPath: string;
+  connexinConfigPath: string;
   auditLogPath?: string;
   httpToken?: string;
   allowedOrigins: string[];
@@ -40,7 +41,7 @@ export interface RuntimeConfig {
    * Refuse to mint a session (and its tokens) unless the client advertises MCP
    * Apps support. Defaults on. The escape hatch exists because this is a gate
    * on host-advertised capability: if a host renders apps correctly but does
-   * not advertise the extension, setting QUICK_SHELL_REQUIRE_APP_HOST=0
+   * not advertise the extension, setting CONNEXIN_REQUIRE_APP_HOST=0
    * restores the previous fail-open behaviour.
    */
   requireAppHost: boolean;
@@ -157,12 +158,12 @@ function parseAllowedOriginEntry(raw: string, key: string): string {
 function allowedOriginsFromEnv(env: NodeJS.ProcessEnv): string[] {
   return [
     ...new Set(
-      (env.QUICK_SHELL_ALLOWED_ORIGINS ?? "")
+      (env.CONNEXIN_ALLOWED_ORIGINS ?? "")
         .split(",")
         .map((origin) => origin.trim())
         .filter(Boolean)
         .map((origin) =>
-          parseAllowedOriginEntry(origin, "QUICK_SHELL_ALLOWED_ORIGINS"),
+          parseAllowedOriginEntry(origin, "CONNEXIN_ALLOWED_ORIGINS"),
         ),
     ),
   ];
@@ -219,15 +220,15 @@ function optionalBaseUrl(
   if (
     parsed.protocol === "http:" &&
     !isLoopbackHostname(parsed.hostname) &&
-    env.QUICK_SHELL_ALLOW_INSECURE_PUBLIC_BRIDGE !== "1"
+    env.CONNEXIN_ALLOW_INSECURE_PUBLIC_BRIDGE !== "1"
   ) {
     throw new Error(
-      `${key} must use https:// for non-loopback hosts; set QUICK_SHELL_ALLOW_INSECURE_PUBLIC_BRIDGE=1 only for local development`,
+      `${key} must use https:// for non-loopback hosts; set CONNEXIN_ALLOW_INSECURE_PUBLIC_BRIDGE=1 only for local development`,
     );
   }
   if (parsed.pathname !== "/" && parsed.pathname !== "") {
     throw new Error(
-      `${key} must not include a path prefix because quick-shell v1 proxies /terminal at the origin root`,
+      `${key} must not include a path prefix because connexin v1 proxies /terminal at the origin root`,
     );
   }
   parsed.pathname = "";
@@ -238,34 +239,135 @@ function optionalBaseUrl(
 
 function defaultSshConfigPath(env: NodeJS.ProcessEnv): string {
   return (
-    env.QUICK_SHELL_SSH_CONFIG ??
-    join(env.HOME ?? process.cwd(), ".ssh", "config")
+    env.CONNEXIN_SSH_CONFIG ?? join(env.HOME ?? process.cwd(), ".ssh", "config")
   );
 }
 
-function defaultQuickShellConfigPath(env: NodeJS.ProcessEnv): string {
+function defaultConnexinConfigPath(env: NodeJS.ProcessEnv): string {
   return (
-    env.QUICK_SHELL_CONFIG ??
-    join(
-      env.HOME ?? process.cwd(),
-      ".config",
-      "quick-shell",
-      "quick-shell.toml",
-    )
+    env.CONNEXIN_CONFIG ??
+    join(env.HOME ?? process.cwd(), ".config", "connexin", "connexin.toml")
   );
+}
+
+const RUNTIME_ENV_KEYS = new Set([
+  "CONNEXIN_MAX_SESSIONS",
+  "CONNEXIN_MAX_DEVICE_LENGTH",
+  "CONNEXIN_MAX_REASON_LENGTH",
+  "CONNEXIN_MAX_SUGGESTED_COMMAND_LENGTH",
+  "CONNEXIN_MAX_SCROLLBACK_BYTES",
+  "CONNEXIN_MAX_INPUT_BYTES",
+  "CONNEXIN_MAX_SUBMIT_BYTES",
+  "CONNEXIN_MAX_WS_PAYLOAD_BYTES",
+  "CONNEXIN_WS_BUFFERED_AMOUNT_LIMIT_BYTES",
+  "CONNEXIN_MAX_SESSION_AGE_MS",
+  "CONNEXIN_IDLE_GRACE_MS",
+  "CONNEXIN_CLEANUP_INTERVAL_MS",
+  "CONNEXIN_BRIDGE_HOST",
+  "CONNEXIN_BRIDGE_PORT",
+  "CONNEXIN_MAX_FILE_ENTRIES",
+  "CONNEXIN_MAX_FILE_METADATA_BYTES",
+  "CONNEXIN_MAX_FILE_PATH_BYTES",
+  "CONNEXIN_MAX_FILE_COMPONENT_BYTES",
+  "CONNEXIN_MAX_FILE_PATH_DEPTH",
+  "CONNEXIN_MAX_FILE_QUEUED_OPERATIONS",
+  "CONNEXIN_MAX_TRANSFER_BYTES",
+  "CONNEXIN_MAX_EMBEDDED_DOWNLOAD_BYTES",
+  "CONNEXIN_FILE_OPERATION_LEASE_TTL_MS",
+  "CONNEXIN_MAX_FILE_OPERATION_LEASES",
+  "CONNEXIN_FILE_METADATA_TIMEOUT_MS",
+  "CONNEXIN_FILE_TRANSFER_MAX_DURATION_MS",
+  "CONNEXIN_FILE_SHUTDOWN_TIMEOUT_MS",
+  "CONNEXIN_REQUIRE_APP_HOST",
+  "CONNEXIN_FILE_ROOT_CONFINEMENT_ENFORCED",
+]);
+
+function stripTomlComment(line: string): string {
+  let quoted = false;
+  for (let index = 0; index < line.length; index += 1) {
+    const char = line[index];
+    if (char === '"' && line[index - 1] !== "\\") quoted = !quoted;
+    if (!quoted && char === "#") return line.slice(0, index);
+  }
+  return line;
+}
+
+function parseRuntimeScalar(raw: string, lineNumber: number): string {
+  if (!raw.startsWith('"')) return raw;
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (typeof parsed !== "string") throw new Error("not a string");
+    return parsed;
+  } catch {
+    throw new Error(
+      `connexin.toml line ${lineNumber}: runtime strings must be valid quoted strings`,
+    );
+  }
+}
+
+/**
+ * Runtime tuning lives in the optional `[runtime]` table of connexin.toml.
+ * Environment variables are intentionally reserved for deployment-specific
+ * paths, URLs, credentials, and one-off overrides.
+ */
+function runtimeEnvFromConfig(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const configPath = defaultConnexinConfigPath(env);
+  let source: string;
+  try {
+    source = readFileSync(configPath, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return env;
+    throw error;
+  }
+  const values: NodeJS.ProcessEnv = { ...env };
+  const configEnvKeys = new Set<string>();
+  let runtime = false;
+  for (const [index, rawLine] of source.split(/\r?\n/).entries()) {
+    const lineNumber = index + 1;
+    const line = stripTomlComment(rawLine).trim();
+    if (!line) continue;
+    if (line === "[runtime]") {
+      runtime = true;
+      continue;
+    }
+    if (line.startsWith("[")) {
+      runtime = false;
+      continue;
+    }
+    if (!runtime) continue;
+    const separator = line.indexOf("=");
+    if (separator === -1) continue;
+    const key = line.slice(0, separator).trim();
+    const raw = line.slice(separator + 1).trim();
+    if (!/^[a-z0-9_]+$/.test(key))
+      throw new Error(`connexin.toml runtime key ${key} is invalid`);
+    const value = parseRuntimeScalar(raw, lineNumber);
+    const envKey = `CONNEXIN_${key.toUpperCase()}`;
+    if (!RUNTIME_ENV_KEYS.has(envKey)) {
+      throw new Error(
+        `connexin.toml line ${lineNumber}: unknown runtime key ${key}`,
+      );
+    }
+    if (configEnvKeys.has(envKey)) {
+      throw new Error(
+        `connexin.toml line ${lineNumber}: duplicate runtime key ${key}`,
+      );
+    }
+    configEnvKeys.add(envKey);
+    if (values[envKey] === undefined) values[envKey] = String(value);
+  }
+  return values;
 }
 
 export function defaultSftpHelperPath(
   env: NodeJS.ProcessEnv,
   platform: NodeJS.Platform = process.platform,
 ): string {
-  if (env.QUICK_SHELL_SFTP_HELPER?.trim())
-    return env.QUICK_SHELL_SFTP_HELPER.trim();
+  if (env.CONNEXIN_SFTP_HELPER?.trim()) return env.CONNEXIN_SFTP_HELPER.trim();
   // Must match helperDestination() in scripts/sftp-helper-target.mjs: the
-  // installer writes quick-shell-sftp.exe on Windows, and looking for the
+  // installer writes connexin-sftp.exe on Windows, and looking for the
   // extensionless name there would report the helper as permanently missing.
-  const binary =
-    platform === "win32" ? "quick-shell-sftp.exe" : "quick-shell-sftp";
+  const binary = platform === "win32" ? "connexin-sftp.exe" : "connexin-sftp";
   const moduleDir = dirname(fileURLToPath(import.meta.url));
   return moduleDir.includes(`${join("dist", "server", "server")}`)
     ? resolve(moduleDir, "../../bin", binary)
@@ -273,163 +375,164 @@ export function defaultSftpHelperPath(
 }
 
 export function httpPortFromEnv(env: NodeJS.ProcessEnv = process.env): number {
-  return portFromEnv(env, "QUICK_SHELL_HTTP_PORT", 0);
+  return portFromEnv(env, "CONNEXIN_HTTP_PORT", 0);
 }
 
 export function loadRuntimeConfig(
-  env: NodeJS.ProcessEnv = process.env,
+  sourceEnv: NodeJS.ProcessEnv = process.env,
 ): RuntimeConfig {
+  const env = runtimeEnvFromConfig(sourceEnv);
   const allowedOrigins = allowedOriginsFromEnv(env);
-  const bridgePublicUrl = optionalBaseUrl(env, "QUICK_SHELL_BRIDGE_PUBLIC_URL");
+  const bridgePublicUrl = optionalBaseUrl(env, "CONNEXIN_BRIDGE_PUBLIC_URL");
   if (bridgePublicUrl && allowedOrigins.length === 0) {
     throw new Error(
-      "QUICK_SHELL_ALLOWED_ORIGINS must include at least one origin when QUICK_SHELL_BRIDGE_PUBLIC_URL is set",
+      "CONNEXIN_ALLOWED_ORIGINS must include at least one origin when CONNEXIN_BRIDGE_PUBLIC_URL is set",
     );
   }
 
   return {
     maxSessions: numberFromEnv(
       env,
-      "QUICK_SHELL_MAX_SESSIONS",
+      "CONNEXIN_MAX_SESSIONS",
       DEFAULTS.maxSessions,
     ),
     maxDeviceLength: numberFromEnv(
       env,
-      "QUICK_SHELL_MAX_DEVICE_LENGTH",
+      "CONNEXIN_MAX_DEVICE_LENGTH",
       DEFAULTS.maxDeviceLength,
     ),
     maxReasonLength: numberFromEnv(
       env,
-      "QUICK_SHELL_MAX_REASON_LENGTH",
+      "CONNEXIN_MAX_REASON_LENGTH",
       DEFAULTS.maxReasonLength,
     ),
     maxSuggestedCommandLength: numberFromEnv(
       env,
-      "QUICK_SHELL_MAX_SUGGESTED_COMMAND_LENGTH",
+      "CONNEXIN_MAX_SUGGESTED_COMMAND_LENGTH",
       DEFAULTS.maxSuggestedCommandLength,
     ),
     maxScrollbackBytes: numberFromEnv(
       env,
-      "QUICK_SHELL_MAX_SCROLLBACK_BYTES",
+      "CONNEXIN_MAX_SCROLLBACK_BYTES",
       DEFAULTS.maxScrollbackBytes,
     ),
     maxInputBytes: numberFromEnv(
       env,
-      "QUICK_SHELL_MAX_INPUT_BYTES",
+      "CONNEXIN_MAX_INPUT_BYTES",
       DEFAULTS.maxInputBytes,
     ),
     maxSubmitBytes: numberFromEnv(
       env,
-      "QUICK_SHELL_MAX_SUBMIT_BYTES",
+      "CONNEXIN_MAX_SUBMIT_BYTES",
       DEFAULTS.maxSubmitBytes,
     ),
     maxWsPayloadBytes: numberFromEnv(
       env,
-      "QUICK_SHELL_MAX_WS_PAYLOAD_BYTES",
+      "CONNEXIN_MAX_WS_PAYLOAD_BYTES",
       DEFAULTS.maxWsPayloadBytes,
     ),
     wsBufferedAmountLimitBytes: numberFromEnv(
       env,
-      "QUICK_SHELL_WS_BUFFERED_AMOUNT_LIMIT_BYTES",
+      "CONNEXIN_WS_BUFFERED_AMOUNT_LIMIT_BYTES",
       DEFAULTS.wsBufferedAmountLimitBytes,
     ),
     maxSessionAgeMs: numberFromEnv(
       env,
-      "QUICK_SHELL_MAX_SESSION_AGE_MS",
+      "CONNEXIN_MAX_SESSION_AGE_MS",
       DEFAULTS.maxSessionAgeMs,
     ),
     idleGraceMs: numberFromEnv(
       env,
-      "QUICK_SHELL_IDLE_GRACE_MS",
+      "CONNEXIN_IDLE_GRACE_MS",
       DEFAULTS.idleGraceMs,
     ),
     cleanupIntervalMs: numberFromEnv(
       env,
-      "QUICK_SHELL_CLEANUP_INTERVAL_MS",
+      "CONNEXIN_CLEANUP_INTERVAL_MS",
       DEFAULTS.cleanupIntervalMs,
     ),
     sshConfigPath: defaultSshConfigPath(env),
-    quickShellConfigPath: defaultQuickShellConfigPath(env),
-    auditLogPath: env.QUICK_SHELL_AUDIT_LOG,
-    httpToken: env.QUICK_SHELL_HTTP_TOKEN,
+    connexinConfigPath: defaultConnexinConfigPath(env),
+    auditLogPath: env.CONNEXIN_AUDIT_LOG,
+    httpToken: env.CONNEXIN_HTTP_TOKEN,
     allowedOrigins,
-    bridgeHost: env.QUICK_SHELL_BRIDGE_HOST?.trim() || "127.0.0.1",
-    bridgePort: portFromEnv(env, "QUICK_SHELL_BRIDGE_PORT", 0),
+    bridgeHost: env.CONNEXIN_BRIDGE_HOST?.trim() || "127.0.0.1",
+    bridgePort: portFromEnv(env, "CONNEXIN_BRIDGE_PORT", 0),
     bridgePublicUrl,
     sftpHelperPath: defaultSftpHelperPath(env),
     maxFileEntries: numberFromEnv(
       env,
-      "QUICK_SHELL_MAX_FILE_ENTRIES",
+      "CONNEXIN_MAX_FILE_ENTRIES",
       DEFAULTS.maxFileEntries,
     ),
     maxFileMetadataBytes: numberFromEnv(
       env,
-      "QUICK_SHELL_MAX_FILE_METADATA_BYTES",
+      "CONNEXIN_MAX_FILE_METADATA_BYTES",
       DEFAULTS.maxFileMetadataBytes,
     ),
     maxFilePathBytes: numberFromEnv(
       env,
-      "QUICK_SHELL_MAX_FILE_PATH_BYTES",
+      "CONNEXIN_MAX_FILE_PATH_BYTES",
       DEFAULTS.maxFilePathBytes,
     ),
     maxFileComponentBytes: numberFromEnv(
       env,
-      "QUICK_SHELL_MAX_FILE_COMPONENT_BYTES",
+      "CONNEXIN_MAX_FILE_COMPONENT_BYTES",
       DEFAULTS.maxFileComponentBytes,
     ),
     maxFilePathDepth: numberFromEnv(
       env,
-      "QUICK_SHELL_MAX_FILE_PATH_DEPTH",
+      "CONNEXIN_MAX_FILE_PATH_DEPTH",
       DEFAULTS.maxFilePathDepth,
     ),
     maxFileQueuedOperations: numberFromEnv(
       env,
-      "QUICK_SHELL_MAX_FILE_QUEUED_OPERATIONS",
+      "CONNEXIN_MAX_FILE_QUEUED_OPERATIONS",
       DEFAULTS.maxFileQueuedOperations,
     ),
     maxTransferBytes: numberFromEnv(
       env,
-      "QUICK_SHELL_MAX_TRANSFER_BYTES",
+      "CONNEXIN_MAX_TRANSFER_BYTES",
       DEFAULTS.maxTransferBytes,
     ),
     maxEmbeddedDownloadBytes: numberFromEnv(
       env,
-      "QUICK_SHELL_MAX_EMBEDDED_DOWNLOAD_BYTES",
+      "CONNEXIN_MAX_EMBEDDED_DOWNLOAD_BYTES",
       DEFAULTS.maxEmbeddedDownloadBytes,
     ),
     requireAppHost: booleanFromEnv(
       env,
-      "QUICK_SHELL_REQUIRE_APP_HOST",
+      "CONNEXIN_REQUIRE_APP_HOST",
       DEFAULTS.requireAppHost,
     ),
     fileRootConfinementEnforced: booleanFromEnv(
       env,
-      "QUICK_SHELL_FILE_ROOT_CONFINEMENT_ENFORCED",
+      "CONNEXIN_FILE_ROOT_CONFINEMENT_ENFORCED",
       DEFAULTS.fileRootConfinementEnforced,
     ),
     fileOperationLeaseTtlMs: numberFromEnv(
       env,
-      "QUICK_SHELL_FILE_OPERATION_LEASE_TTL_MS",
+      "CONNEXIN_FILE_OPERATION_LEASE_TTL_MS",
       DEFAULTS.fileOperationLeaseTtlMs,
     ),
     maxFileOperationLeases: numberFromEnv(
       env,
-      "QUICK_SHELL_MAX_FILE_OPERATION_LEASES",
+      "CONNEXIN_MAX_FILE_OPERATION_LEASES",
       DEFAULTS.maxFileOperationLeases,
     ),
     fileMetadataTimeoutMs: numberFromEnv(
       env,
-      "QUICK_SHELL_FILE_METADATA_TIMEOUT_MS",
+      "CONNEXIN_FILE_METADATA_TIMEOUT_MS",
       DEFAULTS.fileMetadataTimeoutMs,
     ),
     fileTransferMaxDurationMs: numberFromEnv(
       env,
-      "QUICK_SHELL_FILE_TRANSFER_MAX_DURATION_MS",
+      "CONNEXIN_FILE_TRANSFER_MAX_DURATION_MS",
       DEFAULTS.fileTransferMaxDurationMs,
     ),
     fileShutdownTimeoutMs: numberFromEnv(
       env,
-      "QUICK_SHELL_FILE_SHUTDOWN_TIMEOUT_MS",
+      "CONNEXIN_FILE_SHUTDOWN_TIMEOUT_MS",
       DEFAULTS.fileShutdownTimeoutMs,
     ),
   };

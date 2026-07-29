@@ -104,7 +104,7 @@ function createDialog(title: string): {
   const dialog = document.createElement("dialog");
   dialog.className = "send-dialog modal";
 
-  const titleId = `quick-shell-modal-title-${++dialogSeq}`;
+  const titleId = `connexin-modal-title-${++dialogSeq}`;
   dialog.setAttribute("aria-labelledby", titleId);
 
   const heading = document.createElement("h2");

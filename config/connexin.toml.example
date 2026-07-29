@@ -1,0 +1,41 @@
+# Copy to ~/.config/connexin/connexin.toml. Values in [runtime] replace
+# non-secret environment tuning; environment variables remain one-off overrides.
+
+[runtime]
+# Listener policy. Keep bridge_host loopback unless a trusted TLS proxy fronts it.
+bridge_host = "127.0.0.1"
+bridge_port = 0
+max_sessions = 4
+max_device_length = 128
+max_reason_length = 1000
+max_suggested_command_length = 4000
+max_scrollback_bytes = 128000
+max_input_bytes = 16384
+max_submit_bytes = 64000
+max_ws_payload_bytes = 16384
+ws_buffered_amount_limit_bytes = 1000000
+max_session_age_ms = 1800000
+idle_grace_ms = 300000
+cleanup_interval_ms = 30000
+require_app_host = true
+# Enable only for a server-enforced SFTP root such as chrooted internal-sftp.
+file_root_confinement_enforced = false
+max_file_entries = 1000
+max_file_metadata_bytes = 524288
+max_file_path_bytes = 4096
+max_file_component_bytes = 255
+max_file_path_depth = 64
+max_file_queued_operations = 8
+max_transfer_bytes = 536870912
+max_embedded_download_bytes = 8388608
+file_operation_lease_ttl_ms = 60000
+max_file_operation_leases = 16
+file_metadata_timeout_ms = 30000
+file_transfer_max_duration_ms = 1800000
+file_shutdown_timeout_ms = 5000
+
+# Optional display metadata for approved SSH aliases.
+[devices.example-host]
+label = "Example host"
+group = "lab"
+danger = "normal"

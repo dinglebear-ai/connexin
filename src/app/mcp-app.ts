@@ -7,17 +7,17 @@ import {
 import { FitAddon, Terminal } from "ghostty-web";
 import type {
   ClientTerminalMessage,
-  QuickShellAppSession,
-  QuickShellHiddenMeta,
-  QuickShellPoll,
-  QuickShellPublicSession,
+  ConnexinAppSession,
+  ConnexinHiddenMeta,
+  ConnexinPoll,
+  ConnexinPublicSession,
   ServerTerminalMessage,
 } from "../shared/protocol.js";
 import {
-  QuickShellAppSessionSchema,
-  QuickShellHiddenMetaSchema,
-  QuickShellPollSchema,
-  QuickShellPublicSessionSchema,
+  ConnexinAppSessionSchema,
+  ConnexinHiddenMetaSchema,
+  ConnexinPollSchema,
+  ConnexinPublicSessionSchema,
   ServerTerminalMessageSchema,
 } from "../shared/protocol.js";
 import {
@@ -67,7 +67,7 @@ interface QueuedFallbackInput {
 interface FallbackInputQueue {
   generation: number;
   sessionId: string;
-  capability: QuickShellHiddenMeta["quickShell"];
+  capability: ConnexinHiddenMeta["connexin"];
   chunks: QueuedFallbackInput[];
   bytes: number;
   draining: boolean;
@@ -76,7 +76,7 @@ interface FallbackInputQueue {
 interface FallbackResizeQueue {
   generation: number;
   sessionId: string;
-  capability: QuickShellHiddenMeta["quickShell"];
+  capability: ConnexinHiddenMeta["connexin"];
   pending?: { cols: number; rows: number };
   inFlight: boolean;
 }
@@ -85,7 +85,7 @@ interface SocketBinding {
   socket: WebSocket;
   generation: number;
   sessionId: string;
-  capability: QuickShellHiddenMeta["quickShell"];
+  capability: ConnexinHiddenMeta["connexin"];
   ready: boolean;
 }
 
@@ -99,7 +99,7 @@ const MAX_PENDING_INPUT_BYTES = 16_384;
 const MAX_FALLBACK_INPUT_CHUNKS = 256;
 
 const app = new App(
-  { name: "quick-shell", version: "0.1.0" },
+  { name: "connexin", version: "0.1.0" },
   { availableDisplayModes: ["inline", "fullscreen"] },
   { autoResize: true },
 );
@@ -118,10 +118,10 @@ let reconnectTimer: number | undefined;
 let reconnectAttempts = 0;
 let resizeFrame: number | undefined;
 let transcriptFrame: number | undefined;
-let publicSession: QuickShellPublicSession | undefined;
-let session: QuickShellAppSession | undefined;
-let sessionDetails: QuickShellAppSession | undefined;
-let sessionCapability: QuickShellHiddenMeta["quickShell"] | undefined;
+let publicSession: ConnexinPublicSession | undefined;
+let session: ConnexinAppSession | undefined;
+let sessionDetails: ConnexinAppSession | undefined;
+let sessionCapability: ConnexinHiddenMeta["connexin"] | undefined;
 let appToolTransport = false;
 let pollingGeneration: number | undefined;
 let pollSeq = 0;
@@ -255,7 +255,7 @@ function wireShellEvents(): void {
       elements.dialog,
       elements.cancelButton,
       elements.confirmButton,
-    ).catch((error) => console.error("quick-shell send failed", error));
+    ).catch((error) => console.error("connexin send failed", error));
   });
 
   elements.closeButton.addEventListener("click", () => {
@@ -263,27 +263,25 @@ function wireShellEvents(): void {
   });
 }
 
-function readPublicSession(
-  value: unknown,
-): QuickShellPublicSession | undefined {
-  const parsed = QuickShellPublicSessionSchema.safeParse(value);
+function readPublicSession(value: unknown): ConnexinPublicSession | undefined {
+  const parsed = ConnexinPublicSessionSchema.safeParse(value);
   return parsed.success ? parsed.data : undefined;
 }
 
-function readAppSession(value: unknown): QuickShellAppSession | undefined {
-  const parsed = QuickShellAppSessionSchema.safeParse(value);
+function readAppSession(value: unknown): ConnexinAppSession | undefined {
+  const parsed = ConnexinAppSessionSchema.safeParse(value);
   return parsed.success ? parsed.data : undefined;
 }
 
-function readQuickShellMeta(
+function readConnexinMeta(
   value: unknown,
-): QuickShellHiddenMeta["quickShell"] | undefined {
-  const parsed = QuickShellHiddenMetaSchema.safeParse(value);
-  return parsed.success ? parsed.data.quickShell : undefined;
+): ConnexinHiddenMeta["connexin"] | undefined {
+  const parsed = ConnexinHiddenMetaSchema.safeParse(value);
+  return parsed.success ? parsed.data.connexin : undefined;
 }
 
-function readQuickShellPoll(value: unknown): QuickShellPoll | undefined {
-  const parsed = QuickShellPollSchema.safeParse(value);
+function readConnexinPoll(value: unknown): ConnexinPoll | undefined {
+  const parsed = ConnexinPollSchema.safeParse(value);
   return parsed.success ? parsed.data : undefined;
 }
 
@@ -293,7 +291,7 @@ function readOpenAiToolResult(): ToolResultParams | undefined {
   const metadata = bridge.toolResponseMetadata;
   if (typeof metadata !== "object" || metadata === null) return undefined;
   const record = metadata as Record<string, unknown>;
-  if (record.quickShell || record.quickShellSession) {
+  if (record.connexin || record.connexinSession) {
     return { _meta: record };
   }
   for (const candidate of [
@@ -322,46 +320,46 @@ async function handleToolResult(
   connectingGeneration = undefined;
   const nextPublicSession = readPublicSession(params.structuredContent);
   const hiddenMeta = params._meta ?? readOpenAiToolResult()?._meta;
-  const quickShell = readQuickShellMeta(hiddenMeta);
-  const quickShellSession = readAppSession(hiddenMeta?.quickShellSession);
+  const connexin = readConnexinMeta(hiddenMeta);
+  const connexinSession = readAppSession(hiddenMeta?.connexinSession);
   if (
     !nextPublicSession ||
-    !quickShell ||
-    quickShell.sessionId !== nextPublicSession.sessionId
+    !connexin ||
+    connexin.sessionId !== nextPublicSession.sessionId
   ) {
-    throw new Error("Missing quick-shell app capability");
+    throw new Error("Missing connexin app capability");
   }
   if (
-    quickShellSession &&
-    quickShellSession.sessionId !== nextPublicSession.sessionId
+    connexinSession &&
+    connexinSession.sessionId !== nextPublicSession.sessionId
   ) {
-    throw new Error("Invalid quick-shell session capability");
+    throw new Error("Invalid connexin session capability");
   }
 
   if (order !== receivedToolResultOrder) {
-    await closeUnusedSession(quickShell);
+    await closeUnusedSession(connexin);
     return;
   }
 
   const previousCapability = sessionCapability;
   await cleanup(true, previousCapability);
   if (order !== receivedToolResultOrder) {
-    await closeUnusedSession(quickShell);
+    await closeUnusedSession(connexin);
     return;
   }
   const generation = ++activeGeneration;
   publicSession = nextPublicSession;
-  sessionCapability = quickShell;
-  sessionDetails = quickShellSession;
+  sessionCapability = connexin;
+  sessionDetails = connexinSession;
   session = undefined;
-  resetOutputBuffers(quickShellSession?.maxSubmitBytes ?? DEFAULT_SUBMIT_BYTES);
+  resetOutputBuffers(connexinSession?.maxSubmitBytes ?? DEFAULT_SUBMIT_BYTES);
   elements.commandInput.value = nextPublicSession.suggestedCommand ?? "";
   updateSessionSummary();
   setStatus(`Connecting ${sessionDisplayName(nextPublicSession)}`);
   updateModelContext("connecting");
   updateControls();
   void connectPendingSession().catch((error) =>
-    handleConnectFailure(error, generation, quickShell),
+    handleConnectFailure(error, generation, connexin),
   );
 }
 
@@ -385,9 +383,9 @@ async function connectPendingSession(): Promise<void> {
 
   try {
     if (!detailsSession) {
-      if (!capability) throw new Error("Missing quick-shell app capability");
+      if (!capability) throw new Error("Missing connexin app capability");
       const details = await app.callServerTool({
-        name: "get_quick_shell_session",
+        name: "get_connexin_session",
         arguments: {
           sessionId: capability.sessionId,
           appToken: capability.appToken,
@@ -398,12 +396,11 @@ async function connectPendingSession(): Promise<void> {
       if (generation !== activeGeneration || sessionCapability !== capability)
         return;
       detailsSession = readAppSession(
-        (details as { _meta?: Record<string, unknown> })._meta
-          ?.quickShellSession,
+        (details as { _meta?: Record<string, unknown> })._meta?.connexinSession,
       );
     }
     if (!detailsSession || detailsSession.sessionId !== requested.sessionId) {
-      throw new Error("Invalid quick-shell session details");
+      throw new Error("Invalid connexin session details");
     }
     session = detailsSession;
     resetOutputBuffers(detailsSession.maxSubmitBytes);
@@ -432,7 +429,7 @@ async function connectPendingSession(): Promise<void> {
 }
 
 async function connectTerminal(
-  details: QuickShellAppSession,
+  details: ConnexinAppSession,
   generation: number,
 ): Promise<void> {
   // Keep queued keystrokes: this runs on reconnect too, and they are flushed
@@ -454,7 +451,7 @@ async function connectTerminal(
     // unexplained slow terminal.
     const detail = error instanceof Error ? error.message : String(error);
     console.error(
-      "quick-shell websocket open failed; falling back to polling",
+      "connexin websocket open failed; falling back to polling",
       error,
     );
     sendHostLog(
@@ -724,7 +721,7 @@ function sendTerminalInput(data: string): void {
 }
 
 async function startAppToolTransport(
-  details: QuickShellAppSession,
+  details: ConnexinAppSession,
   generation: number,
 ): Promise<void> {
   if (!sessionCapability || !isCurrentGeneration(generation, details.sessionId))
@@ -742,15 +739,14 @@ async function startAppToolTransport(
   fallbackResizeQueue = undefined;
 
   const attached = await app.callServerTool({
-    name: "get_quick_shell_session",
+    name: "get_connexin_session",
     arguments: sessionCapability,
   });
   if (attached.isError)
     throw new Error(toolResultText(attached, "Session capability rejected"));
   const attachedSession =
     readAppSession(
-      (attached as { _meta?: Record<string, unknown> })._meta
-        ?.quickShellSession,
+      (attached as { _meta?: Record<string, unknown> })._meta?.connexinSession,
     ) ?? details;
   if (
     !isCurrentGeneration(generation, details.sessionId) ||
@@ -789,16 +785,16 @@ async function pollAppToolTransport(generation: number): Promise<void> {
   const sessionId = session.sessionId;
   try {
     const result = await app.callServerTool({
-      name: "poll_quick_shell_session",
+      name: "poll_connexin_session",
       arguments: {
         ...sessionCapability,
         afterSeq: pollSeq,
       },
     });
     if (result.isError)
-      throw new Error(toolResultText(result, "Quick-shell poll failed"));
-    const poll = readQuickShellPoll(
-      (result as { _meta?: Record<string, unknown> })._meta?.quickShellPoll,
+      throw new Error(toolResultText(result, "Connexin poll failed"));
+    const poll = readConnexinPoll(
+      (result as { _meta?: Record<string, unknown> })._meta?.connexinPoll,
     );
     if (!poll || !isCurrentGeneration(generation, poll.sessionId)) return;
     const truncated =
@@ -893,7 +889,7 @@ async function drainFallbackInputQueue(
         chunkCount += 1;
       }
       const result = await app.callServerTool({
-        name: "write_quick_shell_input",
+        name: "write_connexin_input",
         arguments: {
           ...queue.capability,
           data,
@@ -906,9 +902,9 @@ async function drainFallbackInputQueue(
       )
         return;
       if (result.isError)
-        throw new Error(toolResultText(result, "Quick-shell input failed"));
+        throw new Error(toolResultText(result, "Connexin input failed"));
       if (result.structuredContent?.written !== true)
-        throw new Error("Quick-shell input was not acknowledged");
+        throw new Error("Connexin input was not acknowledged");
       queue.chunks.splice(0, chunkCount);
       queue.bytes -= bytes;
     }
@@ -970,7 +966,7 @@ async function drainFallbackResizeQueue(
       const next = queue.pending;
       queue.pending = undefined;
       await app.callServerTool({
-        name: "resize_quick_shell_session",
+        name: "resize_connexin_session",
         arguments: {
           ...queue.capability,
           cols: next.cols,
@@ -979,7 +975,7 @@ async function drainFallbackResizeQueue(
       });
     }
   } catch (error) {
-    console.error("quick-shell resize failed", error);
+    console.error("connexin resize failed", error);
   } finally {
     if (fallbackResizeQueue === queue) {
       queue.inFlight = false;
@@ -1096,15 +1092,13 @@ async function confirmSend(
     if (!recordedViaBridge && capturedCapability) {
       await app
         .callServerTool({
-          name: "record_quick_shell_output_confirmed",
+          name: "record_connexin_output_confirmed",
           arguments: {
             ...capturedCapability,
             byteCount,
           },
         })
-        .catch((error) =>
-          console.error("quick-shell audit record failed", error),
-        );
+        .catch((error) => console.error("connexin audit record failed", error));
     }
     if (!isCurrentSend()) return;
     dialog.close();
@@ -1118,7 +1112,7 @@ async function confirmSend(
         `Send failed: ${error instanceof Error ? error.message : String(error)}`,
       );
     } else {
-      console.error("quick-shell stale send failed", error);
+      console.error("connexin stale send failed", error);
     }
   } finally {
     sending = false;
@@ -1192,9 +1186,9 @@ function clearFallbackTimer(): void {
 }
 
 function scheduleTerminalReconnect(
-  details: QuickShellAppSession,
+  details: ConnexinAppSession,
   generation: number,
-  capability: QuickShellHiddenMeta["quickShell"],
+  capability: ConnexinHiddenMeta["connexin"],
 ): void {
   if (reconnectTimer !== undefined) return;
   const delay = Math.min(4_000, 250 * 2 ** Math.min(reconnectAttempts, 4));
@@ -1210,7 +1204,7 @@ function scheduleTerminalReconnect(
         );
         return;
       }
-      console.error("quick-shell reconnect failed", error);
+      console.error("connexin reconnect failed", error);
       scheduleTerminalReconnect(details, generation, capability);
     });
   }, delay);
@@ -1270,7 +1264,7 @@ async function cleanup(
   if (!closeSession || !capability || closedViaBridge) return true;
   const error = await closeRemoteSession(capability);
   if (!error) return true;
-  console.error("quick-shell session close failed", error);
+  console.error("connexin session close failed", error);
   if (ownsCurrentSession && sessionCapability === undefined) {
     setStatus(error);
     updateControls();
@@ -1380,20 +1374,20 @@ async function downloadRemoteFile(
 }
 
 async function closeUnusedSession(
-  capability: QuickShellHiddenMeta["quickShell"],
+  capability: ConnexinHiddenMeta["connexin"],
 ): Promise<void> {
   const error = await closeRemoteSession(capability);
-  if (error) console.error("quick-shell unused session close failed", error);
+  if (error) console.error("connexin unused session close failed", error);
 }
 
 async function closeRemoteSession(
-  capability: QuickShellHiddenMeta["quickShell"],
+  capability: ConnexinHiddenMeta["connexin"],
 ): Promise<string | undefined> {
   let timeout: number | undefined;
   try {
     const closed = await Promise.race([
       app.callServerTool({
-        name: "close_quick_shell_session",
+        name: "close_connexin_session",
         arguments: capability,
       }),
       new Promise<never>((_, reject) => {
@@ -1430,7 +1424,7 @@ function setStatus(message: string): void {
         : "neutral";
 }
 
-function sessionDisplayName(value: QuickShellPublicSession): string {
+function sessionDisplayName(value: ConnexinPublicSession): string {
   return value.deviceLabel
     ? `${value.deviceLabel} (${value.device})`
     : value.device;
@@ -1462,7 +1456,7 @@ function updateSessionSummary(): void {
   const add = (
     label: string,
     value: string | undefined,
-    options: { danger?: QuickShellPublicSession["deviceDanger"] } = {},
+    options: { danger?: ConnexinPublicSession["deviceDanger"] } = {},
   ) => {
     if (!value) return;
     const item = document.createElement("span");
@@ -1489,7 +1483,7 @@ function renderError(error: unknown): void {
 function handleConnectFailure(
   error: unknown,
   generation: number,
-  capability: QuickShellHiddenMeta["quickShell"] | undefined,
+  capability: ConnexinHiddenMeta["connexin"] | undefined,
 ): void {
   if (
     generation !== activeGeneration ||
@@ -1505,7 +1499,7 @@ function handleConnectFailure(
 function connectFailureMessage(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
   if (/-32000\b.*MCP proxy request failed/i.test(message)) {
-    return "Quick Shell could not attach through Labby. Reopen this shell; if it still fails, reconnect Labby. (MCP -32000)";
+    return "Connexin could not attach through Labby. Reopen this shell; if it still fails, reconnect Labby. (MCP -32000)";
   }
   return message;
 }
@@ -1639,7 +1633,7 @@ async function downloadOutput(): Promise<void> {
       {
         type: "resource",
         resource: {
-          uri: "file:///quick-shell-output.txt",
+          uri: "file:///connexin-output.txt",
           mimeType: "text/plain",
           text: prepared.text,
         },
@@ -1668,13 +1662,13 @@ function updateModelContext(state: string): void {
     payload.content = [
       {
         type: "text",
-        text: `quick-shell state: ${state}${device}. The terminal connects automatically; output is sent back only when the user chooses Send output.`,
+        text: `connexin state: ${state}${device}. The terminal connects automatically; output is sent back only when the user chooses Send output.`,
       },
     ];
   }
   if (updateCapabilities.structuredContent) {
     payload.structuredContent = {
-      quickShell: {
+      connexin: {
         state,
         sessionId: current?.sessionId,
         device: current?.device,
@@ -1692,14 +1686,14 @@ function updateModelContext(state: string): void {
 function sendHostLog(level: "warning" | "error", message: string): void {
   const capabilities: HostCapabilities | undefined = app.getHostCapabilities();
   if (!capabilities?.logging) {
-    console.error(`quick-shell [${level}] ${message}`);
+    console.error(`connexin [${level}] ${message}`);
     return;
   }
   // This is the error-reporting channel itself, so a swallowed failure loses
   // both the report and the reason it failed.
   void app.sendLog({ level, data: { message } }).catch((error: unknown) => {
-    console.error(`quick-shell [${level}] ${message}`);
-    console.error("quick-shell sendLog failed", error);
+    console.error(`connexin [${level}] ${message}`);
+    console.error("connexin sendLog failed", error);
   });
 }
 

@@ -8,7 +8,7 @@ import {
   createMemoryAuditSink,
 } from "../../src/server/audit-log.js";
 import { createServer } from "../../src/server/create-server.js";
-import { QuickShellSessionManager } from "../../src/server/session-manager.js";
+import { ConnexinSessionManager } from "../../src/server/session-manager.js";
 import { testRuntimeConfig } from "./helpers/runtime-config.js";
 import { FakePty } from "./helpers/fake-pty.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -99,7 +99,7 @@ describe("audit logging", () => {
     audit.record("runtime_started", {
       mode: "stdio",
       sshConfigPath: "/home/op/.ssh/config",
-      quickShellConfigPath: "/home/op/.config/quick-shell.json",
+      connexinConfigPath: "/home/op/.config/connexin.json",
     });
     audit.record("bridge_listening", {
       baseUrl: "http://127.0.0.1:8765",
@@ -109,7 +109,7 @@ describe("audit logging", () => {
     expect(sink.records[0]).toMatchObject({
       event: "runtime_started",
       sshConfigPath: "/home/op/.ssh/config",
-      quickShellConfigPath: "/home/op/.config/quick-shell.json",
+      connexinConfigPath: "/home/op/.config/connexin.json",
     });
     // scripts/verify-deployment.ts greps the log for exactly this shape.
     expect(JSON.stringify(sink.records[1])).toContain(
@@ -177,7 +177,7 @@ describe("audit logging", () => {
   });
 
   it("writes JSON lines to a configured file", async () => {
-    const tempDir = await mkdtemp(join(tmpdir(), "quick-shell-audit-"));
+    const tempDir = await mkdtemp(join(tmpdir(), "connexin-audit-"));
     try {
       const path = join(tempDir, "audit.jsonl");
       const audit = createAuditLogger({ path });
@@ -199,7 +199,7 @@ describe("audit logging", () => {
   it("records open, start, close, and expiration events", async () => {
     const sink = createMemoryAuditSink();
     const ptys: FakePty[] = [];
-    const manager = new QuickShellSessionManager({
+    const manager = new ConnexinSessionManager({
       config: testRuntimeConfig({ maxSessionAgeMs: 100, idleGraceMs: 100 }),
       allowedHosts: new Set(["fileserver", "admin-box"]),
       audit: createAuditLogger({ sink }),
@@ -234,7 +234,7 @@ describe("audit logging", () => {
 
   it("records output-confirm breadcrumbs through an app-only capability", async () => {
     const sink = createMemoryAuditSink();
-    const manager = new QuickShellSessionManager({
+    const manager = new ConnexinSessionManager({
       config: testRuntimeConfig(),
       allowedHosts: new Set(["test-device"]),
       audit: createAuditLogger({ sink }),
@@ -251,7 +251,7 @@ describe("audit logging", () => {
       { name: "audit-test", version: "0.1.0" },
       {
         capabilities: {
-          // open_quick_shell refuses hosts that do not advertise MCP Apps.
+          // open_connexin refuses hosts that do not advertise MCP Apps.
           extensions: {
             "io.modelcontextprotocol/ui": {
               mimeTypes: ["text/html;profile=mcp-app"],
@@ -266,23 +266,23 @@ describe("audit logging", () => {
     ]);
     try {
       const opened = await client.callTool({
-        name: "open_quick_shell",
+        name: "open_connexin",
         arguments: { device: "test-device" },
       });
-      const quickShell = opened._meta?.quickShell as {
+      const connexin = opened._meta?.connexin as {
         sessionId: string;
         appToken: string;
       };
 
       const result = await client.callTool({
-        name: "record_quick_shell_output_confirmed",
-        arguments: { ...quickShell, byteCount: 42 },
+        name: "record_connexin_output_confirmed",
+        arguments: { ...connexin, byteCount: 42 },
       });
 
       expect(result.structuredContent).toMatchObject({ recorded: true });
       expect(sink.records.at(-1)).toMatchObject({
         event: "output_confirmed",
-        sessionId: quickShell.sessionId,
+        sessionId: connexin.sessionId,
         device: "test-device",
         byteCount: 42,
       });

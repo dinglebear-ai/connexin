@@ -40,7 +40,7 @@ function fetchBuffer(url, redirectsLeft = MAX_REDIRECTS) {
   return new Promise((resolve, reject) => {
     get(
       url,
-      { headers: { "user-agent": "quick-shell-installer" } },
+      { headers: { "user-agent": "connexin-installer" } },
       (response) => {
         const status = response.statusCode ?? 0;
         const location = response.headers.location;
@@ -103,7 +103,7 @@ export async function installSftpHelper(env = process.env) {
     );
   }
 
-  const scratch = mkdtempSync(join(tmpdir(), "quick-shell-helper-"));
+  const scratch = mkdtempSync(join(tmpdir(), "connexin-helper-"));
   try {
     const archivePath = join(scratch, target.asset);
     writeFileSync(archivePath, archive);
@@ -136,26 +136,26 @@ if (
     const result = await installSftpHelper();
     if (result.skipped === "skip-flag") {
       console.log(
-        "quick-shell: skipping SFTP helper download (QUICK_SHELL_SKIP_HELPER_DOWNLOAD)",
+        "connexin: skipping SFTP helper download (CONNEXIN_SKIP_HELPER_DOWNLOAD)",
       );
     } else if (result.skipped === "source-checkout") {
       console.log(
-        "quick-shell: source checkout detected; run `npm run build` to build the SFTP helper",
+        "connexin: source checkout detected; run `npm run build` to build the SFTP helper",
       );
     } else if (result.skipped === "already-present") {
       console.log(
-        `quick-shell: SFTP helper already present at ${result.destination}`,
+        `connexin: SFTP helper already present at ${result.destination}`,
       );
     } else {
       console.log(
-        `quick-shell: installed SFTP helper ${result.version} -> ${result.destination}`,
+        `connexin: installed SFTP helper ${result.version} -> ${result.destination}`,
       );
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (required) {
       console.error(
-        `quick-shell: could not install the SFTP helper.\n  ${message}`,
+        `connexin: could not install the SFTP helper.\n  ${message}`,
       );
       process.exit(1);
     }
@@ -163,10 +163,10 @@ if (
     // install`, because the runtime self-heal will retry. Say so loudly rather
     // than letting the file silently not exist.
     console.warn(
-      `quick-shell: SFTP helper download failed; file transfer will be unavailable until it succeeds.\n` +
+      `connexin: SFTP helper download failed; file transfer will be unavailable until it succeeds.\n` +
         `  ${message}\n` +
         `  Retry with: node scripts/install-sftp-helper.mjs --required\n` +
-        `  Or point QUICK_SHELL_SFTP_HELPER at a binary you built yourself.`,
+        `  Or point CONNEXIN_SFTP_HELPER at a binary you built yourself.`,
     );
   }
 }

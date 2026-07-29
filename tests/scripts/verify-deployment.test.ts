@@ -12,20 +12,20 @@ function json(value: unknown): string {
 
 describe("runVerifyDeployment", () => {
   const runtimeToolNames = [
-    "check_quick_shell",
-    "list_quick_shell_devices",
-    "open_quick_shell",
-    "get_quick_shell_session",
-    "poll_quick_shell_session",
-    "write_quick_shell_input",
-    "resize_quick_shell_session",
-    "close_quick_shell_session",
-    "record_quick_shell_output_confirmed",
-    "list_quick_shell_files",
-    "prepare_quick_shell_file_operation",
-    "mkdir_quick_shell_path",
-    "rename_quick_shell_path",
-    "delete_quick_shell_path",
+    "check_connexin",
+    "list_connexin_devices",
+    "open_connexin",
+    "get_connexin_session",
+    "poll_connexin_session",
+    "write_connexin_input",
+    "resize_connexin_session",
+    "close_connexin_session",
+    "record_connexin_output_confirmed",
+    "list_connexin_files",
+    "prepare_connexin_file_operation",
+    "mkdir_connexin_path",
+    "rename_connexin_path",
+    "delete_connexin_path",
   ];
   const appOnlyMetadata = runtimeToolNames.slice(3).map((name) => ({
     name,
@@ -36,18 +36,18 @@ describe("runVerifyDeployment", () => {
   }));
   const manifest: BuildManifest = {
     version: 1,
-    packageName: "quick-shell",
+    packageName: "connexin",
     gitSha: "abc123",
     gitDirty: false,
     builtAt: "2026-07-14T00:00:00.000Z",
     files: {
       "package.json": "a".repeat(64),
       "package-lock.json": "b".repeat(64),
-      "mcp-app.html": "c".repeat(64),
-      "dist/app/mcp-app.html": "d".repeat(64),
+      "src/app/mcp-app.html": "c".repeat(64),
+      "dist/app/src/app/mcp-app.html": "d".repeat(64),
       "dist/server/server/main.js": "e".repeat(64),
       "dist/server/cli/main.js": "f".repeat(64),
-      "dist/bin/quick-shell-sftp": "0".repeat(64),
+      "dist/bin/connexin-sftp": "0".repeat(64),
     },
   };
 
@@ -76,7 +76,7 @@ describe("runVerifyDeployment", () => {
         }
         if (
           (command === "incus" || command === "bash") &&
-          call.includes("cat dist/quick-shell-build-manifest.json")
+          call.includes("cat dist/connexin-build-manifest.json")
         ) {
           return { stdout: json(buildManifest), stderr: "", exitCode: 0 };
         }
@@ -110,10 +110,7 @@ describe("runVerifyDeployment", () => {
               config: {
                 enabled: true,
                 command: "node",
-                args: [
-                  "/opt/quick-shell/dist/server/server/main.js",
-                  "--stdio",
-                ],
+                args: ["/opt/connexin/dist/server/server/main.js", "--stdio"],
               },
               runtime: {
                 exposed_tool_count: runtimeToolNames.length,
@@ -131,7 +128,7 @@ describe("runVerifyDeployment", () => {
           return {
             stdout: json([
               {
-                name: "quick-shell",
+                name: "connexin",
                 enabled: true,
                 connected: true,
                 exposed_tool_count: runtimeToolNames.length,
@@ -151,9 +148,9 @@ describe("runVerifyDeployment", () => {
             return {
               stdout: json({
                 result: [
-                  { id: "quick-shell::check_quick_shell" },
-                  { id: "quick-shell::list_quick_shell_devices" },
-                  { id: "quick-shell::open_quick_shell" },
+                  { id: "connexin::check_connexin" },
+                  { id: "connexin::list_connexin_devices" },
+                  { id: "connexin::open_connexin" },
                 ],
               }),
               stderr: "",
@@ -182,7 +179,7 @@ describe("runVerifyDeployment", () => {
     expect(result.ok).toBe(true);
     expect(
       calls.some((call) =>
-        call.includes("cat dist/quick-shell-build-manifest.json"),
+        call.includes("cat dist/connexin-build-manifest.json"),
       ),
     ).toBe(true);
     expect(calls.some((call) => call.includes("sha256sum"))).toBe(true);
@@ -201,7 +198,7 @@ describe("runVerifyDeployment", () => {
       ),
     ).toBe(true);
     expect(
-      calls.some((call) => call.includes(".quick-shell-resource-smoke")),
+      calls.some((call) => call.includes(".connexin-resource-smoke")),
     ).toBe(true);
   });
 
@@ -211,7 +208,7 @@ describe("runVerifyDeployment", () => {
       const normalizedCall = call.replaceAll("'", "");
       if (
         command === "bash" &&
-        normalizedCall.includes("cat dist/quick-shell-build-manifest.json")
+        normalizedCall.includes("cat dist/connexin-build-manifest.json")
       ) {
         return { stdout: json(manifest), stderr: "", exitCode: 0 };
       }
@@ -224,7 +221,7 @@ describe("runVerifyDeployment", () => {
             config: {
               enabled: true,
               command: "node",
-              args: ["/opt/quick-shell/dist/server/server/main.js", "--stdio"],
+              args: ["/opt/connexin/dist/server/server/main.js", "--stdio"],
             },
             runtime: {
               exposed_tool_count: runtimeToolNames.length,
@@ -242,7 +239,7 @@ describe("runVerifyDeployment", () => {
         return {
           stdout: json([
             {
-              name: "quick-shell",
+              name: "connexin",
               enabled: true,
               connected: false,
               exposed_tool_count: runtimeToolNames.length,
@@ -266,10 +263,10 @@ describe("runVerifyDeployment", () => {
   });
 
   it("does not treat command spawn failures as success", async () => {
-    const result = await defaultRunner("__quick_shell_missing_command__", []);
+    const result = await defaultRunner("__connexin_missing_command__", []);
 
     expect(result.exitCode).not.toBe(0);
-    expect(result.stderr).toContain("__quick_shell_missing_command__");
+    expect(result.stderr).toContain("__connexin_missing_command__");
   });
 
   it("fails when the deployed build manifest is not the local build", async () => {
@@ -323,7 +320,7 @@ describe("runVerifyDeployment", () => {
         };
         parsed.config.command = "/usr/bin/node";
         parsed.config.args = [
-          "/tmp/quick-shell/dist/server/server/main.js",
+          "/tmp/connexin/dist/server/server/main.js",
           "--stdio",
         ];
         return { ...result, stdout: json(parsed) };
@@ -341,7 +338,7 @@ describe("runVerifyDeployment", () => {
       "command /usr/bin/node does not match node",
     );
     expect(result.failures.join("\n")).toContain(
-      "/tmp/quick-shell/dist/server/server/main.js",
+      "/tmp/connexin/dist/server/server/main.js",
     );
   });
 
@@ -357,10 +354,10 @@ describe("runVerifyDeployment", () => {
         return {
           stdout: json({
             result: [
-              { id: "quick-shell::check_quick_shell" },
-              { id: "quick-shell::list_quick_shell_devices" },
-              { id: "quick-shell::open_quick_shell" },
-              { id: "quick-shell::write_quick_shell_input" },
+              { id: "connexin::check_connexin" },
+              { id: "connexin::list_connexin_devices" },
+              { id: "connexin::open_connexin" },
+              { id: "connexin::write_connexin_input" },
             ],
           }),
           stderr: "",
@@ -390,7 +387,7 @@ describe("runVerifyDeployment", () => {
           stdout: json({
             toolNames: runtimeToolNames,
             appOnlyMetadata: appOnlyMetadata.map((tool) =>
-              tool.name === "write_quick_shell_input"
+              tool.name === "write_connexin_input"
                 ? {
                     ...tool,
                     hasUiResource: true,
@@ -416,10 +413,10 @@ describe("runVerifyDeployment", () => {
 
     expect(result.ok).toBe(false);
     expect(result.failures.join("\n")).toContain(
-      "resource smoke: write_quick_shell_input binds a UI resource",
+      "resource smoke: write_connexin_input binds a UI resource",
     );
     expect(result.failures.join("\n")).toContain(
-      "resource smoke: write_quick_shell_input binds an OpenAI output template",
+      "resource smoke: write_connexin_input binds an OpenAI output template",
     );
   });
 
@@ -433,7 +430,7 @@ describe("runVerifyDeployment", () => {
             config: {
               enabled: true,
               command: "node",
-              args: "/opt/quick-shell/dist/server/server/main.js --stdio",
+              args: "/opt/connexin/dist/server/server/main.js --stdio",
             },
             runtime: {
               exposed_tool_count: runtimeToolNames.length,
@@ -469,7 +466,7 @@ describe("runVerifyDeployment", () => {
       ) {
         return {
           stdout: json({
-            toolNames: "open_quick_shell",
+            toolNames: "open_connexin",
             resourceCount: "one",
             mimeType: "text/html;profile=mcp-app",
           }),

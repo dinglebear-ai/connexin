@@ -6,8 +6,8 @@ import { isOriginAllowed } from "./config.js";
 import type { RuntimeConfig } from "./config.js";
 import type {
   Disposable,
-  QuickShellSessionManager,
-  StartedQuickShellSession,
+  ConnexinSessionManager,
+  StartedConnexinSession,
 } from "./session-manager.js";
 import {
   SessionIdSchema,
@@ -21,7 +21,7 @@ const MAX_PENDING_AUTH_CONNECTIONS = 32;
 const MAX_WS_CLOSE_REASON_BYTES = 123;
 const REJECTION_AUDIT_LIMIT = 10;
 const REJECTION_AUDIT_WINDOW_MS = 60_000;
-// During a Labby gateway swap-and-drain reload, the previous quick-shell
+// During a Labby gateway swap-and-drain reload, the previous connexin
 // instance still holds the fixed bridge port until the old pool drains and its
 // child exits. A fresh instance that crashed on EADDRINUSE would fail its MCP
 // initialize and drop the terminal, so the bind is retried for a bounded window
@@ -34,7 +34,7 @@ async function handleFileRequest(
   req: http.IncomingMessage,
   res: http.ServerResponse,
   config: RuntimeConfig,
-  manager: QuickShellSessionManager,
+  manager: ConnexinSessionManager,
 ): Promise<void> {
   const origin = req.headers.origin;
   res.setHeader("Cache-Control", "no-store");
@@ -79,7 +79,7 @@ async function handleFileRequest(
       "Access-Control-Allow-Origin": origin,
       "Access-Control-Allow-Methods": String(requestedMethod),
       "Access-Control-Allow-Headers":
-        "Authorization, X-Quick-Shell-File-Lease, Content-Type",
+        "Authorization, X-Connexin-File-Lease, Content-Type",
       "Access-Control-Max-Age": "300",
       Vary: "Origin",
     });
@@ -108,7 +108,7 @@ async function handleFileRequest(
   const session = auth?.startsWith("Bearer ")
     ? manager.authenticateFileCapability(auth.slice(7))
     : undefined;
-  const lease = req.headers["x-quick-shell-file-lease"];
+  const lease = req.headers["x-connexin-file-lease"];
   if (!session || typeof lease !== "string") {
     manager.recordAuditEvent("file_request_rejected", {
       operation: pathname.endsWith("upload") ? "upload" : "download",
@@ -161,7 +161,7 @@ async function handleFileRequest(
       res.writeHead(200, {
         "Content-Type": "application/octet-stream",
         "Content-Length": String(body.length),
-        "Content-Disposition": 'attachment; filename="quick-shell-download"',
+        "Content-Disposition": 'attachment; filename="connexin-download"',
       });
       res.end(body);
       manager.recordAuditEvent("file_transfer_completed", {
@@ -210,7 +210,7 @@ export interface BridgeServer {
 
 export interface StartBridgeServerOptions {
   config: RuntimeConfig;
-  manager: QuickShellSessionManager;
+  manager: ConnexinSessionManager;
   /**
    * Bounds for retrying an EADDRINUSE bridge bind (see `listenWithBindRetry`).
    * Defaults to the production window/interval; tests override with small
@@ -233,7 +233,7 @@ function disposeAll(disposables: Disposable[]): void {
     try {
       disposable.dispose();
     } catch (error) {
-      console.error("quick-shell bridge disposable cleanup failed", error);
+      console.error("connexin bridge disposable cleanup failed", error);
     }
   }
 }
@@ -241,7 +241,7 @@ function disposeAll(disposables: Disposable[]): void {
 function sendJson(ws: WebSocket, message: ServerTerminalMessage): boolean {
   if (ws.readyState !== WebSocket.OPEN) {
     // The client never receives this; without a log the reason is lost entirely.
-    console.error("quick-shell bridge dropped message on non-open socket", {
+    console.error("connexin bridge dropped message on non-open socket", {
       type: message.type,
       readyState: ws.readyState,
     });
@@ -260,7 +260,7 @@ function sendRaw(ws: WebSocket, payload: string): boolean {
     ws.send(payload);
     return true;
   } catch (error) {
-    console.error("quick-shell bridge websocket send failed", {
+    console.error("connexin bridge websocket send failed", {
       message: error instanceof Error ? error.message : String(error),
     });
     return false;
@@ -298,12 +298,12 @@ function closeSocket(ws: WebSocket, code: number, reason: string): void {
   try {
     ws.close(code, closeReason(reason));
   } catch (error) {
-    console.error("quick-shell bridge websocket close failed", error);
+    console.error("connexin bridge websocket close failed", error);
     try {
       ws.terminate();
     } catch (terminateError) {
       console.error(
-        "quick-shell bridge websocket terminate failed",
+        "connexin bridge websocket terminate failed",
         terminateError,
       );
     }
@@ -545,7 +545,7 @@ export async function startBridgeServer(
       pendingSessionId: SessionId,
     ) => {
       let activeSessionId: SessionId | undefined;
-      let session: StartedQuickShellSession | undefined;
+      let session: StartedConnexinSession | undefined;
       let connectionDisposables: Disposable[] = [];
       let authPending = true;
       const isCurrent = () =>
@@ -581,7 +581,7 @@ export async function startBridgeServer(
 
       ws.on("error", (error: Error) => {
         const message = error instanceof Error ? error.message : String(error);
-        console.error("quick-shell bridge websocket error", {
+        console.error("connexin bridge websocket error", {
           sessionId: activeSessionId,
           message,
         });
@@ -654,7 +654,7 @@ export async function startBridgeServer(
           } catch (error) {
             const errorMessage =
               error instanceof Error ? error.message : String(error);
-            const message = `Unable to start quick-shell SSH session for ${pendingSession.publicSummary.device}${errorMessage ? `: ${errorMessage}` : "."}`;
+            const message = `Unable to start connexin SSH session for ${pendingSession.publicSummary.device}${errorMessage ? `: ${errorMessage}` : "."}`;
             manager.recordAuditEvent("bridge_connection_rejected", {
               sessionId: pendingSession.id,
               device: pendingSession.publicSummary.device,
@@ -686,7 +686,7 @@ export async function startBridgeServer(
               closeSocket(
                 prior.socket,
                 1000,
-                "replaced by another quick-shell view",
+                "replaced by another connexin view",
               );
             }
           }
@@ -861,9 +861,9 @@ export async function startBridgeServer(
 
 function attachSessionForwarding(
   ws: WebSocket,
-  session: StartedQuickShellSession,
+  session: StartedConnexinSession,
   config: RuntimeConfig,
-  manager: QuickShellSessionManager,
+  manager: ConnexinSessionManager,
   isCurrent: () => boolean,
 ): Disposable[] {
   let backpressureClosed = false;
@@ -895,8 +895,8 @@ function attachSessionForwarding(
 
 function writeToPty(
   ws: WebSocket,
-  manager: QuickShellSessionManager,
-  session: StartedQuickShellSession,
+  manager: ConnexinSessionManager,
+  session: StartedConnexinSession,
   action: () => void,
 ): void {
   if (session.exited) return;
@@ -907,7 +907,7 @@ function writeToPty(
       type: "error",
       message: "terminal process is no longer available",
     });
-    console.error("quick-shell bridge PTY I/O failed", {
+    console.error("connexin bridge PTY I/O failed", {
       sessionId: session.id,
       message: error instanceof Error ? error.message : String(error),
     });

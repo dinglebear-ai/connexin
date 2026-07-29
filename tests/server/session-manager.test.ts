@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { AuditLogger } from "../../src/server/audit-log.js";
 import type { RuntimeConfig } from "../../src/server/config.js";
 import {
-  QuickShellSessionManager,
+  ConnexinSessionManager,
   type PtyFactory,
 } from "../../src/server/session-manager.js";
 import { FakePty } from "./helpers/fake-pty.js";
@@ -14,7 +14,7 @@ function manager(
 ) {
   const ptys: FakePty[] = [];
   const calls: Array<{ file: string; args: string[] }> = [];
-  const instance = new QuickShellSessionManager({
+  const instance = new ConnexinSessionManager({
     config: testRuntimeConfig({
       maxScrollbackBytes: 10,
       maxSessionAgeMs: 1_000,
@@ -35,7 +35,7 @@ function manager(
   return { instance, ptys, calls };
 }
 
-describe("QuickShellSessionManager", () => {
+describe("ConnexinSessionManager", () => {
   it("rejects targets not in the SSH config allowlist", async () => {
     const { instance } = manager();
     await expect(instance.createSession({ device: "unknown" })).rejects.toThrow(
@@ -48,7 +48,7 @@ describe("QuickShellSessionManager", () => {
     await instance.createSession({ device: "fileserver" });
     await expect(
       instance.createSession({ device: "admin-box" }),
-    ).rejects.toThrow("maximum quick-shell sessions");
+    ).rejects.toThrow("maximum connexin sessions");
   });
 
   it("creates a pending session without spawning ssh", async () => {

@@ -7,10 +7,10 @@ import type { DeviceMetadataConfig } from "./device-metadata.js";
 import { sanitizeSuggestedCommand, validateDevice } from "./device.js";
 import { buildSshCommandArgs } from "./ssh-config.js";
 import type {
-  QuickShellOutputChunk,
-  QuickShellPoll,
-  QuickShellPollResetReason,
-  QuickShellPublicSession,
+  ConnexinOutputChunk,
+  ConnexinPoll,
+  ConnexinPollResetReason,
+  ConnexinPublicSession,
   SessionId,
 } from "../shared/protocol.js";
 import {
@@ -47,26 +47,26 @@ export type PtyFactory = (
   },
 ) => PtyProcess;
 
-export interface QuickShellSessionInput {
+export interface ConnexinSessionInput {
   device: string;
   reason?: string;
   suggested?: string;
 }
 
-export interface QuickShellSession {
+export interface ConnexinSession {
   id: SessionId;
   appToken: string;
   wsToken: string;
   fileToken: string;
   fileSession?: FileSession;
   pty?: PtyProcess;
-  publicSummary: QuickShellPublicSession;
+  publicSummary: ConnexinPublicSession;
   createdAt: number;
   lastActivityAt: number;
   exited: boolean;
   exitCode: number | null;
   scrollback: BoundedTextBuffer;
-  outputChunks: QuickShellOutputChunk[];
+  outputChunks: ConnexinOutputChunk[];
   outputChunkBytes: number;
   nextOutputSeq: number;
   disposables: Disposable[];
@@ -82,7 +82,7 @@ export type SessionWriteResult =
 export type SessionResizeResult =
   { resized: true } | { resized: false; reason: SessionDropReason };
 
-export interface QuickShellDeviceSummary {
+export interface ConnexinDeviceSummary {
   alias: string;
   label?: string;
   group?: string;
@@ -90,17 +90,17 @@ export interface QuickShellDeviceSummary {
   defaultShell?: string;
 }
 
-export interface StartedQuickShellSession extends QuickShellSession {
+export interface StartedConnexinSession extends ConnexinSession {
   pty: PtyProcess;
 }
 
-export interface QuickShellSessionManagerOptions {
+export interface ConnexinSessionManagerOptions {
   config: RuntimeConfig;
   allowedHosts: ReadonlySet<string>;
   deviceMetadata?: DeviceMetadataConfig;
   audit?: AuditLogger;
   ptyFactory?: PtyFactory;
-  fileHelperFactory?: (session: QuickShellSession) => FileHelperFactory;
+  fileHelperFactory?: (session: ConnexinSession) => FileHelperFactory;
 }
 
 const ENV_ALLOWLIST = [
@@ -140,22 +140,22 @@ function buildPtyEnv(
   return env;
 }
 
-export class QuickShellSessionManager {
+export class ConnexinSessionManager {
   private readonly config: RuntimeConfig;
   private readonly allowedHosts: ReadonlySet<string>;
   private readonly deviceMetadata: DeviceMetadataConfig;
   private readonly audit: AuditLogger;
   private readonly ptyFactory: PtyFactory;
   private readonly fileHelperFactory: (
-    session: QuickShellSession,
+    session: ConnexinSession,
   ) => FileHelperFactory;
-  private readonly sessions = new Map<SessionId, QuickShellSession>();
+  private readonly sessions = new Map<SessionId, ConnexinSession>();
   private readonly closedListeners = new Set<(sessionId: SessionId) => void>();
   private readonly fileClosePromises = new Set<Promise<void>>();
   private droppedAuditRecords = 0;
   private lastAuditError: unknown;
 
-  constructor(options: QuickShellSessionManagerOptions) {
+  constructor(options: ConnexinSessionManagerOptions) {
     this.config = options.config;
     this.allowedHosts = options.allowedHosts;
     this.deviceMetadata = options.deviceMetadata ?? { devices: new Map() };
@@ -178,11 +178,9 @@ export class QuickShellSessionManager {
         }));
   }
 
-  async createSession(
-    input: QuickShellSessionInput,
-  ): Promise<QuickShellSession> {
+  async createSession(input: ConnexinSessionInput): Promise<ConnexinSession> {
     if (this.sessions.size >= this.config.maxSessions) {
-      throw new Error("maximum quick-shell sessions reached");
+      throw new Error("maximum connexin sessions reached");
     }
 
     const device = validateDevice(
@@ -198,7 +196,7 @@ export class QuickShellSessionManager {
       input.reason?.slice(0, this.config.maxReasonLength).trim() || undefined;
     const now = Date.now();
     const id = randomUUID();
-    const publicSummary: QuickShellPublicSession = { sessionId: id, device };
+    const publicSummary: ConnexinPublicSession = { sessionId: id, device };
     const metadata = this.deviceMetadata.devices.get(device);
     if (reason) publicSummary.reason = reason;
     if (suggested) publicSummary.suggestedCommand = suggested;
@@ -208,7 +206,7 @@ export class QuickShellSessionManager {
     if (metadata?.defaultShell)
       publicSummary.deviceDefaultShell = metadata.defaultShell;
 
-    const session: QuickShellSession = {
+    const session: ConnexinSession = {
       id,
       appToken: token(),
       wsToken: token(),
@@ -236,11 +234,11 @@ export class QuickShellSessionManager {
     return session;
   }
 
-  startSession(sessionId: SessionId): StartedQuickShellSession | undefined {
+  startSession(sessionId: SessionId): StartedConnexinSession | undefined {
     const session = this.sessions.get(sessionId);
     if (!session) return undefined;
     if (session.closing) return undefined;
-    if (session.pty) return session as StartedQuickShellSession;
+    if (session.pty) return session as StartedConnexinSession;
 
     const cwd = process.env.HOME;
     let pty: PtyProcess;
@@ -300,7 +298,7 @@ export class QuickShellSessionManager {
       session.closing = !terminated;
       if (terminated) session.pty = undefined;
       this.logLifecycleFailures(
-        "quick-shell session start cleanup failed",
+        "connexin session start cleanup failed",
         failures,
       );
       this.recordAuditEventSafe("ssh_start_failed", {
@@ -317,10 +315,10 @@ export class QuickShellSessionManager {
     });
 
     this.recordActivity(session.id);
-    return session as StartedQuickShellSession;
+    return session as StartedConnexinSession;
   }
 
-  getSession(sessionId: SessionId): QuickShellSession | undefined {
+  getSession(sessionId: SessionId): ConnexinSession | undefined {
     return this.sessions.get(sessionId);
   }
 
@@ -332,7 +330,7 @@ export class QuickShellSessionManager {
   authenticateApp(
     sessionId: SessionId,
     appToken: string,
-  ): QuickShellSession | undefined {
+  ): ConnexinSession | undefined {
     const session = this.sessions.get(sessionId);
     if (!session || session.closing || session.appToken !== appToken)
       return undefined;
@@ -343,14 +341,14 @@ export class QuickShellSessionManager {
   authenticateWsCapability(
     sessionId: SessionId,
     wsToken: string,
-  ): QuickShellSession | undefined {
+  ): ConnexinSession | undefined {
     const session = this.sessions.get(sessionId);
     if (!session || session.wsToken !== wsToken) return undefined;
     this.recordActivity(sessionId);
     return session;
   }
 
-  authenticateFileCapability(fileToken: string): QuickShellSession | undefined {
+  authenticateFileCapability(fileToken: string): ConnexinSession | undefined {
     const candidate = Buffer.from(fileToken);
     for (const session of this.sessions.values()) {
       const expected = Buffer.from(session.fileToken);
@@ -391,7 +389,7 @@ export class QuickShellSessionManager {
    */
   private deliverableSession(
     sessionId: SessionId,
-  ): { session: QuickShellSession } | { reason: SessionDropReason } {
+  ): { session: ConnexinSession } | { reason: SessionDropReason } {
     const session = this.sessions.get(sessionId);
     if (!session?.pty) return { reason: "missing" };
     if (session.exited) return { reason: "exited" };
@@ -422,7 +420,7 @@ export class QuickShellSessionManager {
   pollSession(
     sessionId: SessionId,
     afterSeq: number,
-  ): QuickShellPoll | undefined {
+  ): ConnexinPoll | undefined {
     const session = this.sessions.get(sessionId);
     if (!session) return undefined;
     this.recordActivity(sessionId);
@@ -431,7 +429,7 @@ export class QuickShellSessionManager {
     const staleCursor = firstSeq !== undefined && afterSeq < firstSeq - 1;
     const cursorAhead = afterSeq > lastSeq;
     if (staleCursor || cursorAhead) {
-      const resetReason: QuickShellPollResetReason = staleCursor
+      const resetReason: ConnexinPollResetReason = staleCursor
         ? "stale_cursor"
         : "cursor_ahead";
       return this.snapshotPoll(session, sessionId, resetReason, firstSeq);
@@ -463,7 +461,7 @@ export class QuickShellSessionManager {
 
     const result = this.closeSessionWithDiagnostics(session);
     this.logLifecycleFailures(
-      "quick-shell session cleanup failed",
+      "connexin session cleanup failed",
       result.failures,
     );
     return result.closed;
@@ -493,7 +491,7 @@ export class QuickShellSessionManager {
       }
     }
     this.logLifecycleFailures(
-      "quick-shell expired session cleanup failed",
+      "connexin expired session cleanup failed",
       failures,
     );
     return closed;
@@ -506,7 +504,7 @@ export class QuickShellSessionManager {
       if (!session) continue;
       failures.push(...this.closeSessionWithDiagnostics(session).failures);
     }
-    this.logLifecycleFailures("quick-shell closeAll cleanup failed", failures);
+    this.logLifecycleFailures("connexin closeAll cleanup failed", failures);
   }
 
   async closeAllAndDrain(): Promise<void> {
@@ -514,14 +512,14 @@ export class QuickShellSessionManager {
     await Promise.allSettled([...this.fileClosePromises]);
   }
 
-  listSessions(): QuickShellSession[] {
+  listSessions(): ConnexinSession[] {
     return [...this.sessions.values()];
   }
 
-  listDevices(): QuickShellDeviceSummary[] {
+  listDevices(): ConnexinDeviceSummary[] {
     return [...this.allowedHosts].sort().map((alias) => {
       const metadata = this.deviceMetadata.devices.get(alias);
-      const device: QuickShellDeviceSummary = { alias };
+      const device: ConnexinDeviceSummary = { alias };
       if (metadata?.label) device.label = metadata.label;
       if (metadata?.group) device.group = metadata.group;
       if (metadata?.danger) device.danger = metadata.danger;
@@ -546,13 +544,13 @@ export class QuickShellSessionManager {
     this.recordAuditEventSafe(event, fields);
   }
 
-  private appendOutputChunk(session: QuickShellSession, data: string): void {
+  private appendOutputChunk(session: ConnexinSession, data: string): void {
     if (data.length === 0) return;
 
     const originalBytes = utf8ByteLength(data);
     const retained = takeLastUtf8Bytes(data, this.config.maxScrollbackBytes);
     const wasTruncated = retained.bytes < originalBytes;
-    const chunk: QuickShellOutputChunk = {
+    const chunk: ConnexinOutputChunk = {
       seq: session.nextOutputSeq,
       data: retained.text,
       truncated: wasTruncated ? true : undefined,
@@ -575,11 +573,11 @@ export class QuickShellSessionManager {
   }
 
   private snapshotPoll(
-    session: QuickShellSession,
+    session: ConnexinSession,
     sessionId: SessionId,
-    resetReason: QuickShellPollResetReason,
+    resetReason: ConnexinPollResetReason,
     firstSeq: number | undefined,
-  ): QuickShellPoll {
+  ): ConnexinPoll {
     const snapshot = session.scrollback.toString();
     const snapshotSeq = session.nextOutputSeq - 1;
     return {
@@ -598,7 +596,7 @@ export class QuickShellSessionManager {
     };
   }
 
-  private closeSessionWithDiagnostics(session: QuickShellSession): {
+  private closeSessionWithDiagnostics(session: ConnexinSession): {
     closed: boolean;
     failures: LifecycleFailure[];
   } {
@@ -652,7 +650,7 @@ export class QuickShellSessionManager {
   }
 
   private killPty(
-    session: QuickShellSession,
+    session: ConnexinSession,
     failures: LifecycleFailure[],
   ): boolean {
     try {
@@ -684,7 +682,7 @@ export class QuickShellSessionManager {
       if (failures) {
         failures.push(failure);
       } else {
-        this.logLifecycleFailures("quick-shell audit record failed", [failure]);
+        this.logLifecycleFailures("connexin audit record failed", [failure]);
       }
     }
   }
@@ -738,7 +736,7 @@ export class QuickShellSessionManager {
     );
   }
 
-  private chunkTruncatedBytes(chunk: QuickShellOutputChunk): number {
+  private chunkTruncatedBytes(chunk: ConnexinOutputChunk): number {
     if (!chunk.truncated) return 0;
     return Math.max(
       0,
