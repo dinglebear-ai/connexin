@@ -165,6 +165,9 @@ describe("main transports", () => {
       env: {
         QUICK_SHELL_SSH_CONFIG: await sshConfigPath(),
         QUICK_SHELL_HTTP_TOKEN: "secret",
+        // Stateless HTTP cannot retain MCP Apps capabilities between requests.
+        // This is an explicit trusted-host escape hatch.
+        QUICK_SHELL_REQUIRE_APP_HOST: "0",
       },
       ptyFactory: () => new FakePty(),
     });

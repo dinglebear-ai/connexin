@@ -20,11 +20,14 @@ describe("loadRuntimeConfig", () => {
 
   it("rejects invalid numeric overrides", () => {
     expect(() => loadRuntimeConfig({ QUICK_SHELL_MAX_SESSIONS: "0" })).toThrow(
-      "positive number",
+      "positive integer",
     );
     expect(() =>
       loadRuntimeConfig({ QUICK_SHELL_MAX_SESSIONS: "nope" }),
-    ).toThrow("positive number");
+    ).toThrow("positive integer");
+    expect(() =>
+      loadRuntimeConfig({ QUICK_SHELL_MAX_SESSIONS: "1.5" }),
+    ).toThrow("positive integer");
   });
 
   it("parses allowed origins", () => {

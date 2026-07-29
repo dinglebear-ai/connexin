@@ -44,6 +44,8 @@ export interface RuntimeConfig {
    * restores the previous fail-open behaviour.
    */
   requireAppHost: boolean;
+  /** File operations require a remotely enforced root (for example, chrooted internal-sftp). */
+  fileRootConfinementEnforced: boolean;
 }
 
 const DEFAULTS = {
@@ -68,6 +70,7 @@ const DEFAULTS = {
   maxTransferBytes: 512 * 1024 * 1024,
   maxEmbeddedDownloadBytes: 8 * 1024 * 1024,
   requireAppHost: true,
+  fileRootConfinementEnforced: false,
   fileOperationLeaseTtlMs: 60_000,
   maxFileOperationLeases: 16,
   fileMetadataTimeoutMs: 30_000,
@@ -98,8 +101,8 @@ function numberFromEnv(
   if (raw === undefined || raw.trim() === "") return fallback;
 
   const parsed = Number(raw);
-  if (!Number.isFinite(parsed) || parsed <= 0) {
-    throw new Error(`${key} must be a positive number`);
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) {
+    throw new Error(`${key} must be a positive integer`);
   }
 
   return parsed;
@@ -398,6 +401,11 @@ export function loadRuntimeConfig(
       env,
       "QUICK_SHELL_REQUIRE_APP_HOST",
       DEFAULTS.requireAppHost,
+    ),
+    fileRootConfinementEnforced: booleanFromEnv(
+      env,
+      "QUICK_SHELL_FILE_ROOT_CONFINEMENT_ENFORCED",
+      DEFAULTS.fileRootConfinementEnforced,
     ),
     fileOperationLeaseTtlMs: numberFromEnv(
       env,

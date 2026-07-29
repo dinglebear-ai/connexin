@@ -241,7 +241,7 @@ export function createServer(options: CreateServerOptions): McpServer {
       // scrollback without the user ever pressing Send output. Verify support
       // before minting a session rather than trusting the host to hide it.
       const appHostSupport = hostRendersApps(server);
-      if (config.requireAppHost && appHostSupport === "unsupported") {
+      if (config.requireAppHost && appHostSupport !== "supported") {
         manager.recordAuditEvent("session_open_refused", {
           device: args.device,
           error: "host_lacks_mcp_apps",
@@ -256,17 +256,6 @@ export function createServer(options: CreateServerOptions): McpServer {
           ],
         };
       }
-      if (appHostSupport === "unknown") {
-        // Stateless HTTP: the capability check could not run for this request.
-        // Access control here is the bearer token that main.ts already requires
-        // on every /mcp request, but record that the check was skipped so an
-        // operator reviewing the log can see it rather than assuming it passed.
-        manager.recordAuditEvent("app_host_check_skipped", {
-          device: args.device,
-          error: "client_capabilities_unavailable",
-        });
-      }
-
       let session;
       try {
         session = await manager.createSession({

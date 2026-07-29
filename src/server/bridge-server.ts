@@ -775,7 +775,7 @@ export async function startBridgeServer(
           sessionId: session?.id ?? pendingSessionId,
           device: session?.publicSummary.device,
           code,
-          reason: reason.toString(),
+          reasonByteLength: reason.length,
         });
       });
     },

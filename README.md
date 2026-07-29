@@ -219,6 +219,11 @@ Important sticky limits:
 - Sessions expire by absolute age and idle timeout.
 - Sessions are closed on process shutdown and process signals.
 - Bridge clients are closed on authentication timeout, invalid schema, invalid token, backpressure, or session replacement.
+
+### File-operation confinement
+
+File operations are disabled by default. Set `QUICK_SHELL_FILE_ROOT_CONFINEMENT_ENFORCED=1` only when the remote SSH account is confined by the server (for example a chrooted `internal-sftp` account) to the intended file root. Client-side SFTP pathname checks are not atomic against a concurrent symlink swap and are not a substitute for server-side confinement.
+
 - There is no durable transcript or session resume in v1.
 
 ## Output Handling

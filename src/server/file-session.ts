@@ -100,6 +100,7 @@ export class FileSession {
   ) {}
 
   async list(relativePath: string): Promise<PublicFileEntry[]> {
+    this.assertRootConfinement();
     return this.readOnly(async (helper) => {
       const { canonical } = await this.resolveContent(helper, relativePath);
       const result = await this.timed(
@@ -135,6 +136,8 @@ export class FileSession {
   }
 
   async prepare(input: PrepareFileOperation): Promise<string> {
+    this.assertRootConfinement();
+    this.pruneExpiredLeases();
     if (this.leases.size >= this.config.maxFileOperationLeases)
       throw new Error("lease_limit");
     const helper = await this.getHelper();
@@ -523,44 +526,45 @@ export class FileSession {
     });
     let abortDuringWait: (() => void) | undefined;
     try {
-      await Promise.race([
-        previous,
-        new Promise<never>((_, reject) => {
-          abortDuringWait = () => reject(new Error("aborted"));
-          signal.addEventListener("abort", abortDuringWait, { once: true });
-        }),
-      ]);
-    } finally {
-      if (abortDuringWait) signal.removeEventListener("abort", abortDuringWait);
-    }
-    if (signal.aborted) {
-      release();
-      throw new Error("aborted");
-    }
-    let helper: SftpHelper | undefined;
-    let combined: AbortSignal | undefined;
-    let clean = false;
-    try {
-      helper = await this.getHelper();
-      const timeout = AbortSignal.timeout(
-        this.config.fileTransferMaxDurationMs,
-      );
-      combined = AbortSignal.any([signal, timeout]);
-      const value = await operation(helper, combined);
-      clean = true;
-      return value;
-    } finally {
-      release();
-      // Recycle the helper after ANY unclean transfer, not just an abort.
-      // Bulk payloads ride dedicated fds that are never resynchronized, so a
-      // rejected upload (already_exists, permission_denied, ...) can leave
-      // bytes sitting in the kernel pipe buffer. The next transfer would read
-      // them as its own head, pass every length check, and silently write the
-      // wrong content.
-      if (helper && !clean) {
-        this.poison(helper);
-        await helper.drain(this.config.fileShutdownTimeoutMs);
+      try {
+        await Promise.race([
+          previous,
+          new Promise<never>((_, reject) => {
+            abortDuringWait = () => reject(new Error("aborted"));
+            signal.addEventListener("abort", abortDuringWait, { once: true });
+          }),
+        ]);
+      } finally {
+        if (abortDuringWait)
+          signal.removeEventListener("abort", abortDuringWait);
       }
+      if (signal.aborted) throw new Error("aborted");
+      let helper: SftpHelper | undefined;
+      let combined: AbortSignal | undefined;
+      let clean = false;
+      try {
+        helper = await this.getHelper();
+        const timeout = AbortSignal.timeout(
+          this.config.fileTransferMaxDurationMs,
+        );
+        combined = AbortSignal.any([signal, timeout]);
+        const value = await operation(helper, combined);
+        clean = true;
+        return value;
+      } finally {
+        // Recycle the helper after ANY unclean transfer, not just an abort.
+        // Bulk payloads ride dedicated fds that are never resynchronized, so a
+        // rejected upload (already_exists, permission_denied, ...) can leave
+        // bytes sitting in the kernel pipe buffer. The next transfer would read
+        // them as its own head, pass every length check, and silently write the
+        // wrong content.
+        if (helper && !clean) {
+          this.poison(helper);
+          await helper.drain(this.config.fileShutdownTimeoutMs);
+        }
+      }
+    } finally {
+      release();
     }
   }
 
@@ -598,6 +602,21 @@ export class FileSession {
   }
   private expiry(): number {
     return Date.now() + this.config.fileOperationLeaseTtlMs;
+  }
+
+  private pruneExpiredLeases(): void {
+    const now = Date.now();
+    for (const [token, lease] of this.leases) {
+      if (lease.expiresAt < now) this.leases.delete(token);
+    }
+  }
+
+  private assertRootConfinement(): void {
+    // SFTP pathname checks cannot close a symlink-swap race. The remote SSH
+    // account must impose the boundary (for example with chrooted
+    // internal-sftp) before the app exposes file operations.
+    if (!this.config.fileRootConfinementEnforced)
+      throw new Error("file_root_confinement_not_enforced");
   }
 }
 
