@@ -1,3 +1,9 @@
+---
+title: Manual MCP App smoke
+created: 2026-07-16
+updated: 2026-07-30
+---
+
 # Manual MCP App Smoke
 
 Use this matrix in a host that supports MCP Apps. Run the baseline scenario after every deploy, then choose the scenario rows that match the changed surface.

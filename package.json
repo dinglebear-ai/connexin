@@ -41,6 +41,7 @@
     "postinstall": "node scripts/install-sftp-helper.mjs",
     "check:launcher": "node --check scripts/install-sftp-helper.mjs && node --check scripts/sftp-helper-target.mjs && node scripts/check-package-contents.mjs",
     "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
+    "build:node": "npm run clean && npm run typecheck && cross-env INPUT=src/app/mcp-app.html vite build && tsc -p config/typescript/tsconfig.server.json",
     "build": "npm run clean && npm run typecheck && cross-env INPUT=src/app/mcp-app.html vite build && tsc -p config/typescript/tsconfig.server.json && mkdir -p dist/bin && go build -o dist/bin/connexin-sftp ./cmd/connexin-sftp && node scripts/write-build-manifest.mjs",
     "dev": "cross-env NODE_ENV=development CONNEXIN_HTTP_TOKEN=dev-local-token concurrently \"cross-env INPUT=src/app/mcp-app.html vite build --watch\" \"tsx watch src/server/main.ts --http\"",
     "serve": "node dist/server/server/main.js --http",

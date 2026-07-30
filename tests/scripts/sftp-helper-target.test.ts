@@ -16,14 +16,13 @@ describe("targetFor", () => {
       asset: "connexin-sftp-linux-x86_64.tar.gz",
       binary: "connexin-sftp",
     });
-    expect(targetFor("darwin", "arm64").asset).toBe(
-      "connexin-sftp-darwin-arm64.tar.gz",
+    expect(targetFor("darwin", "x64").asset).toBe(
+      "connexin-sftp-darwin-x86_64.tar.gz",
     );
   });
 
   it("uses the .exe binary name on Windows", () => {
     expect(targetFor("win32", "x64").binary).toBe("connexin-sftp.exe");
-    expect(targetFor("win32", "arm64").binary).toBe("connexin-sftp.exe");
   });
 
   it("rejects unsupported combinations and names what is supported", () => {
@@ -33,16 +32,9 @@ describe("targetFor", () => {
     expect(() => targetFor("linux", "ia32")).toThrow(/linux\/x64/);
   });
 
-  it("advertises exactly the six targets the release matrix builds", () => {
+  it("advertises exactly the three x86_64 targets the release matrix builds", () => {
     expect(supportedTargets().sort()).toEqual(
-      [
-        "darwin/arm64",
-        "darwin/x64",
-        "linux/arm64",
-        "linux/x64",
-        "win32/arm64",
-        "win32/x64",
-      ].sort(),
+      ["darwin/x64", "linux/x64", "win32/x64"].sort(),
     );
   });
 });
