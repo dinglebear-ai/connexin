@@ -21,13 +21,6 @@ const TARGETS = new Map([
     },
   ],
   [
-    "linux/arm64",
-    {
-      asset: "connexin-sftp-linux-arm64.tar.gz",
-      binary: "connexin-sftp",
-    },
-  ],
-  [
     "darwin/x64",
     {
       asset: "connexin-sftp-darwin-x86_64.tar.gz",
@@ -35,23 +28,9 @@ const TARGETS = new Map([
     },
   ],
   [
-    "darwin/arm64",
-    {
-      asset: "connexin-sftp-darwin-arm64.tar.gz",
-      binary: "connexin-sftp",
-    },
-  ],
-  [
     "win32/x64",
     {
       asset: "connexin-sftp-windows-x86_64.tar.gz",
-      binary: "connexin-sftp.exe",
-    },
-  ],
-  [
-    "win32/arm64",
-    {
-      asset: "connexin-sftp-windows-arm64.tar.gz",
       binary: "connexin-sftp.exe",
     },
   ],

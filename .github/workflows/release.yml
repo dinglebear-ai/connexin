@@ -1,190 +1,101 @@
 name: Release
 
 on:
-  push:
-    tags:
-      - "v*.*.*"
-  workflow_dispatch:
-    inputs:
-      tag:
-        description: "Existing tag to build and publish (e.g. v0.2.0)"
-        required: true
+  release:
+    types: [published]
 
 permissions:
   contents: read
 
+concurrency:
+  group: release-${{ github.event.release.tag_name }}
+  cancel-in-progress: false
+
 jobs:
-  # Cross-compiled Go SFTP helpers. The asset names here are the contract with
-  # scripts/sftp-helper-target.mjs — changing one without the other breaks
-  # installs at postinstall time, not at build time.
+  metadata:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.version.outputs.value }}
+    steps:
+      - id: version
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          test "$version" != "$TAG"
+          echo "value=$version" >> "$GITHUB_OUTPUT"
+
   build-helper:
-    name: Build SFTP helper (${{ matrix.goos }}/${{ matrix.goarch }})
-    runs-on: ubuntu-latest
+    name: Build SFTP helper (${{ matrix.goos }}/amd64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
     strategy:
+      fail-fast: false
       matrix:
         include:
-          - {
-              goos: linux,
-              goarch: amd64,
-              asset: connexin-sftp-linux-x86_64.tar.gz,
-              binary: connexin-sftp,
-            }
-          - {
-              goos: linux,
-              goarch: arm64,
-              asset: connexin-sftp-linux-arm64.tar.gz,
-              binary: connexin-sftp,
-            }
-          - {
-              goos: darwin,
-              goarch: amd64,
-              asset: connexin-sftp-darwin-x86_64.tar.gz,
-              binary: connexin-sftp,
-            }
-          - {
-              goos: darwin,
-              goarch: arm64,
-              asset: connexin-sftp-darwin-arm64.tar.gz,
-              binary: connexin-sftp,
-            }
-          - {
-              goos: windows,
-              goarch: amd64,
-              asset: connexin-sftp-windows-x86_64.tar.gz,
-              binary: connexin-sftp.exe,
-            }
-          - {
-              goos: windows,
-              goarch: arm64,
-              asset: connexin-sftp-windows-arm64.tar.gz,
-              binary: connexin-sftp.exe,
-            }
+          - goos: linux
+            asset: connexin-sftp-linux-x86_64.tar.gz
+            binary: connexin-sftp
+          - goos: darwin
+            asset: connexin-sftp-darwin-x86_64.tar.gz
+            binary: connexin-sftp
+          - goos: windows
+            asset: connexin-sftp-windows-x86_64.tar.gz
+            binary: connexin-sftp.exe
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
-          ref: ${{ github.event.inputs.tag || github.ref }}
+          ref: ${{ github.event.release.tag_name }}
           persist-credentials: false
-
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version: "1.25.x"
           cache: true
-
-      - name: Build
+      - name: Build exact release asset
         env:
           GOOS: ${{ matrix.goos }}
-          GOARCH: ${{ matrix.goarch }}
+          ASSET: ${{ matrix.asset }}
+          BINARY: ${{ matrix.binary }}
           CGO_ENABLED: "0"
         run: |
+          set -euo pipefail
           mkdir -p out artifacts
-          go build -trimpath -ldflags "-s -w" -o "out/${{ matrix.binary }}" ./cmd/connexin-sftp
-          tar -czf "artifacts/${{ matrix.asset }}" -C out "${{ matrix.binary }}"
-
-      - uses: actions/upload-artifact@v4
+          GOARCH=amd64 go build -trimpath -ldflags "-s -w" \
+            -o "out/$BINARY" ./cmd/connexin-sftp
+          tar -czf "artifacts/$ASSET" -C out "$BINARY"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: helper-${{ matrix.goos }}-${{ matrix.goarch }}
+          name: helper-${{ matrix.goos }}-amd64
           path: artifacts/*.tar.gz
           if-no-files-found: error
+          retention-days: 7
 
-  release:
-    name: Publish GitHub Release
+  github-release:
     needs: build-helper
-    runs-on: ubuntu-latest
     permissions:
       contents: write
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          ref: ${{ github.event.inputs.tag || github.ref }}
-          persist-credentials: false
-
-      - uses: actions/download-artifact@v4
-        with:
-          path: artifacts
-          merge-multiple: true
-
-      # The installer fetches SHA256SUMS and verifies the tarball before it
-      # writes an executable to disk, so this file is load-bearing, not a nicety.
-      - name: Generate checksums
-        working-directory: artifacts
-        run: sha256sum *.tar.gz > SHA256SUMS
-
-      - name: Verify every advertised target was built
-        working-directory: artifacts
-        run: |
-          missing=0
-          for asset in \
-            connexin-sftp-linux-x86_64.tar.gz \
-            connexin-sftp-linux-arm64.tar.gz \
-            connexin-sftp-darwin-x86_64.tar.gz \
-            connexin-sftp-darwin-arm64.tar.gz \
-            connexin-sftp-windows-x86_64.tar.gz \
-            connexin-sftp-windows-arm64.tar.gz; do
-            if [ ! -f "$asset" ]; then
-              echo "::error::missing release asset $asset (advertised by scripts/sftp-helper-target.mjs)"
-              missing=1
-            fi
-          done
-          exit $missing
-
-      - uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
-          files: |
-            artifacts/*.tar.gz
-            artifacts/SHA256SUMS
-          fail_on_unmatched_files: true
+      attestations: write
+      id-token: write
+    uses: dinglebear-ai/workflows/.github/workflows/github-release.yml@d7bbe71ddc1157e32ed0bebf928fc07438ba58b0
+    with:
+      release-tag: ${{ github.event.release.tag_name }}
+      artifact-pattern: helper-*
 
   npm:
-    name: Publish npm package
-    needs: release
-    runs-on: ubuntu-latest
+    needs: [metadata, github-release]
     permissions:
       contents: read
-      id-token: write # npm trusted publishing (OIDC) — do NOT add NODE_AUTH_TOKEN
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          ref: ${{ github.event.inputs.tag || github.ref }}
-          persist-credentials: false
-
-      - uses: actions/setup-node@v5
-        with:
-          node-version: "24"
-          registry-url: "https://registry.npmjs.org"
-
-      - uses: actions/setup-go@v6
-        with:
-          go-version: "1.25.x"
-          cache: true
-
-      # releaseVersion() in the installer defaults to the package version, so a
-      # drift between tag and package.json would make installs fetch a release
-      # that does not exist. Fail here instead.
-      - name: Assert package version matches the tag
-        run: |
-          tag="${{ github.event.inputs.tag || github.ref_name }}"
-          pkg="v$(node -p "require('./package.json').version")"
-          if [ "$tag" != "$pkg" ]; then
-            echo "::error::tag $tag does not match package.json version $pkg"
-            exit 1
-          fi
-
-      - run: npm ci
-      - run: npm run build
-      - run: npm run check:launcher
-
-      - name: Skip if this version is already published
-        id: published
-        run: |
-          name="$(node -p "require('./package.json').name")"
-          version="$(node -p "require('./package.json').version")"
-          if npm view "$name@$version" version >/dev/null 2>&1; then
-            echo "already=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "already=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Publish
-        if: steps.published.outputs.already == 'false'
-        run: npm publish --access public
+      id-token: write
+    uses: dinglebear-ai/workflows/.github/workflows/npm-trusted-publish.yml@d7bbe71ddc1157e32ed0bebf928fc07438ba58b0
+    with:
+      checkout-ref: ${{ github.event.release.tag_name }}
+      expected-version: ${{ needs.metadata.outputs.version }}
+      node-version: "24"
+      verify-command: >-
+        npm run build:node &&
+        npm run lint &&
+        npm run format:check &&
+        npm run test:coverage &&
+        npm run check:launcher

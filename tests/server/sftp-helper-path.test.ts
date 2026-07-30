@@ -23,8 +23,6 @@ describe("helper path agreement between installer and server", () => {
 
   it.each([
     ["linux", "x64"],
-    ["linux", "arm64"],
-    ["darwin", "arm64"],
     ["win32", "x64"],
   ])("agrees with helperDestination() on %s/%s", (platform, arch) => {
     const installerName = basename(

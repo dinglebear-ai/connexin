@@ -3,69 +3,94 @@ name: CI
 on:
   pull_request:
   push:
-    branches:
-      - main
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  build:
-    runs-on: ubuntu-latest
+  node:
+    uses: dinglebear-ai/workflows/.github/workflows/fast-node.yml@d7bbe71ddc1157e32ed0bebf928fc07438ba58b0
+    with:
+      node-version: "24"
+      lint-command: npm run lint && npm run format:check
+      test-command: npm run test:coverage
+      build-command: npm run build:node && npm run smoke:stdio:built
+
+  go:
+    uses: dinglebear-ai/workflows/.github/workflows/fast-go.yml@d7bbe71ddc1157e32ed0bebf928fc07438ba58b0
+    with:
+      go-version: "1.25.x"
+
+  sftp-integration:
+    name: Real OpenSSH SFTP integration
+    runs-on: [self-hosted, ci-pool-typescript]
+    timeout-minutes: 10
     steps:
-      - name: Check out repository
-        uses: actions/checkout@v5
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
-          node-version: 24
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "24"
           cache: npm
-
-      - name: Set up Go
-        uses: actions/setup-go@v6
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version: "1.25.x"
           cache: true
-
       - name: Install OpenSSH test runtime
-        run: sudo apt-get update && sudo apt-get install -y openssh-server
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Audit production and development dependencies
-        run: npm audit --audit-level=high
-
-      - name: Test SFTP helper
-        run: go test ./... && go vet ./...
-
-      - name: Build
-        run: npm run build
-
-      - name: Real OpenSSH SFTP integration
         run: |
-          mkdir -p "$HOME/.ssh" /tmp/connexin-sshd
-          ssh-keygen -q -t ed25519 -N '' -f /tmp/connexin-sshd/id
-          cat /tmp/connexin-sshd/id.pub >> "$HOME/.ssh/authorized_keys"
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends openssh-server
+      - run: npm ci --no-audit --no-fund
+      - run: npm run build
+      - run: npm run check:launcher
+      - name: Exercise the built helper through OpenSSH
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.ssh" "$RUNNER_TEMP/connexin-sshd"
+          ssh-keygen -q -t ed25519 -N '' -f "$RUNNER_TEMP/connexin-sshd/id"
+          cat "$RUNNER_TEMP/connexin-sshd/id.pub" >> "$HOME/.ssh/authorized_keys"
           chmod 700 "$HOME/.ssh"
           chmod 600 "$HOME/.ssh/authorized_keys"
           sudo mkdir -p /run/sshd
           sudo /usr/sbin/sshd -p 22229
-          printf 'Host connexin-ci\n  HostName 127.0.0.1\n  Port 22229\n  User %s\n  IdentityFile /tmp/connexin-sshd/id\n  StrictHostKeyChecking no\n  UserKnownHostsFile /dev/null\n' "$USER" > /tmp/connexin-sshd/config
-          npm run test:sftp-integration -- "$PWD/dist/bin/connexin-sftp" /tmp/connexin-sshd/config connexin-ci
+          printf 'Host connexin-ci\n  HostName 127.0.0.1\n  Port 22229\n  User %s\n  IdentityFile %s/connexin-sshd/id\n  StrictHostKeyChecking no\n  UserKnownHostsFile /dev/null\n' \
+            "$USER" "$RUNNER_TEMP" > "$RUNNER_TEMP/connexin-sshd/config"
+          npm run test:sftp-integration -- \
+            "$PWD/dist/bin/connexin-sftp" \
+            "$RUNNER_TEMP/connexin-sshd/config" \
+            connexin-ci
 
-      - name: Lint
-        run: npm run lint
+  contract:
+    uses: dinglebear-ai/workflows/.github/workflows/fleet-contract.yml@d7bbe71ddc1157e32ed0bebf928fc07438ba58b0
+    with:
+      profile: node
 
-      # Catch launcher/packaging breakage in PR CI rather than at release time,
-      # when the npm publish job is the first thing to exercise it.
-      - name: Check npm launcher and package contents
-        run: npm run check:launcher
+  workflow-policy:
+    uses: dinglebear-ai/workflows/.github/workflows/fleet-policy.yml@d7bbe71ddc1157e32ed0bebf928fc07438ba58b0
 
-      - name: Format
-        run: npm run format:check
-
-      - name: Test
-        run: npm run test:coverage
-
-      - name: Smoke stdio build
-        timeout-minutes: 2
-        run: npm run smoke:stdio:built
+  build:
+    name: Build
+    if: always()
+    needs: [node, go, sftp-integration, contract, workflow-policy]
+    runs-on: [self-hosted, ci-pool-ops]
+    timeout-minutes: 5
+    steps:
+      - name: Require every CI lane
+        env:
+          NODE: ${{ needs.node.result }}
+          GO: ${{ needs.go.result }}
+          SFTP: ${{ needs.sftp-integration.result }}
+          CONTRACT: ${{ needs.contract.result }}
+          WORKFLOW_POLICY: ${{ needs.workflow-policy.result }}
+        run: |
+          test "$NODE" = success
+          test "$GO" = success
+          test "$SFTP" = success
+          test "$CONTRACT" = success
+          test "$WORKFLOW_POLICY" = success
