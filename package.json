@@ -1,5 +1,5 @@
 {
-  "name": "connexin",
+  "name": "@dinglebear/connexin",
   "version": "0.1.0",
   "type": "module",
   "description": "Human-approved Connexin MCP App for SSH-backed unblock commands",
@@ -10,6 +10,9 @@
   },
   "homepage": "https://github.com/dinglebear-ai/connexin#readme",
   "bugs": "https://github.com/dinglebear-ai/connexin/issues",
+  "publishConfig": {
+    "access": "public"
+  },
   "keywords": [
     "mcp",
     "mcp-app",

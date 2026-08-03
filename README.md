@@ -2,6 +2,14 @@
 
 connexin is a local MCP App for short, human-approved SSH terminal sessions and confined SFTP file operations. An agent can request `open_connexin` for an SSH-configured device alias, but the user controls the terminal and file explorer.
 
+## Install
+
+```bash
+npm install --global @dinglebear/connexin
+```
+
+The installed command remains `connexin`.
+
 ## Developer Setup
 
 ```bash

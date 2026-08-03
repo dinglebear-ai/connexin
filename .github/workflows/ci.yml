@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   node:
-    uses: dinglebear-ai/workflows/.github/workflows/fast-node.yml@d7bbe71ddc1157e32ed0bebf928fc07438ba58b0
+    uses: dinglebear-ai/workflows/.github/workflows/fast-node.yml@64d705af6e164aac58d507df6fb2f6bdc8a4d22d
     with:
       node-version: "24"
       lint-command: npm run lint && npm run format:check
@@ -22,13 +22,13 @@ jobs:
       build-command: npm run build:node && npm run smoke:stdio:built
 
   go:
-    uses: dinglebear-ai/workflows/.github/workflows/fast-go.yml@d7bbe71ddc1157e32ed0bebf928fc07438ba58b0
+    uses: dinglebear-ai/workflows/.github/workflows/fast-go.yml@64d705af6e164aac58d507df6fb2f6bdc8a4d22d
     with:
       go-version: "1.25.x"
 
   sftp-integration:
     name: Real OpenSSH SFTP integration
-    runs-on: [self-hosted, ci-pool-typescript]
+    runs-on: ci-pool-typescript
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
@@ -60,25 +60,26 @@ jobs:
           sudo mkdir -p /run/sshd
           sudo /usr/sbin/sshd -p 22229
           printf 'Host connexin-ci\n  HostName 127.0.0.1\n  Port 22229\n  User %s\n  IdentityFile %s/connexin-sshd/id\n  StrictHostKeyChecking no\n  UserKnownHostsFile /dev/null\n' \
-            "$USER" "$RUNNER_TEMP" > "$RUNNER_TEMP/connexin-sshd/config"
+            "$(id -un)" "$RUNNER_TEMP" > "$RUNNER_TEMP/connexin-sshd/config"
           npm run test:sftp-integration -- \
             "$PWD/dist/bin/connexin-sftp" \
             "$RUNNER_TEMP/connexin-sshd/config" \
             connexin-ci
 
   contract:
-    uses: dinglebear-ai/workflows/.github/workflows/fleet-contract.yml@d7bbe71ddc1157e32ed0bebf928fc07438ba58b0
+    uses: dinglebear-ai/workflows/.github/workflows/fleet-contract.yml@64d705af6e164aac58d507df6fb2f6bdc8a4d22d
     with:
       profile: node
+      implementation-ref: 64d705af6e164aac58d507df6fb2f6bdc8a4d22d
 
   workflow-policy:
-    uses: dinglebear-ai/workflows/.github/workflows/fleet-policy.yml@d7bbe71ddc1157e32ed0bebf928fc07438ba58b0
+    uses: dinglebear-ai/workflows/.github/workflows/fleet-policy.yml@64d705af6e164aac58d507df6fb2f6bdc8a4d22d
 
   build:
     name: Build
     if: always()
     needs: [node, go, sftp-integration, contract, workflow-policy]
-    runs-on: [self-hosted, ci-pool-ops]
+    runs-on: ci-pool-ops
     timeout-minutes: 5
     steps:
       - name: Require every CI lane
