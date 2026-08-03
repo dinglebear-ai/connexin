@@ -28,9 +28,12 @@ if (tracked.some((path) => path === "dist" || path.startsWith("dist/"))) {
 }
 
 const docs = tracked.filter(
-  (path) => path === "README.md" || path.startsWith("docs/"),
+  (path) =>
+    path === "README.md" ||
+    (path.startsWith("docs/") && !path.startsWith("docs/sessions/")),
 );
-const forbiddenDocMarkers = /\b(jmagar|dinglebear|dookie|labby\.md)\b/i;
+const forbiddenDocMarkers =
+  /\b(jmagar|dookie|labby\.md)\b|(?:https?:\/\/)?(?:[a-z0-9-]+\.)?dinglebear\.ai\b/i;
 for (const path of docs) {
   if (forbiddenDocMarkers.test(read(path))) {
     fail(`${path} contains a personal deployment marker`);

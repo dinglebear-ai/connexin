@@ -36,7 +36,7 @@ describe("runVerifyDeployment", () => {
   }));
   const manifest: BuildManifest = {
     version: 1,
-    packageName: "connexin",
+    packageName: "@dinglebear/connexin",
     gitSha: "abc123",
     gitDirty: false,
     builtAt: "2026-07-14T00:00:00.000Z",

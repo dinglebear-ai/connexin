@@ -122,7 +122,7 @@ if (missingFiles.length > 0) {
 
 const manifest = {
   version: 1,
-  packageName: "connexin",
+  packageName: "@dinglebear/connexin",
   gitSha,
   gitDirty,
   builtAt: new Date().toISOString(),
