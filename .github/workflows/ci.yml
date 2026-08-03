@@ -28,7 +28,7 @@ jobs:
 
   sftp-integration:
     name: Real OpenSSH SFTP integration
-    runs-on: [self-hosted, ci-pool-typescript]
+    runs-on: ci-pool-typescript
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
@@ -60,7 +60,7 @@ jobs:
           sudo mkdir -p /run/sshd
           sudo /usr/sbin/sshd -p 22229
           printf 'Host connexin-ci\n  HostName 127.0.0.1\n  Port 22229\n  User %s\n  IdentityFile %s/connexin-sshd/id\n  StrictHostKeyChecking no\n  UserKnownHostsFile /dev/null\n' \
-            "$USER" "$RUNNER_TEMP" > "$RUNNER_TEMP/connexin-sshd/config"
+            "$(id -un)" "$RUNNER_TEMP" > "$RUNNER_TEMP/connexin-sshd/config"
           npm run test:sftp-integration -- \
             "$PWD/dist/bin/connexin-sftp" \
             "$RUNNER_TEMP/connexin-sshd/config" \
@@ -79,7 +79,7 @@ jobs:
     name: Build
     if: always()
     needs: [node, go, sftp-integration, contract, workflow-policy]
-    runs-on: [self-hosted, ci-pool-ops]
+    runs-on: ci-pool-ops
     timeout-minutes: 5
     steps:
       - name: Require every CI lane
