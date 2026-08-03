@@ -1,5 +1,5 @@
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
@@ -36,7 +36,7 @@ async function withBuiltAppHtml<T>(
     originalHtml = undefined;
   }
 
-  await mkdir(resolve("dist/app"), { recursive: true });
+  await mkdir(dirname(APP_HTML_PATH), { recursive: true });
   await writeFile(APP_HTML_PATH, html);
   resetAppHtmlCacheForTests();
   try {
@@ -802,7 +802,7 @@ describe("createServer", () => {
         originalHtml = undefined;
       }
 
-      await mkdir(resolve("dist/app"), { recursive: true });
+      await mkdir(dirname(APP_HTML_PATH), { recursive: true });
       await writeFile(APP_HTML_PATH, "<html>first</html>");
       resetAppHtmlCacheForTests();
 

@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   node:
-    uses: dinglebear-ai/workflows/.github/workflows/fast-node.yml@d7bbe71ddc1157e32ed0bebf928fc07438ba58b0
+    uses: dinglebear-ai/workflows/.github/workflows/fast-node.yml@64d705af6e164aac58d507df6fb2f6bdc8a4d22d
     with:
       node-version: "24"
       lint-command: npm run lint && npm run format:check
@@ -22,7 +22,7 @@ jobs:
       build-command: npm run build:node && npm run smoke:stdio:built
 
   go:
-    uses: dinglebear-ai/workflows/.github/workflows/fast-go.yml@d7bbe71ddc1157e32ed0bebf928fc07438ba58b0
+    uses: dinglebear-ai/workflows/.github/workflows/fast-go.yml@64d705af6e164aac58d507df6fb2f6bdc8a4d22d
     with:
       go-version: "1.25.x"
 
@@ -67,12 +67,13 @@ jobs:
             connexin-ci
 
   contract:
-    uses: dinglebear-ai/workflows/.github/workflows/fleet-contract.yml@d7bbe71ddc1157e32ed0bebf928fc07438ba58b0
+    uses: dinglebear-ai/workflows/.github/workflows/fleet-contract.yml@64d705af6e164aac58d507df6fb2f6bdc8a4d22d
     with:
       profile: node
+      implementation-ref: 64d705af6e164aac58d507df6fb2f6bdc8a4d22d
 
   workflow-policy:
-    uses: dinglebear-ai/workflows/.github/workflows/fleet-policy.yml@d7bbe71ddc1157e32ed0bebf928fc07438ba58b0
+    uses: dinglebear-ai/workflows/.github/workflows/fleet-policy.yml@64d705af6e164aac58d507df6fb2f6bdc8a4d22d
 
   build:
     name: Build
