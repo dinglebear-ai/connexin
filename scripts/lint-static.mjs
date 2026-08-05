@@ -33,7 +33,7 @@ const docs = tracked.filter(
     (path.startsWith("docs/") && !path.startsWith("docs/sessions/")),
 );
 const forbiddenDocMarkers =
-  /\b(jmagar|dookie|labby\.md)\b|(?:https?:\/\/)?(?:[a-z0-9-]+\.)?dinglebear\.ai\b/i;
+  /\b(jmagar|devhost|labby\.md)\b|(?:https?:\/\/)?(?:[a-z0-9-]+\.)?dinglebear\.ai\b/i;
 for (const path of docs) {
   if (forbiddenDocMarkers.test(read(path))) {
     fail(`${path} contains a personal deployment marker`);
