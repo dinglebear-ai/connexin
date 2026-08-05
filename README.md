@@ -346,11 +346,4 @@ See `docs/manual-app-smoke.md` for the scenario matrix covering baseline app att
 
 ## License
 
-Copyright 2026 Jacob Magar.
-
-[PolyForm Noncommercial 1.0.0](LICENSE.md) — free for personal, hobby,
-research, and educational use. **Any commercial use requires a separate
-license**; open an issue to enquire.
-
-This is a source-available license, not an OSI-approved open source
-license.
+Original Dinglebear-authored portions of this project are licensed under [AGPL-3.0-only](LICENSE). Separate commercial licensing is available for organizations that need terms outside the AGPL. Third-party material remains under its original license. See [LICENSING.md](LICENSING.md).
