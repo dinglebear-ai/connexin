@@ -32,8 +32,15 @@ const docs = tracked.filter(
     path === "README.md" ||
     (path.startsWith("docs/") && !path.startsWith("docs/sessions/")),
 );
-const forbiddenDocMarkers =
-  /\b(jmagar|dookie|labby\.md)\b|(?:https?:\/\/)?(?:[a-z0-9-]+\.)?dinglebear\.ai\b/i;
+// The internal host alias is reconstructed from char codes rather than
+// written as a literal so this public file doesn't itself carry the
+// plain-text marker it exists to detect. Detection power is unchanged:
+// the resulting regex still flags the same string as before the scrub.
+const internalHostAlias = String.fromCharCode(100, 111, 111, 107, 105, 101);
+const forbiddenDocMarkers = new RegExp(
+  `\\b(jmagar|${internalHostAlias}|labby\\.md)\\b|(?:https?:\\/\\/)?(?:[a-z0-9-]+\\.)?dinglebear\\.ai\\b`,
+  "i",
+);
 for (const path of docs) {
   if (forbiddenDocMarkers.test(read(path))) {
     fail(`${path} contains a personal deployment marker`);
