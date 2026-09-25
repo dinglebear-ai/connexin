@@ -1,0 +1,13 @@
+Workspace cleanup archive for dinglebear-ai/connexin
+Date: 2026-09-25
+Default: main
+
+STALE_BRANCHES 1
+STALE	codex/connexin-scoped-publish	178e8c03ebb71b482919d903755811840e796e50
+
+LOCAL_ONLY_BRANCHES 1
+LOCAL_ONLY	codex/connexin-scoped-publish	178e8c03ebb71b482919d903755811840e796e50
+
+STALE_WORKTREES 0
+
+WIP_SNAPSHOTS 0
